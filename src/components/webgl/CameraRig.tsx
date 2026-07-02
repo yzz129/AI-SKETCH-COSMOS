@@ -1,4 +1,4 @@
-import { OrbitControls } from '@react-three/drei';
+import { TrackballControls } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import { useRef } from 'react';
 import * as THREE from 'three';
@@ -22,15 +22,15 @@ export function CameraRig() {
   });
 
   return (
-    <OrbitControls
+    <TrackballControls
       ref={controlsRef}
       makeDefault
-      enableDamping
-      dampingFactor={0.055}
-      enablePan={false}
-      enableZoom={false}
-      enableRotate
-      rotateSpeed={0.45}
+      noPan
+      noZoom
+      noRotate={false}
+      rotateSpeed={2.25}
+      staticMoving={false}
+      dynamicDampingFactor={0.075}
       target={baseTarget}
     />
   );

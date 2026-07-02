@@ -2,56 +2,212 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 
-type NebulaClusterSpec = {
-  center: [number, number, number];
-  radius: number;
-  stretchX: number;
-  stretchY: number;
-  count: number;
-  opacity: number;
-  palette: THREE.Color[];
-  sizeRange: [number, number];
-  softness: number;
-  rotSpeed: number;
-  rotAxis: [number, number, number];
-};
-
-type ClusterLayer = {
+type DadakidoNebulaLayer = {
   geometry: THREE.BufferGeometry;
   material: THREE.ShaderMaterial;
 };
 
-const PALETTES: THREE.Color[][] = [
-  [new THREE.Color('#64d9ff'), new THREE.Color('#1e7ce6'), new THREE.Color('#7b4dff'), new THREE.Color('#f7f3ff')],
-  [new THREE.Color('#d76bff'), new THREE.Color('#7b4dff'), new THREE.Color('#f3a6ff'), new THREE.Color('#f7f3ff')],
-  [new THREE.Color('#64d9ff'), new THREE.Color('#3a2a8c'), new THREE.Color('#7b4dff'), new THREE.Color('#d76bff')],
-  [new THREE.Color('#f2913c'), new THREE.Color('#d76bff'), new THREE.Color('#7b4dff'), new THREE.Color('#ffe8b8')],
-  [new THREE.Color('#1e7ce6'), new THREE.Color('#64d9ff'), new THREE.Color('#f7f3ff'), new THREE.Color('#7b4dff')],
-  [new THREE.Color('#7b4dff'), new THREE.Color('#64d9ff'), new THREE.Color('#f3a6ff'), new THREE.Color('#d76bff')],
-  [new THREE.Color('#3a2a8c'), new THREE.Color('#7b4dff'), new THREE.Color('#d76bff'), new THREE.Color('#64d9ff')],
-  [new THREE.Color('#d76bff'), new THREE.Color('#f3a6ff'), new THREE.Color('#7b4dff'), new THREE.Color('#f7f3ff')],
+type LogoSample = {
+  x: number;
+  y: number;
+  density: number;
+  glyph: number;
+};
+
+const LETTER_SPREAD = 2.5;
+const WORD_WIDTH = 30.0;
+const TEXT_PARTICLES = 58_000;
+const HALO_PARTICLES = 7_600;
+const BRIDGE_PARTICLES = 5_000;
+
+const LETTER_COLORS = [
+  new THREE.Color('#64d9ff'),
+  new THREE.Color('#d76bff'),
+  new THREE.Color('#1e7ce6'),
+  new THREE.Color('#ffe8b8'),
+  new THREE.Color('#f2913c'),
+  new THREE.Color('#64d9ff'),
+  new THREE.Color('#ffe8b8'),
+  new THREE.Color('#d76bff')
 ];
 
-// Base positions (before responsive scaling) — pushed to edges with large gaps
-const BASE_CLUSTERS: NebulaClusterSpec[] = [
-  // Corner clusters — large & prominent
-  { center: [-6.5, 3.2, -10.5], radius: 2.0, stretchX: 1.0, stretchY: 0.65, count: 9000, opacity: 0.36, palette: PALETTES[0], sizeRange: [0.003, 0.022], softness: 0.26, rotSpeed: 0.14, rotAxis: [0.01, 0, 0.99] },
-  { center: [6.3, 3.2, -10.0], radius: 1.9, stretchX: 1.1, stretchY: 0.7, count: 8000, opacity: 0.32, palette: PALETTES[1], sizeRange: [0.003, 0.02], softness: 0.3, rotSpeed: -0.16, rotAxis: [-0.03, 0.02, 0.97] },
-  { center: [-6.2, -3.1, -10.5], radius: 1.75, stretchX: 1.05, stretchY: 0.62, count: 7200, opacity: 0.33, palette: PALETTES[3], sizeRange: [0.003, 0.02], softness: 0.28, rotSpeed: -0.12, rotAxis: [-0.02, -0.04, 0.95] },
-  { center: [6.5, -3.0, -9.5], radius: 1.85, stretchX: 1.05, stretchY: 0.68, count: 8000, opacity: 0.32, palette: PALETTES[2], sizeRange: [0.003, 0.02], softness: 0.3, rotSpeed: 0.13, rotAxis: [0.04, -0.01, 0.94] },
-  // Edge-middle clusters
-  { center: [-6.8, 0.4, -11.0], radius: 1.4, stretchX: 0.85, stretchY: 0.72, count: 5500, opacity: 0.27, palette: PALETTES[5], sizeRange: [0.003, 0.017], softness: 0.34, rotSpeed: -0.18, rotAxis: [-0.05, 0.02, 0.9] },
-  { center: [6.7, -0.4, -10.8], radius: 1.3, stretchX: 0.9, stretchY: 0.7, count: 5000, opacity: 0.26, palette: PALETTES[4], sizeRange: [0.003, 0.016], softness: 0.36, rotSpeed: 0.19, rotAxis: [0.03, -0.05, 0.88] },
-  { center: [-0.2, 3.6, -12.0], radius: 1.25, stretchX: 0.85, stretchY: 0.78, count: 5000, opacity: 0.25, palette: PALETTES[6], sizeRange: [0.003, 0.016], softness: 0.36, rotSpeed: 0.1, rotAxis: [0, -0.03, 0.98] },
-  { center: [0.3, -3.5, -11.5], radius: 1.35, stretchX: 0.95, stretchY: 0.62, count: 5300, opacity: 0.27, palette: PALETTES[7], sizeRange: [0.003, 0.017], softness: 0.34, rotSpeed: -0.11, rotAxis: [0.02, 0.04, 0.93] },
-  // Small accent corner clusters
-  { center: [-6.8, 2.9, -12.5], radius: 0.65, stretchX: 0.7, stretchY: 0.85, count: 2000, opacity: 0.22, palette: PALETTES[5], sizeRange: [0.002, 0.013], softness: 0.48, rotSpeed: -0.25, rotAxis: [0.06, 0.02, 0.84] },
-  { center: [6.9, 2.7, -12.5], radius: 0.7, stretchX: 0.75, stretchY: 0.8, count: 2200, opacity: 0.22, palette: PALETTES[0], sizeRange: [0.002, 0.014], softness: 0.46, rotSpeed: 0.24, rotAxis: [-0.05, 0.04, 0.86] },
-  { center: [-6.9, -2.7, -12.0], radius: 0.6, stretchX: 0.75, stretchY: 0.72, count: 1900, opacity: 0.2, palette: PALETTES[1], sizeRange: [0.002, 0.012], softness: 0.5, rotSpeed: -0.22, rotAxis: [-0.04, -0.05, 0.85] },
-  { center: [6.9, -2.5, -12.0], radius: 0.65, stretchX: 0.8, stretchY: 0.72, count: 2000, opacity: 0.22, palette: PALETTES[2], sizeRange: [0.002, 0.013], softness: 0.48, rotSpeed: 0.2, rotAxis: [0.05, -0.03, 0.87] },
+const FLOW_PALETTE = [
+  new THREE.Color('#64d9ff'),
+  new THREE.Color('#1e7ce6'),
+  new THREE.Color('#7b4dff'),
+  new THREE.Color('#d76bff'),
+  new THREE.Color('#f3a6ff'),
+  new THREE.Color('#ffe8b8')
 ];
 
-function makeMaterial(softness: number) {
+const GLYPH_CENTERS = [-5.25, -3.75, -2.25, -0.75, 0.9, 2.2, 3.55, 5.05].map(c => c * LETTER_SPREAD);
+const GLYPHS = ['d', 'a', 'd', 'a', 'k', 'i', 'd', 'o'] as const;
+
+function seededRandom(seed: number) {
+  let value = seed >>> 0;
+
+  return () => {
+    value = (value * 1664525 + 1013904223) >>> 0;
+    return value / 4294967296;
+  };
+}
+
+function signedRoundedBox(px: number, py: number, cx: number, cy: number, hx: number, hy: number, radius: number) {
+  const qx = Math.abs(px - cx) - hx + radius;
+  const qy = Math.abs(py - cy) - hy + radius;
+  const outside = Math.hypot(Math.max(qx, 0), Math.max(qy, 0));
+  return outside + Math.min(Math.max(qx, qy), 0) - radius;
+}
+
+function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
+  const vx = bx - ax;
+  const vy = by - ay;
+  const wx = px - ax;
+  const wy = py - ay;
+  const c = THREE.MathUtils.clamp((wx * vx + wy * vy) / Math.max(vx * vx + vy * vy, 0.0001), 0, 1);
+  return Math.hypot(px - (ax + vx * c), py - (ay + vy * c));
+}
+
+function densityFromDistance(distance: number, scale = 6.5) {
+  return THREE.MathUtils.clamp(-distance * scale, 0, 1);
+}
+
+function loopDensity(x: number, y: number, cx: number) {
+  const cy = -0.23;
+  const outer = 1 - ((x - cx) / 0.78) ** 2 - ((y - cy) / 0.86) ** 2;
+  const inner = ((x - cx) / 0.28) ** 2 + ((y - cy) / 0.31) ** 2 - 1;
+  if (outer < 0 || inner < 0) return 0;
+  return THREE.MathUtils.clamp(Math.min(outer * 3.2, inner * 2.8), 0.1, 1);
+}
+
+function roundedBarDensity(x: number, y: number, cx: number, cy: number, hx: number, hy: number, radius: number) {
+  return densityFromDistance(signedRoundedBox(x, y, cx, cy, hx, hy, radius));
+}
+
+function capsuleDensity(x: number, y: number, ax: number, ay: number, bx: number, by: number, radius: number) {
+  return densityFromDistance(segmentDistance(x, y, ax, ay, bx, by) - radius);
+}
+
+function logoDensity(x: number, y: number) {
+  let bestDensity = 0;
+  let bestGlyph = 0;
+
+  for (let index = 0; index < GLYPHS.length; index += 1) {
+    const glyph = GLYPHS[index];
+    const cx = GLYPH_CENTERS[index];
+    let density = 0;
+
+    if (glyph === 'd') {
+      density = Math.max(
+        loopDensity(x, y, cx - 0.08),
+        roundedBarDensity(x, y, cx + 0.5, 0.26, 0.24, 1.3, 0.24)
+      );
+    } else if (glyph === 'a') {
+      density = Math.max(
+        loopDensity(x, y, cx - 0.04),
+        roundedBarDensity(x, y, cx + 0.49, -0.5, 0.2, 0.48, 0.2)
+      );
+    } else if (glyph === 'k') {
+      density = Math.max(
+        roundedBarDensity(x, y, cx - 0.34, 0, 0.23, 1.28, 0.23),
+        capsuleDensity(x, y, cx - 0.08, -0.08, cx + 0.58, 0.78, 0.25),
+        capsuleDensity(x, y, cx - 0.06, -0.08, cx + 0.68, -1.06, 0.25)
+      );
+    } else if (glyph === 'i') {
+      density = Math.max(
+        roundedBarDensity(x, y, cx, -0.44, 0.22, 0.82, 0.22),
+        densityFromDistance(Math.hypot(x - cx, y - 1.16) - 0.31, 7.5)
+      );
+    } else {
+      density = loopDensity(x, y, cx);
+    }
+
+    if (density > bestDensity) {
+      bestDensity = density;
+      bestGlyph = index;
+    }
+  }
+
+  return { density: bestDensity, glyph: bestGlyph };
+}
+
+function sampleLogoPoint(random: () => number): LogoSample {
+  for (let tries = 0; tries < 900; tries += 1) {
+    const x = THREE.MathUtils.lerp(-WORD_WIDTH * 0.5, WORD_WIDTH * 0.5, random());
+    const y = THREE.MathUtils.lerp(-1.42, 1.48, random());
+    const hit = logoDensity(x, y);
+
+    if (hit.density > 0 && random() < 0.26 + hit.density * 0.74) {
+      return { x, y, density: hit.density, glyph: hit.glyph };
+    }
+  }
+
+  return { x: 0, y: 0, density: 1, glyph: 0 };
+}
+
+function colorForSample(sample: LogoSample, random: () => number) {
+  const color = LETTER_COLORS[sample.glyph].clone();
+  const flow = FLOW_PALETTE[Math.min(FLOW_PALETTE.length - 1, Math.floor(((sample.x / WORD_WIDTH) + 0.5) * FLOW_PALETTE.length))];
+  color.lerp(flow, 0.28);
+
+  if (random() > 0.72) {
+    color.lerp(new THREE.Color('#f7f3ff'), random() * 0.18);
+  }
+
+  return color;
+}
+
+function writeParticle({
+  positions,
+  colors,
+  sizes,
+  alphas,
+  phases,
+  anchors,
+  glyphs,
+  letterCenters,
+  index,
+  position,
+  color,
+  size,
+  alpha,
+  phase,
+  glyph
+}: {
+  positions: Float32Array;
+  colors: Float32Array;
+  sizes: Float32Array;
+  alphas: Float32Array;
+  phases: Float32Array;
+  anchors: Float32Array;
+  glyphs: Float32Array;
+  letterCenters: Float32Array;
+  index: number;
+  position: THREE.Vector3;
+  color: THREE.Color;
+  size: number;
+  alpha: number;
+  phase: number;
+  glyph: number;
+}) {
+  const i3 = index * 3;
+  positions[i3] = position.x;
+  positions[i3 + 1] = position.y;
+  positions[i3 + 2] = position.z;
+  colors[i3] = color.r;
+  colors[i3 + 1] = color.g;
+  colors[i3 + 2] = color.b;
+  sizes[index] = size;
+  alphas[index] = alpha;
+  phases[index] = phase;
+  anchors[i3] = position.x;
+  anchors[i3 + 1] = position.y;
+  anchors[i3 + 2] = position.z;
+  glyphs[index] = glyph;
+  letterCenters[index] = GLYPH_CENTERS[glyph] ?? 0;
+}
+
+function makeDadakidoNebulaMaterial() {
   return new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
@@ -61,59 +217,66 @@ function makeMaterial(softness: number) {
     blending: THREE.AdditiveBlending,
     uniforms: {
       uTime: { value: 0 },
-      uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
-      uSoftness: { value: softness },
+      uReveal: { value: 0 },
+      uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) }
     },
     vertexShader: `
       uniform float uTime;
+      uniform float uReveal;
       uniform float uPixelRatio;
-      uniform float uSoftness;
       attribute float aSize;
       attribute float aAlpha;
       attribute float aPhase;
-      attribute float aCenterX;
-      attribute float aCenterY;
-      attribute float aAngle;
-      attribute float aDist;
+      attribute float aGlyph;
+      attribute float aLetterCenter;
+      attribute vec3 aAnchor;
       varying vec3 vColor;
       varying float vAlpha;
       varying float vDepth;
 
       void main() {
-        vec3 p = position;
-        float cx = aCenterX;
-        float cy = aCenterY;
+        float letterPhase = aGlyph * 1.37 + aPhase * 0.18;
+        float depthBreath = sin(uTime * (0.82 + aGlyph * 0.045) + letterPhase);
+        float scaleBreath = 1.0 + depthBreath * (0.06 + aGlyph * 0.005);
 
-        // Orbital swirl: particles slowly orbit the cluster center for fluid vortex feel
-        float orbitSpeed = 0.06 + aDist * 0.08;
-        float orbitAngle = uTime * orbitSpeed + aAngle;
-        float orbitRadius = aDist * 0.12;
-        p.x = cx + (p.x - cx) + cos(orbitAngle) * orbitRadius;
-        p.y = cy + (p.y - cy) + sin(orbitAngle) * orbitRadius * 0.7;
+        vec3 local = position - vec3(aLetterCenter, -0.08, 0.0);
+        local.xy *= scaleBreath;
 
-        // Breathing: gentle in-out pulse
-        float breathe = 1.0 + sin(uTime * 0.18 + aPhase) * 0.03;
-        p.x = cx + (p.x - cx) * breathe;
-        p.y = cy + (p.y - cy) * breathe;
-        p.z += sin(uTime * 0.14 + aPhase + p.z * 0.3) * 0.06;
+        float yaw = sin(uTime * (1.08 + aGlyph * 0.055) + letterPhase) * (0.38 + 0.04 * sin(aGlyph * 2.1));
+        float pitch = cos(uTime * (0.92 + aGlyph * 0.05) + letterPhase * 1.28) * (0.2 + 0.024 * aGlyph);
+        float roll = sin(uTime * (0.68 + aGlyph * 0.04) + letterPhase * 1.66) * 0.075;
 
-        // Slow 3D drift
-        p.x += sin(uTime * 0.05 + aPhase + p.y * 0.25 + p.z * 0.15) * 0.05;
-        p.y += cos(uTime * 0.045 + aPhase + p.x * 0.22 + p.z * 0.12) * 0.045;
+        float cy = cos(yaw);
+        float sy = sin(yaw);
+        local.xz = mat2(cy, -sy, sy, cy) * local.xz;
+
+        float cx = cos(pitch);
+        float sx = sin(pitch);
+        local.yz = mat2(cx, -sx, sx, cx) * local.yz;
+
+        float cz = cos(roll);
+        float sz = sin(roll);
+        local.xy = mat2(cz, -sz, sz, cz) * local.xy;
+        vec3 p = local + vec3(aLetterCenter, -0.08, 0.0);
+        float lateralWave = sin(uTime * 0.7 + aPhase + aAnchor.x * 1.12);
+        float slowWave = cos(uTime * 0.48 + aPhase * 0.7 + aAnchor.y * 1.8);
+        // per-letter vertical bounce — each letter bounces at a different rhythm
+        p.x += lateralWave * 0.045;
+        p.y += slowWave * 0.038 + sin(uTime * 1.18 + letterPhase) * 0.12;
+        p.z += depthBreath * (0.46 + 0.06 * sin(aGlyph * 1.9)) + sin(uTime * 0.62 + aPhase + aAnchor.x * 0.52) * 0.08;
 
         vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mvPosition;
-        float pulse = 0.82 + 0.18 * sin(uTime * 0.2 + aPhase);
-        // Depth-based size: closer particles larger for 3D parallax
-        float depthFactor = 1.0 + (p.z - position.z) * 0.04;
-        gl_PointSize = aSize * depthFactor * pulse * 640.0 * uPixelRatio / max(-mvPosition.z, 0.01);
+
+        float pulse = 0.82 + 0.1 * sin(uTime * 0.72 + aPhase + aGlyph * 0.43);
+        float depthScale = 1.0 + p.z * 0.18 + depthBreath * 0.13;
+        gl_PointSize = aSize * depthScale * pulse * 790.0 * uPixelRatio / max(-mvPosition.z, 0.01);
         vColor = color;
-        vAlpha = aAlpha * pulse;
+        vAlpha = aAlpha * pulse * smoothstep(0.0, 1.0, uReveal) * (0.56 + depthScale * 0.08);
         vDepth = -mvPosition.z;
       }
     `,
     fragmentShader: `
-      uniform float uSoftness;
       varying vec3 vColor;
       varying float vAlpha;
       varying float vDepth;
@@ -121,137 +284,180 @@ function makeMaterial(softness: number) {
       void main() {
         vec2 p = gl_PointCoord - vec2(0.5);
         float d = length(p);
-        // Multi-layer glow for volumetric 3D feel
-        float core = smoothstep(0.18, 0.0, d);
-        float midHalo = smoothstep(0.4, 0.02, d) * 0.5;
-        float outerGlow = smoothstep(0.58, 0.05, d) * 0.28;
-        float alpha = mix(core + midHalo * 0.45, midHalo + outerGlow, uSoftness) * vAlpha;
-        // Depth fog: distant particles slightly dimmer
-        alpha *= 1.0 - smoothstep(8.0, 20.0, vDepth) * 0.25;
+        float core = smoothstep(0.2, 0.0, d) * 0.78;
+        float halo = smoothstep(0.48, 0.02, d) * 0.34;
+        float outer = smoothstep(0.64, 0.06, d) * 0.11;
+        float alpha = (core + halo + outer) * vAlpha;
+        alpha *= 1.0 - smoothstep(16.0, 28.0, vDepth) * 0.18;
         gl_FragColor = vec4(vColor, alpha);
       }
-    `,
+    `
   });
 }
 
-function createNebulaCluster(spec: NebulaClusterSpec): ClusterLayer {
-  const geometry = new THREE.BufferGeometry();
-  const positions = new Float32Array(spec.count * 3);
-  const colors = new Float32Array(spec.count * 3);
-  const sizes = new Float32Array(spec.count);
-  const alphas = new Float32Array(spec.count);
-  const phases = new Float32Array(spec.count);
-  const centerXArr = new Float32Array(spec.count);
-  const centerYArr = new Float32Array(spec.count);
-  const angles = new Float32Array(spec.count);
-  const dists = new Float32Array(spec.count);
+function createDadakidoNebula(): DadakidoNebulaLayer {
+  const random = seededRandom(20260702);
+  const count = TEXT_PARTICLES + HALO_PARTICLES + BRIDGE_PARTICLES;
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const sizes = new Float32Array(count);
+  const alphas = new Float32Array(count);
+  const phases = new Float32Array(count);
+  const anchors = new Float32Array(count * 3);
+  const glyphs = new Float32Array(count);
+  const letterCenters = new Float32Array(count);
 
-  const [cx, cy, cz] = spec.center;
-
-  for (let i = 0; i < spec.count; i += 1) {
-    const angle = Math.random() * Math.PI * 2;
-    const rawRadius = Math.pow(Math.random(), 0.52) * spec.radius;
-    const i3 = i * 3;
-    const rx = rawRadius * spec.stretchX;
-    const ry = rawRadius * spec.stretchY;
-    const edge = THREE.MathUtils.clamp(rawRadius / Math.max(spec.radius, 0.001), 0, 1);
-
-    // Wider z-spread for 3D depth
-    const px = cx + Math.cos(angle) * rx;
-    const py = cy + Math.sin(angle) * ry;
-    const pz = cz + THREE.MathUtils.randFloatSpread(spec.radius * 0.65);
-
-    const paletteIndex = Math.floor(Math.random() * (spec.palette.length - 1));
-    const color = spec.palette[paletteIndex].clone().lerp(
-      spec.palette[Math.min(paletteIndex + 1, spec.palette.length - 1)],
-      Math.random(),
+  for (let i = 0; i < TEXT_PARTICLES; i += 1) {
+    const sample = sampleLogoPoint(random);
+    const depth = THREE.MathUtils.lerp(0.34, 1.26, sample.density);
+    const position = new THREE.Vector3(
+      sample.x + THREE.MathUtils.randFloatSpread(0.032),
+      sample.y + THREE.MathUtils.randFloatSpread(0.032),
+      THREE.MathUtils.randFloatSpread(depth)
     );
-    if (edge < 0.22 && Math.random() > 0.72) {
-      color.lerp(spec.palette[spec.palette.length - 1], 0.4);
-    }
 
-    positions[i3] = px;
-    positions[i3 + 1] = py;
-    positions[i3 + 2] = pz;
-    colors[i3] = color.r;
-    colors[i3 + 1] = color.g;
-    colors[i3 + 2] = color.b;
-    sizes[i] = THREE.MathUtils.randFloat(spec.sizeRange[0], spec.sizeRange[1]) * (1.15 - edge * 0.35);
-    alphas[i] = spec.opacity * THREE.MathUtils.randFloat(0.2, 1.0) * (1.0 - edge * 0.65);
-    phases[i] = Math.random() * Math.PI * 2;
-    centerXArr[i] = cx;
-    centerYArr[i] = cy;
-    angles[i] = angle;
-    dists[i] = rawRadius;
+    writeParticle({
+      positions,
+      colors,
+      sizes,
+      alphas,
+      phases,
+      anchors,
+      glyphs,
+      letterCenters,
+      index: i,
+      position,
+      color: colorForSample(sample, random),
+      size: THREE.MathUtils.lerp(0.011, 0.034, random() ** 0.62),
+      alpha: THREE.MathUtils.lerp(0.18, 0.52, sample.density) * THREE.MathUtils.lerp(0.72, 0.96, random()),
+      phase: random() * Math.PI * 2,
+      glyph: sample.glyph
+    });
   }
 
+  for (let i = 0; i < HALO_PARTICLES; i += 1) {
+    const sample = sampleLogoPoint(random);
+    const index = TEXT_PARTICLES + i;
+    const outward = new THREE.Vector2(sample.x / (WORD_WIDTH * 0.5), sample.y / 1.55);
+    const spread = THREE.MathUtils.lerp(0.06, 0.34, random() ** 0.6);
+    if (outward.lengthSq() > 0.001) outward.normalize();
+    const position = new THREE.Vector3(
+      sample.x + outward.x * spread + THREE.MathUtils.randFloatSpread(0.2),
+      sample.y + outward.y * spread + THREE.MathUtils.randFloatSpread(0.16),
+      THREE.MathUtils.randFloatSpread(1.48)
+    );
+
+    writeParticle({
+      positions,
+      colors,
+      sizes,
+      alphas,
+      phases,
+      anchors,
+      glyphs,
+      letterCenters,
+      index,
+      position,
+      color: colorForSample(sample, random).lerp(new THREE.Color('#f7f3ff'), random() * 0.08),
+      size: THREE.MathUtils.lerp(0.018, 0.072, random() ** 1.2),
+      alpha: THREE.MathUtils.lerp(0.014, 0.062, random()),
+      phase: random() * Math.PI * 2,
+      glyph: sample.glyph
+    });
+  }
+
+  for (let i = 0; i < BRIDGE_PARTICLES; i += 1) {
+    const index = TEXT_PARTICLES + HALO_PARTICLES + i;
+    const t = random();
+    const x = THREE.MathUtils.lerp(-WORD_WIDTH * 0.49, WORD_WIDTH * 0.49, t);
+    const ribbonY = -0.18 + Math.sin(t * Math.PI * 2.0) * 0.08 + Math.sin(t * Math.PI * 7.0) * 0.03;
+    const vertical = THREE.MathUtils.randFloatSpread(0.28) * (0.55 + Math.sin(t * Math.PI) * 0.45);
+    const position = new THREE.Vector3(
+      x + THREE.MathUtils.randFloatSpread(0.03),
+      ribbonY + vertical,
+      THREE.MathUtils.randFloatSpread(1.02)
+    );
+    const sample = { x, y: ribbonY, density: 0.55, glyph: Math.min(7, Math.floor(t * 8)) };
+
+    writeParticle({
+      positions,
+      colors,
+      sizes,
+      alphas,
+      phases,
+      anchors,
+      glyphs,
+      letterCenters,
+      index,
+      position,
+      color: colorForSample(sample, random).lerp(new THREE.Color('#64d9ff'), 0.12),
+      size: THREE.MathUtils.lerp(0.012, 0.04, random() ** 0.8),
+      alpha: THREE.MathUtils.lerp(0.016, 0.066, random()),
+      phase: random() * Math.PI * 2,
+      glyph: sample.glyph
+    });
+  }
+
+  const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
   geometry.setAttribute('aAlpha', new THREE.BufferAttribute(alphas, 1));
   geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
-  geometry.setAttribute('aCenterX', new THREE.BufferAttribute(centerXArr, 1));
-  geometry.setAttribute('aCenterY', new THREE.BufferAttribute(centerYArr, 1));
-  geometry.setAttribute('aAngle', new THREE.BufferAttribute(angles, 1));
-  geometry.setAttribute('aDist', new THREE.BufferAttribute(dists, 1));
+  geometry.setAttribute('aAnchor', new THREE.BufferAttribute(anchors, 3));
+  geometry.setAttribute('aGlyph', new THREE.BufferAttribute(glyphs, 1));
+  geometry.setAttribute('aLetterCenter', new THREE.BufferAttribute(letterCenters, 1));
   geometry.computeBoundingSphere();
 
-  return { geometry, material: makeMaterial(spec.softness) };
+  return { geometry, material: makeDadakidoNebulaMaterial() };
 }
 
-function NebulaClusterPoints({ spec, xScale, yScale }: { spec: NebulaClusterSpec; xScale: number; yScale: number }) {
+function DadakidoNebula({ reveal }: { reveal: number }) {
   const groupRef = useRef<THREE.Group>(null);
-  const layer = useMemo(() => createNebulaCluster(spec), [spec]);
+  const layer = useMemo(() => createDadakidoNebula(), []);
+  const { width, height } = useThree((s) => s.size);
+  const aspect = width / Math.max(height, 1);
+  const scale = Math.max(0.3, Math.min(0.4, aspect / 1.32));
+  const xOffset = 0;
+  const yOffset = 0;
 
-  const scaledCenter: [number, number, number] = useMemo(
-    () => [spec.center[0] * xScale, spec.center[1] * yScale, spec.center[2]],
-    [spec.center, xScale, yScale],
-  );
+  useEffect(() => {
+    return () => {
+      layer.geometry.dispose();
+      layer.material.dispose();
+    };
+  }, [layer]);
 
   useFrame(({ clock }) => {
-    layer.material.uniforms.uTime.value = clock.elapsedTime;
+    const time = clock.elapsedTime;
+    layer.material.uniforms.uTime.value = time;
+    layer.material.uniforms.uReveal.value = THREE.MathUtils.lerp(
+      layer.material.uniforms.uReveal.value as number,
+      reveal,
+      0.045
+    );
+
     if (groupRef.current) {
-      const t = clock.elapsedTime;
-      const [ax, ay, az] = spec.rotAxis;
-      groupRef.current.rotation.set(ax * t * spec.rotSpeed, ay * t * spec.rotSpeed, az * t * spec.rotSpeed);
+      groupRef.current.rotation.y = Math.sin(time * 0.18) * 0.24;
+      groupRef.current.rotation.x = Math.sin(time * 0.09) * 0.08;
+      groupRef.current.rotation.z = Math.sin(time * 0.045) * 0.018;
     }
   });
 
   return (
-    <group ref={groupRef} position={scaledCenter}>
-      <points
-        geometry={layer.geometry}
-        material={layer.material}
-        position={[-spec.center[0], -spec.center[1], -spec.center[2]]}
-        renderOrder={4}
-        frustumCulled={false}
-        raycast={() => null}
-      />
+    <group ref={groupRef} position={[xOffset, yOffset, -8.85]} scale={[scale, scale, scale]} renderOrder={4}>
+      <points geometry={layer.geometry} material={layer.material} renderOrder={4} frustumCulled={false} raycast={() => null} />
     </group>
   );
 }
 
 export function NebulaRibbons() {
-  const { width, height } = useThree((s) => s.size);
-  const aspect = width / Math.max(height, 1);
-  const xScale = Math.max(0.75, Math.min(1.4, aspect / 1.78));
-  const yScale = Math.max(0.8, Math.min(1.3, 1.78 / aspect));
-  const [visibleCount, setVisibleCount] = useState(3);
+  const [reveal, setReveal] = useState(0);
 
   useEffect(() => {
-    const timers = [
-      window.setTimeout(() => requestAnimationFrame(() => setVisibleCount(6)), 240),
-      window.setTimeout(() => requestAnimationFrame(() => setVisibleCount(9)), 500),
-      window.setTimeout(() => requestAnimationFrame(() => setVisibleCount(BASE_CLUSTERS.length)), 800),
-    ];
-    return () => timers.forEach(clearTimeout);
+    const frameId = window.requestAnimationFrame(() => setReveal(1));
+    return () => window.cancelAnimationFrame(frameId);
   }, []);
 
-  return (
-    <>
-      {BASE_CLUSTERS.slice(0, visibleCount).map((spec, i) => (
-        <NebulaClusterPoints key={i} spec={spec} xScale={xScale} yScale={yScale} />
-      ))}
-    </>
-  );
+  return <DadakidoNebula reveal={reveal} />;
 }

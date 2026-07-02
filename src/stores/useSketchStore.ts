@@ -15,6 +15,14 @@ export type Creature = {
   source: SampledParticleShape;
 };
 
+export type CollapseState = {
+  active: boolean;
+  center: [number, number];
+  startedAt: number;
+  releasedAt: number;
+  holdDuration: number;
+};
+
 type SketchStore = {
   creatures: Creature[];
   latestCreature: Creature | null;
@@ -22,12 +30,16 @@ type SketchStore = {
   message: string;
   isIdleMode: boolean;
   lastActivityAt: number;
+  collapse: CollapseState;
   setProcessing: (message: string) => void;
   addCreatureFromShape: (shape: SampledParticleShape) => void;
   setError: (message: string) => void;
   clearCreatures: () => void;
   setIdleMode: (enabled: boolean) => void;
   touchActivity: () => void;
+  beginCollapse: (center: [number, number]) => void;
+  updateCollapseCenter: (center: [number, number]) => void;
+  endCollapse: () => void;
 };
 
 const depths = [-0.72, -0.36, 0.05, 0.42, 0.78];
@@ -67,6 +79,13 @@ export const useSketchStore = create<SketchStore>((set, get) => ({
   message: '上传画作，让 AI 识别结构与行为，再把它变成 3D 星光粒子生命。',
   isIdleMode: true,
   lastActivityAt: Date.now(),
+  collapse: {
+    active: false,
+    center: [0.5, 0.5],
+    startedAt: 0,
+    releasedAt: 0,
+    holdDuration: 0
+  },
   setProcessing: (message) => set({
     status: 'processing',
     message,
@@ -104,5 +123,35 @@ export const useSketchStore = create<SketchStore>((set, get) => ({
     message: enabled ? '沉浸模式正在展示星尘流动。' : '沉浸模式已暂停，可以继续上传画作。',
     lastActivityAt: Date.now()
   }),
-  touchActivity: () => set({ lastActivityAt: Date.now(), isIdleMode: false })
+  touchActivity: () => set({ lastActivityAt: Date.now(), isIdleMode: false }),
+  beginCollapse: (center) => set({
+    collapse: {
+      active: true,
+      center,
+      startedAt: Date.now(),
+      releasedAt: 0,
+      holdDuration: 0
+    },
+    lastActivityAt: Date.now(),
+    isIdleMode: false
+  }),
+  updateCollapseCenter: (center) => set((state) => ({
+    collapse: {
+      ...state.collapse,
+      center
+    }
+  })),
+  endCollapse: () => set((state) => {
+    if (!state.collapse.active) return state;
+
+    const now = Date.now();
+    return {
+      collapse: {
+        ...state.collapse,
+        active: false,
+        releasedAt: now,
+        holdDuration: Math.max(0, now - state.collapse.startedAt)
+      }
+    };
+  })
 }));

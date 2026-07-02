@@ -8,7 +8,6 @@ import { GalaxyBand } from './GalaxyBand';
 import { GradientSky } from './GradientSky';
 import { NebulaRibbons } from './NebulaRibbons';
 import { TwinkleStars } from './TwinkleStars';
-import { VolumetricDeepSpace } from './VolumetricDeepSpace';
 
 export function DeepSpaceBackground() {
   const [loadPhase, setLoadPhase] = useState(0);
@@ -41,7 +40,6 @@ export function DeepSpaceBackground() {
   return (
     <>
       <GradientSky />
-      <VolumetricDeepSpace />
       <DeepStarField />
       <TwinkleStars />
       <GalaxyBand />
