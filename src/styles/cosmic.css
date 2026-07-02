@@ -1,0 +1,179 @@
+.cosmic-panel {
+  position: fixed;
+  top: 32px;
+  left: 32px;
+  z-index: 20;
+  width: min(390px, calc(100vw - 48px));
+  padding: 22px;
+  border: 1px solid rgba(179, 205, 255, 0.22);
+  border-radius: 22px;
+  background:
+    linear-gradient(135deg, rgba(12, 18, 42, 0.74), rgba(28, 14, 54, 0.58)),
+    radial-gradient(circle at 18% 0%, rgba(78, 206, 255, 0.16), transparent 42%),
+    radial-gradient(circle at 100% 18%, rgba(202, 112, 255, 0.14), transparent 40%);
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.42),
+    0 0 42px rgba(79, 151, 255, 0.13),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(22px) saturate(1.28);
+}
+
+.cosmic-panel__header h1,
+.cosmic-panel__header p,
+.cosmic-panel__status,
+.cosmic-panel__meta {
+  margin: 0;
+}
+
+.cosmic-panel__header h1 {
+  color: #f7fbff;
+  font-size: 28px;
+  font-weight: 850;
+  line-height: 1.05;
+  text-shadow: 0 0 24px rgba(137, 211, 255, 0.32);
+}
+
+.cosmic-panel__header p {
+  margin-top: 8px;
+  color: rgba(224, 235, 255, 0.76);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.cosmic-panel__stat {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid rgba(150, 190, 255, 0.16);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.cosmic-panel__stat span:first-child {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 24%, #ffffff, #8ff2ff 22%, #766dff 72%);
+  color: #07081b;
+  font-size: 22px;
+  font-weight: 900;
+  box-shadow: 0 0 24px rgba(113, 221, 255, 0.36);
+}
+
+.cosmic-panel__stat span:nth-child(2) {
+  color: rgba(244, 249, 255, 0.88);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.cosmic-panel__stat em {
+  margin-left: auto;
+  border: 1px solid rgba(155, 225, 255, 0.28);
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #a9efff;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.cosmic-panel__status {
+  margin-top: 14px;
+  color: rgba(221, 230, 255, 0.72);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.cosmic-panel__meta {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(185, 213, 255, 0.16);
+}
+
+.cosmic-panel__meta div {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.cosmic-panel__meta dt {
+  color: rgba(182, 205, 245, 0.64);
+  font-size: 12px;
+}
+
+.cosmic-panel__meta dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cosmic-panel__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.cosmic-panel__input {
+  display: none;
+}
+
+.cosmic-button {
+  min-height: 42px;
+  border: 1px solid rgba(162, 202, 255, 0.18);
+  border-radius: 14px;
+  padding: 0 14px;
+  background: rgba(255, 255, 255, 0.075);
+  color: rgba(245, 249, 255, 0.9);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.cosmic-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(143, 232, 255, 0.42);
+  background: rgba(117, 160, 255, 0.13);
+  box-shadow: 0 0 26px rgba(93, 180, 255, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.cosmic-button--primary {
+  border-color: rgba(136, 233, 255, 0.48);
+  background:
+    linear-gradient(135deg, rgba(124, 237, 255, 0.98), rgba(159, 128, 255, 0.96));
+  color: #07081b;
+  box-shadow: 0 0 34px rgba(96, 213, 255, 0.28);
+}
+
+.cosmic-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+@media (max-width: 640px) {
+  .cosmic-panel {
+    top: 14px;
+    left: 14px;
+    width: calc(100vw - 28px);
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .cosmic-panel__header h1 {
+    font-size: 22px;
+  }
+}
