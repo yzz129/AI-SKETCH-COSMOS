@@ -218,12 +218,16 @@ function makeDadakidoNebulaMaterial() {
     uniforms: {
       uTime: { value: 0 },
       uReveal: { value: 0 },
-      uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) }
+      uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
+      uBurstGlyph: { value: -1 },
+      uBurstProgress: { value: 0 }
     },
     vertexShader: `
       uniform float uTime;
       uniform float uReveal;
       uniform float uPixelRatio;
+      uniform float uBurstGlyph;
+      uniform float uBurstProgress;
       attribute float aSize;
       attribute float aAlpha;
       attribute float aPhase;
@@ -264,15 +268,30 @@ function makeDadakidoNebulaMaterial() {
         p.x += lateralWave * 0.045;
         p.y += slowWave * 0.038 + sin(uTime * 1.18 + letterPhase) * 0.12;
         p.z += depthBreath * (0.46 + 0.06 * sin(aGlyph * 1.9)) + sin(uTime * 0.62 + aPhase + aAnchor.x * 0.52) * 0.08;
+        float glyphHit = 1.0 - step(0.5, abs(aGlyph - uBurstGlyph));
+        float burst = glyphHit * uBurstProgress;
+        vec3 burstCenter = vec3(aLetterCenter, -0.08, 0.0);
+        vec3 burstDirection = normalize(aAnchor - burstCenter + vec3(
+          sin(aPhase * 2.13 + aGlyph),
+          cos(aPhase * 1.71 + aGlyph * 0.7),
+          sin(aPhase * 1.37 + 2.0)
+        ) * 0.18 + vec3(0.001));
+        float burstNoise = 0.72 + 0.42 * sin(aPhase * 3.4 + uTime * 0.6);
+        p += burstDirection * burst * (1.3 + burstNoise * 0.92);
+        p += vec3(
+          sin(aPhase + uTime * 6.0),
+          cos(aPhase * 0.9 + uTime * 5.2),
+          sin(aPhase * 1.3 + uTime * 4.7)
+        ) * burst * 0.18;
 
         vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mvPosition;
 
         float pulse = 0.82 + 0.1 * sin(uTime * 0.72 + aPhase + aGlyph * 0.43);
         float depthScale = 1.0 + p.z * 0.18 + depthBreath * 0.13;
-        gl_PointSize = aSize * depthScale * pulse * 790.0 * uPixelRatio / max(-mvPosition.z, 0.01);
+        gl_PointSize = aSize * depthScale * pulse * (1.0 + burst * 1.8) * 790.0 * uPixelRatio / max(-mvPosition.z, 0.01);
         vColor = color;
-        vAlpha = aAlpha * pulse * smoothstep(0.0, 1.0, uReveal) * (0.56 + depthScale * 0.08);
+        vAlpha = aAlpha * pulse * smoothstep(0.0, 1.0, uReveal) * (0.56 + depthScale * 0.08) * (1.0 + burst * 0.9);
         vDepth = -mvPosition.z;
       }
     `,
@@ -414,6 +433,7 @@ function createDadakidoNebula(): DadakidoNebulaLayer {
 
 function DadakidoNebula({ reveal }: { reveal: number }) {
   const groupRef = useRef<THREE.Group>(null);
+  const burstRef = useRef({ glyph: -1, startedAt: -100 });
   const layer = useMemo(() => createDadakidoNebula(), []);
   const { width, height } = useThree((s) => s.size);
   const aspect = width / Math.max(height, 1);
@@ -430,7 +450,13 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
 
   useFrame(({ clock }) => {
     const time = clock.elapsedTime;
+    const burstAge = performance.now() * 0.001 - burstRef.current.startedAt;
+    const burstProgress = burstAge < 1.35
+      ? Math.sin(THREE.MathUtils.clamp(burstAge / 1.35, 0, 1) * Math.PI)
+      : 0;
     layer.material.uniforms.uTime.value = time;
+    layer.material.uniforms.uBurstGlyph.value = burstProgress > 0.001 ? burstRef.current.glyph : -1;
+    layer.material.uniforms.uBurstProgress.value = burstProgress;
     layer.material.uniforms.uReveal.value = THREE.MathUtils.lerp(
       layer.material.uniforms.uReveal.value as number,
       reveal,
@@ -447,6 +473,19 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
   return (
     <group ref={groupRef} position={[xOffset, yOffset, -8.85]} scale={[scale, scale, scale]} renderOrder={4}>
       <points geometry={layer.geometry} material={layer.material} renderOrder={4} frustumCulled={false} raycast={() => null} />
+      {GLYPH_CENTERS.map((center, glyph) => (
+        <mesh
+          key={`${GLYPHS[glyph]}-${glyph}`}
+          position={[center, -0.08, 0.06]}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            burstRef.current = { glyph, startedAt: performance.now() * 0.001 };
+          }}
+        >
+          <boxGeometry args={[1.45, 3.25, 1.9]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} depthTest={false} />
+        </mesh>
+      ))}
     </group>
   );
 }

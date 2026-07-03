@@ -6,7 +6,9 @@ import { ForegroundBokehDust } from './ForegroundBokehDust';
 import { ForegroundDust } from './ForegroundDust';
 import { GalaxyBand } from './GalaxyBand';
 import { GradientSky } from './GradientSky';
+import { NebulaLayer } from './NebulaLayer';
 import { NebulaRibbons } from './NebulaRibbons';
+import { OrbitalPlanets } from './OrbitalPlanets';
 import { TwinkleStars } from './TwinkleStars';
 
 export function DeepSpaceBackground() {
@@ -43,7 +45,9 @@ export function DeepSpaceBackground() {
       <DeepStarField />
       <TwinkleStars />
       <GalaxyBand />
+      {loadPhase >= 1 && <NebulaLayer />}
       {loadPhase >= 1 && <DarkNebulaClouds />}
+      {loadPhase >= 2 && <OrbitalPlanets />}
       {loadPhase >= 2 && <NebulaRibbons />}
       {loadPhase >= 3 && <BrightSparkStars />}
       <ForegroundDust />

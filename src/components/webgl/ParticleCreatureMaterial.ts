@@ -13,10 +13,11 @@ export function createParticleCreatureMaterial({ outline = false }: { outline?: 
       uOutline: { value: outline ? 1 : 0 },
       uFlowAmount: { value: outline ? 0.42 : 0.92 },
       uBreathAmount: { value: 0.04 },
-      uDepthAmount: { value: 1.55 },
+      uDepthAmount: { value: 1.35 },
       uInteractionPulse: { value: 0 },
-      uGlow: { value: 0.68 },
-      uEdgeGlow: { value: 0.72 },
+      uBurstProgress: { value: 0 },
+      uGlow: { value: 0.12 },
+      uEdgeGlow: { value: 0.1 },
       uParticleSpread: { value: 0.5 }
     },
     vertexShader: `
@@ -27,6 +28,7 @@ export function createParticleCreatureMaterial({ outline = false }: { outline?: 
       uniform float uBreathAmount;
       uniform float uDepthAmount;
       uniform float uInteractionPulse;
+      uniform float uBurstProgress;
       uniform float uGlow;
       uniform float uEdgeGlow;
       uniform float uParticleSpread;
@@ -39,15 +41,20 @@ export function createParticleCreatureMaterial({ outline = false }: { outline?: 
       attribute float aEdgeFactor;
       attribute float aBrightness;
       attribute float aDepthFactor;
+      attribute vec3 aNormal;
       varying vec3 vColor;
       varying float vAlpha;
       varying float vEdgeFactor;
       varying float vDepthFactor;
+      varying float vVolumeShade;
+      varying float vBrightness;
+      varying float vModelLight;
 
       void main() {
         float flow = sin(uTime * 1.45 + aPhase + aBasePosition.y * 5.2);
         float flow2 = cos(uTime * 1.2 + aPhase + aBasePosition.x * 4.4);
         float depthFlow = sin(uTime * 1.25 + aPhase + aBrightness * 2.4 + aBasePosition.x * 2.0);
+        float slowDepthSwell = sin(uTime * 0.55 + aPhase * 0.7 + aBasePosition.y * 2.4);
         vec2 swirlDirection = normalize(vec2(-aBasePosition.y, aBasePosition.x) + vec2(0.001));
         float swirl = sin(uTime * 1.2 + aPhase + length(aBasePosition.xy) * 6.0);
         float edgeStability = mix(1.0, 0.28, aEdgeFactor);
@@ -55,25 +62,52 @@ export function createParticleCreatureMaterial({ outline = false }: { outline?: 
         vec3 offset = vec3(
           flow * 0.014 + swirlDirection.x * swirl * 0.022 * (1.0 - aEdgeFactor),
           flow2 * 0.013 + swirlDirection.y * swirl * 0.022 * (1.0 - aEdgeFactor),
-          depthFlow * mix(0.026, 0.052, uParticleSpread) * uDepthAmount
+          (depthFlow * mix(0.024, 0.048, uParticleSpread) + slowDepthSwell * 0.01) * uDepthAmount
         ) * aFlowStrength * uFlowAmount * edgeStability * outlineStability;
         float breath = 1.0 + sin(uTime * 0.95 + aPhase * 0.2) * uBreathAmount;
         float morph = sin(uTime * 0.72 + aPhase + aBasePosition.x * 2.0) * uBreathAmount * 0.65;
-        vec3 p = aBasePosition * vec3(breath + morph * (1.0 - aEdgeFactor), breath - morph * 0.55 * (1.0 - aEdgeFactor), 1.0 + morph * 0.9);
+        vec3 p = aBasePosition * vec3(
+          breath + morph * (1.0 - aEdgeFactor),
+          breath - morph * 0.55 * (1.0 - aEdgeFactor),
+          1.12 + morph * 0.72
+        );
 
         p += offset;
-        p += normalize(vec3(aBasePosition.xy, aBasePosition.z * 1.25) + vec3(0.001)) * uParticleSpread * 0.025 * (1.0 - aEdgeFactor);
+        vec3 volumeNormal = normalize(mix(
+          normalize(vec3(aBasePosition.xy * 0.78, aBasePosition.z * 1.45) + vec3(0.001)),
+          normalize(aNormal),
+          0.72
+        ));
+        p += volumeNormal * uParticleSpread * 0.024 * (1.0 - aEdgeFactor);
         vec3 pulseDirection = normalize(vec3(aBasePosition.xy, aBasePosition.z * 1.6) + vec3(0.001));
-        p += pulseDirection * uInteractionPulse * mix(0.012, 0.048, 1.0 - aEdgeFactor);
+        p += pulseDirection * uInteractionPulse * mix(0.006, 0.026, 1.0 - aEdgeFactor);
+        vec3 burstDirection = normalize(mix(pulseDirection, volumeNormal, 0.62) + vec3(
+          sin(aPhase * 2.4),
+          cos(aPhase * 1.9),
+          sin(aPhase * 1.3 + 0.8)
+        ) * 0.12);
+        float burstNoise = 0.72 + 0.5 * sin(aPhase * 4.2 + uTime * 0.8);
+        p += burstDirection * uBurstProgress * mix(0.34, 0.78, 1.0 - aEdgeFactor) * burstNoise;
+        p += vec3(
+          sin(aPhase + uTime * 7.0),
+          cos(aPhase * 0.9 + uTime * 6.2),
+          sin(aPhase * 1.2 + uTime * 5.8)
+        ) * uBurstProgress * 0.035;
 
         vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mvPosition;
 
-        float depthSize = mix(0.92, 1.42, aDepthFactor);
-        gl_PointSize = aSize * depthSize * mix(1.26, 1.36, uOutline) * (1.0 + uInteractionPulse * 0.18) * uPixelRatio;
-        float depthLight = mix(0.82, 1.02, aDepthFactor);
-        vColor = min(color * depthLight * (1.0 + uInteractionPulse * 0.08), vec3(1.0));
-        vAlpha = aAlpha * mix(0.74, 1.0, aDepthFactor) * mix(0.92, 1.02, aEdgeFactor) * (1.0 + uInteractionPulse * 0.08);
+        float depthSize = mix(0.76, 1.24, aDepthFactor);
+        gl_PointSize = aSize * depthSize * mix(1.05, 1.14, uOutline) * (1.0 + uInteractionPulse * 0.08 + uBurstProgress * 1.2) * uPixelRatio;
+        vec3 viewNormal = normalize(normalMatrix * volumeNormal);
+        float sideLight = dot(viewNormal, normalize(vec3(-0.34, 0.46, 0.82))) * 0.5 + 0.5;
+        float fillLight = dot(viewNormal, normalize(vec3(0.38, -0.28, 0.82))) * 0.5 + 0.5;
+        float depthLight = mix(0.48, 1.0, aDepthFactor);
+        vModelLight = clamp(sideLight * 0.82 + fillLight * 0.18, 0.22, 1.0);
+        vVolumeShade = clamp(depthLight * mix(0.68, 1.14, vModelLight) + aEdgeFactor * 0.07, 0.28, 1.08);
+        vBrightness = aBrightness;
+        vColor = min(color * (0.86 + aEdgeFactor * 0.06), vec3(0.94));
+        vAlpha = aAlpha * mix(0.42, 0.76, aDepthFactor) * mix(0.86, 0.98, aEdgeFactor) * (1.0 + uInteractionPulse * 0.04 + uBurstProgress * 0.55);
         vEdgeFactor = aEdgeFactor;
         vDepthFactor = aDepthFactor;
       }
@@ -83,17 +117,31 @@ export function createParticleCreatureMaterial({ outline = false }: { outline?: 
       varying float vAlpha;
       varying float vEdgeFactor;
       varying float vDepthFactor;
+      varying float vVolumeShade;
+      varying float vBrightness;
+      varying float vModelLight;
 
       void main() {
         vec2 p = gl_PointCoord - vec2(0.5);
         float d = length(p);
         if (d > 0.5) discard;
 
-        float core = smoothstep(0.5, mix(0.26, 0.2, vEdgeFactor), d);
-        float feather = smoothstep(0.5, 0.4, d) * mix(0.18, 0.1, vEdgeFactor);
+        vec2 sphereUv = p * 2.0;
+        float sphereZ = sqrt(max(0.0, 1.0 - dot(sphereUv, sphereUv)));
+        vec3 beadNormal = normalize(vec3(sphereUv, sphereZ));
+        float beadLight = dot(beadNormal, normalize(vec3(-0.38, 0.42, 0.82))) * 0.5 + 0.5;
+        float core = smoothstep(0.5, mix(0.29, 0.21, vEdgeFactor), d);
+        float feather = smoothstep(0.5, 0.42, d) * mix(0.055, 0.035, vEdgeFactor);
+        float rim = smoothstep(0.34, 0.5, d) * (0.06 + vEdgeFactor * 0.06);
         float alpha = clamp(core + feather, 0.0, 1.0) * vAlpha;
-        vec3 depthTint = mix(vec3(0.82, 0.84, 0.92), vec3(1.0), vDepthFactor);
-        gl_FragColor = vec4(vColor * depthTint, alpha);
+        float depthBody = mix(0.58, 1.0, vDepthFactor);
+        float beadShade = mix(0.66, 1.1, beadLight);
+        vec3 depthTint = mix(vec3(0.66, 0.7, 0.82), vec3(0.98), vDepthFactor);
+        float modelShade = mix(0.58, 1.12, vModelLight);
+        vec3 shadedColor = vColor * depthTint * vVolumeShade * depthBody * beadShade * modelShade;
+        shadedColor += vColor * rim * (0.1 + vEdgeFactor * 0.08);
+        shadedColor *= mix(0.9, 0.78, smoothstep(0.78, 1.0, vBrightness));
+        gl_FragColor = vec4(min(shadedColor, vec3(0.96)), alpha);
       }
     `
   });

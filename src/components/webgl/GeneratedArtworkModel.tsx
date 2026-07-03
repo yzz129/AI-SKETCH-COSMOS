@@ -169,7 +169,7 @@ function enhanceMaterialForSpace({
     material.emissive.copy(glowColor);
   }
   if ('emissiveIntensity' in material) {
-    material.emissiveIntensity = 0.24;
+    material.emissiveIntensity = 0.14;
   }
   if ('roughness' in material) {
     material.roughness = Math.min(0.86, Math.max(0.48, material.roughness ?? 0.58));
@@ -181,7 +181,7 @@ function enhanceMaterialForSpace({
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = { value: 0 };
     shader.uniforms.uGlowColor = { value: glowColor };
-    shader.uniforms.uFlowStrength = { value: 0.018 };
+    shader.uniforms.uFlowStrength = { value: 0.022 };
     shaderRefs.current.push(shader);
 
     shader.vertexShader = shader.vertexShader
@@ -210,7 +210,8 @@ function enhanceMaterialForSpace({
       .replace(
         '#include <dithering_fragment>',
         `float dreamPulse = 0.5 + 0.5 * sin(uTime * 1.6 + gl_FragCoord.y * 0.015);
-        gl_FragColor.rgb += uGlowColor * dreamPulse * 0.035;
+        gl_FragColor.rgb = mix(gl_FragColor.rgb * 0.9, gl_FragColor.rgb, dreamPulse * 0.28);
+        gl_FragColor.rgb += uGlowColor * dreamPulse * 0.018;
         #include <dithering_fragment>`
       );
   };

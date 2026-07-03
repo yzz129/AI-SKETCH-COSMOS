@@ -24,7 +24,9 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
   const visualRef = useRef<THREE.Group>(null);
   const startTimeRef = useRef<number | null>(null);
   const pulseRef = useRef(0);
+  const burstRef = useRef(0);
   const pulseStartedAtRef = useRef(-100);
+  const burstStartedAtRef = useRef(-100);
   const lastPositionRef = useRef(new THREE.Vector3());
   const smoothedOffsetRef = useRef(new THREE.Vector3());
   const preset = useMemo(
@@ -60,7 +62,7 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
   const planeWidth = artwork.aspect >= 1 ? maxSize : maxSize * artwork.aspect;
   const planeHeight = artwork.aspect >= 1 ? maxSize / artwork.aspect : maxSize;
 
-  useFrame(({ clock, camera }, delta) => {
+  useFrame(({ clock }, delta) => {
     const group = groupRef.current;
     const visual = visualRef.current;
     if (!group) return;
@@ -108,6 +110,10 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
 
     const pulseAge = wallTime - pulseStartedAtRef.current;
     pulseRef.current = pulseAge < 1.15 ? Math.sin((1 - pulseAge / 1.15) * Math.PI) * 0.9 : 0;
+    const burstAge = wallTime - burstStartedAtRef.current;
+    burstRef.current = burstAge < 1.35
+      ? Math.sin(THREE.MathUtils.clamp(burstAge / 1.35, 0, 1) * Math.PI)
+      : 0;
 
     if (visual) {
       const velocity = group.position.clone().sub(lastPositionRef.current);
@@ -124,17 +130,21 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
         -0.12,
         0.12
       );
-      visual.quaternion.copy(camera.quaternion);
-      visual.rotateZ(readableRoll);
+      const trueYaw = Math.sin(time * 0.34 + motion.phase) * 0.34
+        + actionPose.yaw * 0.42
+        + tangent.x * 0.1;
+      const truePitch = Math.sin(time * 0.28 + motion.phase * 0.7) * 0.1
+        + tangent.z * 0.06
+        + Math.sin(time * basePose.waveFrequency + motion.phase) * basePose.waveAmplitude * 0.04;
+      visual.rotation.set(truePitch, trueYaw, readableRoll);
 
       const breath = 1 + Math.sin(time * 1.35 + motion.phase) * 0.045;
-      visual.scale.set(
-        breath * THREE.MathUtils.lerp(1, basePose.scaleX * actionPose.scaleX, 0.35),
-        (1 + Math.cos(time * 0.66 + motion.phase) * 0.014)
-          * THREE.MathUtils.lerp(1, basePose.scaleY * actionPose.scaleY, 0.35),
-        (1.28 + Math.sin(time * 0.62 + motion.phase) * 0.018)
-          * THREE.MathUtils.lerp(1, Math.min(actionPose.scaleZ, 1.03), 0.22)
+      const poseScale = THREE.MathUtils.lerp(
+        1,
+        (basePose.scaleX + basePose.scaleY + actionPose.scaleX + actionPose.scaleY) * 0.25,
+        0.32
       );
+      visual.scale.setScalar(breath * poseScale);
     }
 
     lastPositionRef.current.copy(group.position);
@@ -155,6 +165,7 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
           breathAmount={0.018 + artwork.behaviorSignature.glow * 0.018}
           behaviorSignature={artwork.behaviorSignature}
           interactionPulseRef={pulseRef}
+          burstRef={burstRef}
         />
 
         <CreatureAuraDust
@@ -168,7 +179,9 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
           material={interactionMaterial}
           onPointerDown={(event) => {
             event.stopPropagation();
-            pulseStartedAtRef.current = event.nativeEvent.timeStamp * 0.001;
+            const now = performance.now() * 0.001;
+            pulseStartedAtRef.current = now;
+            burstStartedAtRef.current = now;
           }}
         >
           <sphereGeometry args={[Math.max(planeWidth, planeHeight) * 0.58, 16, 10]} />

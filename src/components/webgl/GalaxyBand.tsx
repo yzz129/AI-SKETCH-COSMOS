@@ -37,12 +37,25 @@ const SPIRALS: SpiralEntry[] = [
 
 function SpiralWrapper({ entry, xScale, yScale }: { entry: SpiralEntry; xScale: number; yScale: number }) {
   const groupRef = useRef<THREE.Group>(null);
+  const basePosition = useRef(new THREE.Vector3(entry.position[0] * xScale, entry.position[1] * yScale, entry.position[2]));
 
   useFrame(({ clock }) => {
     if (groupRef.current) {
       const t = clock.elapsedTime;
       const [ax, ay, az] = entry.rotAxis;
-      groupRef.current.rotation.set(ax * t * entry.rotSpeed, ay * t * entry.rotSpeed, az * t * entry.rotSpeed);
+      const motion = Math.abs(entry.rotSpeed);
+      groupRef.current.rotation.set(
+        entry.rotation[0] * 0.28 + ax * t * entry.rotSpeed * 2.4 + Math.sin(t * 0.22 + entry.scale) * 0.035,
+        entry.rotation[1] * 0.28 + ay * t * entry.rotSpeed * 2.2 + Math.cos(t * 0.18 + entry.radius) * 0.04,
+        entry.rotation[2] * 0.2 + az * t * entry.rotSpeed * 2.8
+      );
+      groupRef.current.position.set(
+        basePosition.current.x + Math.sin(t * (0.11 + motion) + entry.radius) * 0.16,
+        basePosition.current.y + Math.cos(t * (0.09 + motion) + entry.scale) * 0.12,
+        basePosition.current.z + Math.sin(t * (0.07 + motion * 0.5) + entry.opacity) * 0.24
+      );
+      const breathe = 1 + Math.sin(t * 0.24 + entry.scale) * 0.055;
+      groupRef.current.scale.setScalar(breathe);
     }
   });
 

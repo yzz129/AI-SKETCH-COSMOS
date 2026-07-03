@@ -11,6 +11,7 @@ type ParticleCreatureProps = {
   breathAmount?: number;
   behaviorSignature?: CreatureBehaviorSignature;
   interactionPulseRef?: MutableRefObject<number>;
+  burstRef?: MutableRefObject<number>;
 };
 
 function createGeometry(particles: ArtworkParticle[], outlineOnly = false) {
@@ -26,19 +27,27 @@ function createGeometry(particles: ArtworkParticle[], outlineOnly = false) {
   const edgeFactors = new Float32Array(count);
   const brightnesses = new Float32Array(count);
   const depthFactors = new Float32Array(count);
+  const normals = new Float32Array(count * 3);
 
   for (let i = 0; i < count; i += 1) {
     const particle = selected[i];
     const i3 = i * 3;
-    const z = (particle.z ?? 0) * 2.35;
+    const sourceZ = particle.z ?? 0;
+    const z = sourceZ * 2.25;
     const edgeFactor = particle.edgeFactor ?? (particle.isEdge ? 1 : 0);
     const phase = particle.phase ?? Math.sin((particle.x * 17.31 + particle.y * 29.77 + z * 43.13) * 11.7) * Math.PI;
-    const sourceBasePosition = particle.basePosition ?? [particle.x, particle.y, z];
+    const sourceBasePosition = particle.basePosition ?? [particle.x, particle.y, sourceZ];
     const basePosition: [number, number, number] = [
       sourceBasePosition[0],
       sourceBasePosition[1],
-      sourceBasePosition[2] * 2.35
+      sourceBasePosition[2] * 2.25
     ];
+    const fallbackNormal = new THREE.Vector3(
+      basePosition[0] * 0.72,
+      basePosition[1] * 0.82,
+      basePosition[2] * 1.25 + 0.05
+    ).normalize();
+    const sourceNormal = particle.normal ?? fallbackNormal.toArray();
 
     positions[i3] = basePosition[0];
     positions[i3 + 1] = basePosition[1];
@@ -50,14 +59,17 @@ function createGeometry(particles: ArtworkParticle[], outlineOnly = false) {
     colors[i3 + 1] = particle.g / 255;
     colors[i3 + 2] = particle.b / 255;
     sizes[i] = outlineOnly
-      ? Math.min(4.4, (particle.size ?? 2.5) + 0.36)
-      : (particle.size ?? (particle.isEdge ? 3.2 : 2.35)) * 1.34;
-    alphas[i] = outlineOnly ? Math.min(0.58, (particle.alpha ?? 0.9) * 0.5) : Math.min(1, (particle.alpha ?? 0.96) * 1.08);
+      ? Math.min(2.2, (particle.size ?? 1.4) * 0.58 + 0.18)
+      : (particle.size ?? (particle.isEdge ? 1.45 : 1.15)) * 0.72;
+    alphas[i] = outlineOnly ? Math.min(0.34, (particle.alpha ?? 0.9) * 0.28) : Math.min(0.58, (particle.alpha ?? 0.96) * 0.56);
     phases[i] = phase;
     flowStrengths[i] = outlineOnly ? 0.12 : (particle.flowStrength ?? (particle.isEdge ? 0.28 : 0.74)) * 0.88;
     edgeFactors[i] = edgeFactor;
     brightnesses[i] = particle.brightness ?? ((particle.r + particle.g + particle.b) / 765);
-    depthFactors[i] = particle.depthFactor ?? THREE.MathUtils.clamp((basePosition[2] + 0.12) / 0.34, 0, 1);
+    depthFactors[i] = particle.depthFactor ?? THREE.MathUtils.clamp((basePosition[2] + 0.68) / 1.42, 0, 1);
+    normals[i3] = sourceNormal[0];
+    normals[i3 + 1] = sourceNormal[1];
+    normals[i3 + 2] = sourceNormal[2];
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -71,6 +83,7 @@ function createGeometry(particles: ArtworkParticle[], outlineOnly = false) {
   geometry.setAttribute('aEdgeFactor', new THREE.BufferAttribute(edgeFactors, 1));
   geometry.setAttribute('aBrightness', new THREE.BufferAttribute(brightnesses, 1));
   geometry.setAttribute('aDepthFactor', new THREE.BufferAttribute(depthFactors, 1));
+  geometry.setAttribute('aNormal', new THREE.BufferAttribute(normals, 3));
   geometry.computeBoundingSphere();
 
   return geometry;
@@ -81,7 +94,8 @@ export function ParticleCreature({
   flowAmount,
   breathAmount = 0.035,
   behaviorSignature,
-  interactionPulseRef
+  interactionPulseRef,
+  burstRef
 }: ParticleCreatureProps) {
   const bodyMaterialRef = useRef<THREE.ShaderMaterial | null>(null);
   const outlineMaterialRef = useRef<THREE.ShaderMaterial | null>(null);
@@ -105,10 +119,11 @@ export function ParticleCreature({
       bodyMaterialRef.current.uniforms.uFlowAmount.value = flowAmount;
       bodyMaterialRef.current.uniforms.uBreathAmount.value = breathAmount;
       bodyMaterialRef.current.uniforms.uInteractionPulse.value = interactionPulseRef?.current ?? 0;
-      bodyMaterialRef.current.uniforms.uGlow.value = 0.18;
-      bodyMaterialRef.current.uniforms.uEdgeGlow.value = 0.12;
-      bodyMaterialRef.current.uniforms.uParticleSpread.value = Math.max(0.62, behaviorSignature?.particleSpread ?? 0.5);
-      bodyMaterialRef.current.uniforms.uDepthAmount.value = 1.65 + (behaviorSignature?.depth ?? 0.78) * 1.12;
+      bodyMaterialRef.current.uniforms.uBurstProgress.value = burstRef?.current ?? 0;
+      bodyMaterialRef.current.uniforms.uGlow.value = 0.06;
+      bodyMaterialRef.current.uniforms.uEdgeGlow.value = 0.07;
+      bodyMaterialRef.current.uniforms.uParticleSpread.value = Math.max(0.44, behaviorSignature?.particleSpread ?? 0.5);
+      bodyMaterialRef.current.uniforms.uDepthAmount.value = 1.35 + (behaviorSignature?.depth ?? 0.78) * 0.72;
     }
     if (outlineMaterialRef.current) {
       outlineMaterialRef.current.uniforms.uTime.value = clock.elapsedTime;
@@ -116,10 +131,11 @@ export function ParticleCreature({
       outlineMaterialRef.current.uniforms.uFlowAmount.value = flowAmount * 0.18;
       outlineMaterialRef.current.uniforms.uBreathAmount.value = breathAmount * 0.55;
       outlineMaterialRef.current.uniforms.uInteractionPulse.value = (interactionPulseRef?.current ?? 0) * 0.55;
-      outlineMaterialRef.current.uniforms.uGlow.value = 0.12;
-      outlineMaterialRef.current.uniforms.uEdgeGlow.value = 0.1;
-      outlineMaterialRef.current.uniforms.uParticleSpread.value = Math.max(0.56, behaviorSignature?.particleSpread ?? 0.5);
-      outlineMaterialRef.current.uniforms.uDepthAmount.value = 1.28 + (behaviorSignature?.depth ?? 0.78) * 0.78;
+      outlineMaterialRef.current.uniforms.uBurstProgress.value = (burstRef?.current ?? 0) * 0.82;
+      outlineMaterialRef.current.uniforms.uGlow.value = 0.05;
+      outlineMaterialRef.current.uniforms.uEdgeGlow.value = 0.06;
+      outlineMaterialRef.current.uniforms.uParticleSpread.value = Math.max(0.38, behaviorSignature?.particleSpread ?? 0.5);
+      outlineMaterialRef.current.uniforms.uDepthAmount.value = 1.05 + (behaviorSignature?.depth ?? 0.78) * 0.55;
     }
   });
 

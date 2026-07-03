@@ -82,7 +82,8 @@ export function DarkNebulaClouds() {
 
         void main() {
           vec3 p = position;
-          p.xy += vec2(sin(uTime * 0.022 + aPhase), cos(uTime * 0.018 + aPhase)) * 0.04;
+          p.xy += vec2(sin(uTime * 0.052 + aPhase), cos(uTime * 0.046 + aPhase)) * 0.11;
+          p.z += sin(uTime * 0.035 + aPhase) * 0.1;
           vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
           gl_Position = projectionMatrix * mvPosition;
           gl_PointSize = aSize * 620.0 * uPixelRatio / max(-mvPosition.z, 0.01);
@@ -108,7 +109,12 @@ export function DarkNebulaClouds() {
 
   useFrame(({ clock }) => {
     material.uniforms.uTime.value = clock.elapsedTime;
-    if (pointsRef.current) pointsRef.current.rotation.z = Math.sin(clock.elapsedTime * 0.014) * 0.006;
+    if (pointsRef.current) {
+      const time = clock.elapsedTime;
+      pointsRef.current.rotation.z = Math.sin(time * 0.035) * 0.028;
+      pointsRef.current.rotation.x = Math.sin(time * 0.026) * 0.018;
+      pointsRef.current.rotation.y = Math.cos(time * 0.022) * 0.022;
+    }
   });
 
   return <points ref={pointsRef} geometry={geometry} material={material} renderOrder={4} frustumCulled={false} raycast={() => null} />;

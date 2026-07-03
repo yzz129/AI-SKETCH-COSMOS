@@ -1,5 +1,6 @@
 export type ParticleCloudPoint = {
   basePosition: [number, number, number];
+  normal?: [number, number, number];
   x: number;
   y: number;
   z: number;
@@ -67,6 +68,13 @@ function signedSeededJitter(x: number, y: number, channel: number) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function normalizeVector3(x: number, y: number, z: number): [number, number, number] {
+  const length = Math.sqrt(x * x + y * y + z * z);
+  if (length < 0.0001) return [0, 0, 1];
+
+  return [x / length, y / length, z / length];
 }
 
 function createSpanMetrics(data: Uint8ClampedArray, width: number, height: number) {
@@ -193,14 +201,14 @@ export function imageDataToParticleCloud(
 
   const pushPoint = (point: Omit<ParticleCloudPoint, 'x' | 'y' | 'z' | 'depthFactor'>) => {
     const [x, y, z] = point.basePosition;
-    const clampedZ = clamp(z, -0.28, 0.34);
+    const clampedZ = clamp(z, -0.3, 0.36);
     points.push({
       ...point,
       basePosition: [x, y, clampedZ],
       x,
       y,
       z: clampedZ,
-      depthFactor: clamp((clampedZ + 0.28) / 0.62, 0, 1)
+      depthFactor: clamp((clampedZ + 0.3) / 0.66, 0, 1)
     });
   };
 
@@ -235,8 +243,8 @@ export function imageDataToParticleCloud(
         : 1;
       const rowRoundness = Math.sqrt(clamp(1 - rowCenterOffset * rowCenterOffset, 0, 1));
       const columnRoundness = Math.sqrt(clamp(1 - columnCenterOffset * columnCenterOffset, 0, 1));
-      const profileVolume = clamp(rowSpan * 0.68 + columnSpan * 0.2 + rowRoundness * 0.25 + columnRoundness * 0.12, 0.08, 1);
-      const volume = clamp((thickness * 0.82 + centerVolume * 0.28 + rowRoundness * 0.34) * profileVolume, 0.04, 1);
+      const profileVolume = clamp(rowSpan * 0.58 + columnSpan * 0.18 + rowRoundness * 0.26 + columnRoundness * 0.12, 0.08, 1);
+      const volume = clamp((thickness * 0.68 + centerVolume * 0.24 + rowRoundness * 0.26) * profileVolume, 0.04, 0.86);
       const brightBoost = brightness > 0.76 ? 0.12 : 0;
       const pixelX = (x - centerX) * scale;
       const pixelY = -(y - centerY) * scale;
@@ -246,8 +254,8 @@ export function imageDataToParticleCloud(
       const phase = seededJitter(x, y, 5) * Math.PI * 2;
       const flowStrength = edge ? 0.18 : 0.54 + volume * 0.28 + seededJitter(x, y, 6) * 0.16;
       const baseAlpha = Math.min(1, Math.max(edge ? 0.92 : 0.84, a / 255));
-      const shellDepth = (0.06 + volume * 0.36 + rowSpan * 0.06) * (edge ? 0.68 : 1);
-      const layerCount = edge ? 3 : volume > 0.72 ? 5 : volume > 0.38 ? 4 : 3;
+      const shellDepth = (0.055 + volume * 0.34 + rowSpan * 0.055 + columnSpan * 0.03) * (edge ? 1.05 : 1);
+      const layerCount = edge ? 5 : volume > 0.68 ? 5 : volume > 0.34 ? 4 : 3;
 
       for (let layer = 0; layer < layerCount; layer += 1) {
         const layerSeed = seededJitter(x, y, 20 + layer);
@@ -257,24 +265,33 @@ export function imageDataToParticleCloud(
             ? 0
             : -1 + (layer / (layerCount - 1)) * 2 + signedSeededJitter(x, y, 25 + layer) * 0.28;
         const shellAbs = Math.min(1, Math.abs(shell));
-        const crossSectionShrink = 1 - shellAbs * volume * (edge ? 0.18 : 0.48);
-        const sidePush = signedSeededJitter(x, y, 30 + layer) * volume * scale * 0.88;
-        const liftPush = signedSeededJitter(x, y, 34 + layer) * volume * scale * 0.76;
-        const jitterX = signedSeededJitter(x, y, 2 + layer) * scale * (edge ? 0.1 : 0.3);
-        const jitterY = signedSeededJitter(x, y, 7 + layer) * scale * (edge ? 0.1 : 0.3);
+        const crossSectionShrink = 1 - shellAbs * volume * (edge ? 0.22 : 0.34);
+        const sidePush = signedSeededJitter(x, y, 30 + layer) * volume * scale * 0.44;
+        const liftPush = signedSeededJitter(x, y, 34 + layer) * volume * scale * 0.36;
+        const jitterX = signedSeededJitter(x, y, 2 + layer) * scale * (edge ? 0.06 : 0.16);
+        const jitterY = signedSeededJitter(x, y, 7 + layer) * scale * (edge ? 0.06 : 0.16);
         const z = shell * shellDepth
-          + rowRoundness * volume * 0.08
-          + (brightness - 0.5) * 0.055
-          + signedSeededJitter(x, y, 11 + layer) * 0.025;
+          + rowRoundness * volume * 0.055
+          + columnRoundness * volume * 0.022
+          + (brightness - 0.5) * 0.03
+          + signedSeededJitter(x, y, 11 + layer) * 0.02;
         const particleX = rowCenterWorldX + (pixelX - rowCenterWorldX) * crossSectionShrink + sidePush + jitterX;
         const particleY = columnCenterWorldY + (pixelY - columnCenterWorldY) * crossSectionShrink + liftPush + jitterY;
-        const layerAlpha = baseAlpha * (edge ? 0.34 + (1 - shellAbs) * 0.2 : 0.5 + (1 - shellAbs) * 0.28);
+        const layerAlpha = baseAlpha * (edge ? 0.22 + (1 - shellAbs) * 0.15 : 0.22 + (1 - shellAbs) * 0.17);
         const layerSize = edge
-          ? 1.72 + brightBoost * 0.5
-          : 1.62 + volume * 0.46 + (1 - shellAbs) * 0.34 + brightBoost * 0.5;
+          ? 1.1 + brightBoost * 0.18
+          : 1.02 + volume * 0.26 + (1 - shellAbs) * 0.16 + brightBoost * 0.16;
+        const normalFromCenterX = particleX - rowCenterWorldX;
+        const normalFromCenterY = particleY - columnCenterWorldY;
+        const sideNormal = normalizeVector3(
+          normalFromCenterX * (edge ? 1.28 : 0.78),
+          normalFromCenterY * (edge ? 1.18 : 0.82),
+          shell * shellDepth * (edge ? 1.8 : 2.25) + 0.04
+        );
 
         pushPoint({
           basePosition: [particleX, particleY, z],
+          normal: sideNormal,
           r,
           g,
           b,

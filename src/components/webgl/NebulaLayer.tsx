@@ -127,23 +127,23 @@ function createNebulaPoints(spec: NebulaSpec): ParticleCloud {
       void main() {
         vec3 p = position;
         // Orbital swirl for fluid vortex motion
-        float orbitSpeed = 0.05 + aDist * 0.09;
+        float orbitSpeed = 0.1 + aDist * 0.18;
         float orbitAngle = uTime * orbitSpeed + aAngle;
-        float orbitRadius = aDist * 0.14;
+        float orbitRadius = aDist * 0.26;
         p.x += cos(orbitAngle) * orbitRadius;
-        p.y += sin(orbitAngle) * orbitRadius * 0.65;
+        p.y += sin(orbitAngle) * orbitRadius * 0.9;
 
         // Floating drift with 3D depth
-        p.x += sin(uTime * 0.04 + aPhase + p.y * 0.12 + p.z * 0.1) * 0.06;
-        p.y += cos(uTime * 0.038 + aPhase + p.x * 0.1 + p.z * 0.08) * 0.055;
-        p.z += sin(uTime * 0.05 + aPhase) * 0.05;
+        p.x += sin(uTime * 0.095 + aPhase + p.y * 0.16 + p.z * 0.13) * 0.13;
+        p.y += cos(uTime * 0.082 + aPhase + p.x * 0.14 + p.z * 0.12) * 0.115;
+        p.z += sin(uTime * 0.11 + aPhase) * 0.13;
 
         vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mvPosition;
         float depthFactor = 1.0 + (p.z - position.z) * 0.04;
         gl_PointSize = aSize * depthFactor * 620.0 * uPixelRatio / max(-mvPosition.z, 0.01);
         vColor = color;
-        vAlpha = aAlpha * (0.78 + 0.22 * sin(uTime * 0.22 + aPhase));
+        vAlpha = aAlpha * (0.68 + 0.32 * sin(uTime * 0.46 + aPhase));
         vDepth = -mvPosition.z;
       }
     `,
@@ -221,7 +221,8 @@ function createDarkCloudPoints(spec: DarkCloudSpec): ParticleCloud {
 
       void main() {
         vec3 p = position;
-        p.xy += vec2(sin(uTime * 0.025 + aPhase), cos(uTime * 0.02 + aPhase)) * 0.04;
+        p.xy += vec2(sin(uTime * 0.06 + aPhase), cos(uTime * 0.052 + aPhase)) * 0.11;
+        p.z += sin(uTime * 0.04 + aPhase) * 0.08;
         vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mvPosition;
         gl_PointSize = aSize * 600.0 * uPixelRatio / max(-mvPosition.z, 0.01);
@@ -255,7 +256,13 @@ function NebulaCloud({ spec, xScale, yScale }: { spec: NebulaSpec; xScale: numbe
     if (groupRef.current) {
       const t = clock.elapsedTime;
       const [ax, ay, az] = spec.rotAxis;
-      groupRef.current.rotation.set(ax * t * spec.rotSpeed, ay * t * spec.rotSpeed, az * t * spec.rotSpeed);
+      groupRef.current.rotation.set(
+        ax * t * spec.rotSpeed * 2.2 + Math.sin(t * 0.13 + spec.radiusX) * 0.045,
+        ay * t * spec.rotSpeed * 2.0 + Math.cos(t * 0.11 + spec.radiusY) * 0.05,
+        az * t * spec.rotSpeed * 2.45
+      );
+      const breathe = 1 + Math.sin(t * 0.18 + spec.radiusZ) * 0.045;
+      groupRef.current.scale.setScalar(breathe);
     }
   });
 
@@ -280,7 +287,10 @@ function DarkCloud({ spec, xScale, yScale }: { spec: DarkCloudSpec; xScale: numb
   useFrame(({ clock }) => {
     cloud.material.uniforms.uTime.value = clock.elapsedTime;
     if (groupRef.current) {
-      groupRef.current.rotation.z = clock.elapsedTime * spec.rotSpeed;
+      const time = clock.elapsedTime;
+      groupRef.current.rotation.z = time * spec.rotSpeed * 2.15;
+      groupRef.current.rotation.x = Math.sin(time * 0.12 + spec.x) * 0.035;
+      groupRef.current.rotation.y = Math.cos(time * 0.1 + spec.y) * 0.04;
     }
   });
 

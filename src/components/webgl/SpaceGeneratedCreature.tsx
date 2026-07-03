@@ -202,7 +202,7 @@ export function SpaceGeneratedCreature({ artwork, index }: SpaceGeneratedCreatur
             <CosmicBreathingAura colors={colors} motionPreset={features.motionPreset} />
             <SurfaceParticles
               colors={colors}
-              count={Math.max(560, 1350 - index * 120)}
+              count={Math.max(720, 1750 - index * 140)}
               radius={modelParticleRadius(features.motionPreset)}
             />
           </>

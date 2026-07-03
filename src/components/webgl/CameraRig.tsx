@@ -28,9 +28,9 @@ export function CameraRig() {
       noPan
       noZoom
       noRotate={false}
-      rotateSpeed={2.25}
+      rotateSpeed={0.85}
       staticMoving={false}
-      dynamicDampingFactor={0.075}
+      dynamicDampingFactor={0.22}
       target={baseTarget}
     />
   );
