@@ -468,7 +468,212 @@ type Artwork3DModelResult = { modelUrl: string; thumbnailUrl?: string };
 
 ---
 
-## 四、关键数据流
+## 四、后端架构
+
+### 4.1 概述
+
+后端提供两套独立服务：
+
+| 服务 | 技术 | 端口 | 说明 |
+|------|------|------|------|
+| **Vite 中间件**（内置） | Vite Plugin API | 5173 (dev) | AI 画作识别 + 3D 模型生成，无需额外进程 |
+| **TripoSplat Backend**（可选） | FastAPI + TripoSplat | 8000 | 2D 图片 → Gaussian Splat 3D 资产 |
+
+### 4.2 Vite 中间件（AI 服务）
+
+由 `vite.config.ts` 中的两个 Vite Plugin 实现，随 `npm run dev` 自动启动：
+
+#### AI 画作识别插件 (`arkRecognitionPlugin`)
+
+**端点**：
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/artwork-features` | 新版特征识别（结构化 JSON） |
+| POST | `/api/ai-recognize` | 旧版识别（兼容接口） |
+
+**请求体**：`{ "imageDataUrl": "data:image/png;base64,..." }`
+
+**工作流程**：
+1. 接收 base64 图片
+2. 调用火山方舟 Ark API（`POST https://ark.cn-beijing.volces.com/api/v3/responses`）
+3. 模型：`doubao-seed-2-0-lite-260428`
+4. 传递精心设计的 System Prompt，要求输出结构化 JSON
+5. 解析返回的 JSON，提取画作特征
+
+**新版 Prompt 要求输出的字段**：
+```json
+{
+  "subjectCategory": "animal|plant|character|abstract|object",
+  "morphology": {
+    "hasWings", "wingCount", "hasLegs", "legCount",
+    "hasTail", "hasFins", "hasArms", "hasHead",
+    "bodyOrientation", "silhouetteComplexity"
+  },
+  "behaviorTraits": {
+    "locomotionType", "energyLevel", "personalityFeel"
+  },
+  "visualTraits": {
+    "dominantColors", "brightness", "softness", "textureStyle"
+  }
+}
+```
+
+**关键约束**（Prompt 内置）：
+- `wingCount` 只能是 0/1/2/4
+- `legCount` 只能是 0/2/4/6/8
+- 主体不清晰时 `subjectCategory = "abstract"`
+- 不输出物种名称，只描述特征
+- `dominantColors` 必须是 hex 颜色数组
+
+**旧版 Prompt**（`/api/ai-recognize`）：返回 `form.behavior.visual` 结构 + `motionType` + `actionTypes`。
+
+#### Hyper3D 3D 模型生成插件 (`arkHyper3DPlugin`)
+
+**端点**：
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/artwork-3d/tasks` | 创建 3D 生成任务 |
+| GET | `/api/artwork-3d/tasks/:taskId` | 轮询任务状态 |
+| GET | `/api/artwork-3d/model?url=...` | 代理下载生成的模型文件 |
+
+**工作流程**：
+1. POST 创建任务 → 调用 `POST https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks`
+2. 模型：`hyper3d-gen2-260112`
+3. Prompt：`"Generate a textured GLB-style 3D model from this children's drawing..."`（保留画作轮廓、比例、色彩）
+4. 返回 `{ taskId, state, modelUrl }`
+5. 前端定期 GET 轮询 `/api/artwork-3d/tasks/:taskId`
+6. 任务完成后通过 `/api/artwork-3d/model?url=...` 代理下载 `.glb` 文件
+
+**环境变量**：`ARK_API_KEY`（火山方舟 API 密钥），在 `.env.local` 中配置。
+
+---
+
+### 4.3 TripoSplat Backend（可选 Gaussian Splat 服务）
+
+> 仅在有 GPU 环境时启用。前端无此后端也能正常运行。
+
+#### 技术栈
+
+| 组件 | 技术 |
+|------|------|
+| Web 框架 | FastAPI 0.115 |
+| ASGI 服务器 | Uvicorn 0.34 |
+| 图像处理 | Pillow 11.0 |
+| 3D 生成 | TripoSplat（MIT License，VAST-AI 研究院） |
+
+#### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 服务健康检查 |
+| GET | `/health/triposplat` | TripoSplat 配置状态（模型路径、CUDA 可用性） |
+| POST | `/api/artworks` | 提交画作 → 生成 Gaussian Splat 资产 |
+| GET | `/api/jobs/{jobId}` | 查询任务进度和结果 |
+| 静态 | `/assets/{artwork_id}/{file}` | 生成文件的静态访问 |
+
+#### POST `/api/artworks` 详细说明
+
+**请求**（multipart/form-data）：
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `image` | file | (必填) | PNG/JPEG/WebP 源图片 |
+| `numGaussians` | int | 131072 | Gaussian 数量（4096 ~ 262144） |
+| `format` | string | `"both"` | 输出格式：`splat` / `ply` / `both` |
+
+**响应**：
+```json
+{
+  "jobId": "job_abc123...",
+  "artworkId": "artwork_def456...",
+  "status": "queued",
+  "progress": 0,
+  "message": "queued"
+}
+```
+
+#### GET `/api/jobs/{jobId}` 详细说明
+
+**状态流转**：`queued` → `processing` → `ready` / `failed`
+
+**ready 时返回**：
+```json
+{
+  "jobId": "job_abc123...",
+  "artworkId": "artwork_def456...",
+  "status": "ready",
+  "progress": 1,
+  "artwork": {
+    "splatUrl": "/assets/artwork_def456/model.splat",
+    "plyUrl": "/assets/artwork_def456/model.ply",
+    "previewUrl": "/assets/artwork_def456/preprocessed_image.webp",
+    "manifestUrl": "/assets/artwork_def456/manifest.json",
+    "gaussianCount": 131072
+  }
+}
+```
+
+#### 环境变量配置
+
+| 变量 | 说明 | 示例值 |
+|------|------|--------|
+| `TRIPOSPLAT_REPO_ROOT` | TripoSplat 代码仓库路径 | `D:\path\to\TripoSplat` |
+| `TRIPOSPLAT_CKPT_PATH` | 主 checkpoint | `D:\models\triposplat_fp16.safetensors` |
+| `TRIPOSPLAT_DECODER_PATH` | VAE 解码器 | `D:\models\triposplat_vae_decoder_fp16.safetensors` |
+| `TRIPOSPLAT_DINOV3_PATH` | DINOv3 ViT 视觉编码器 | `D:\models\dino_v3_vit_h.safetensors` |
+| `TRIPOSPLAT_FLUX2_VAE_ENCODER_PATH` | Flux2 VAE 编码器 | `D:\models\flux2-vae.safetensors` |
+| `TRIPOSPLAT_RMBG_PATH` | 背景移除模型 | `D:\models\birefnet.safetensors` |
+| `TRIPOSPLAT_DEVICE` | 推理设备 | `cuda` (默认) / `cpu` |
+| `TRIPOSPLAT_STEPS` | 采样步数 | `20` (默认) |
+| `TRIPOSPLAT_SEED` | 随机种子 | `42` (默认) |
+| `TRIPOSPLAT_GUIDANCE_SCALE` | 引导强度 | `3.0` (默认) |
+| `TRIPOSPLAT_SHIFT` | 偏移参数 | `3.0` (默认) |
+| `TRIPOSPLAT_CPU_NUM_GAUSSIANS_CAP` | CPU 模式 Gaussian 上限 | `32768` (默认) |
+| `TRIPOSPLAT_CPU_TIMEOUT_SECONDS` | CPU 子进程超时 | `900` (默认) |
+
+#### 内部架构
+
+```
+POST /api/artworks
+  → main.py: create_artwork_job()
+    → storage.py: create_artwork_dir() → save_upload()
+    → jobs.py: JobRegistry.create()
+      → ThreadPoolExecutor.submit(_run)
+        → triposplat_worker.py: generate_triposplat_assets()
+          → load_pipeline() → TripoSplatPipeline
+          → pipeline.run(source_path, ...)
+          → gaussian.save_splat() / gaussian.save_ply()
+          → write_manifest()
+```
+
+**关键模块**：
+
+| 模块 | 职责 |
+|------|------|
+| `main.py` | FastAPI 应用，路由定义，CORS 中间件，参数校验 |
+| `schemas.py` | Pydantic 数据模型（`JobStatus`, `ArtworkAssets`, `JobResponse`） |
+| `jobs.py` | 任务注册表（`JobRegistry`），单线程池异步执行，内存存储 |
+| `storage.py` | 文件系统操作：创建目录、保存上传、写 manifest、生成 URL |
+| `triposplat_worker.py` | TripoSplat 管线加载与推理，CPU 子进程回退 |
+| `triposplat_cli.py` | CLI 入口，支持独立进程调用 |
+
+**CPU 回退机制**：当 `TRIPOSPLAT_DEVICE=cpu` 时，自动 fork 子进程运行 TripoSplat，避免主进程内存泄漏。Gaussian 数量会被 `CPU_NUM_GAUSSIANS_CAP` 限制。
+
+#### TripoSplat 模型架构
+
+TripoSplat（VAST-AI 研究院，MIT License）将 2D 图片转为 3D Gaussian Splat：
+
+- **DINOv3 ViT-H/16+**：视觉特征编码器
+- **Flux2 VAE Encoder**：潜空间编码
+- **BiRefNet**：背景移除
+- **LatentSeqMMFlowModel**：多模态潜空间序列流模型
+- **OctreeProbabilityFixedlenDecoder**：八叉树概率解码器
+- **ElasticGaussianFixedlenDecoder**：弹性 Gaussian 参数解码器
+- 支持最多 262,144 个 Gaussian，导出 `.splat` / `.ply` 格式
+- 代码 ~2,000 LOC，依赖极简（仅 `numpy`, `safetensors`, `torch`, `pillow`, `tqdm`）
+
+---
+
+## 五、数据流
 
 ### 画作上传 → 3D 展示流程
 ```
@@ -497,7 +702,7 @@ type Artwork3DModelResult = { modelUrl: string; thumbnailUrl?: string };
 
 ---
 
-## 五、性能策略
+## 六、性能策略
 
 | 策略 | 实现 |
 |---|---|
@@ -514,7 +719,7 @@ type Artwork3DModelResult = { modelUrl: string; thumbnailUrl?: string };
 
 ---
 
-## 六、响应式设计系统
+## 七、响应式设计系统
 
 ### CSS 层（所有面板）
 所有 UI 面板尺寸使用 `clamp(MIN, VW_IDEAL, MAX)`：
@@ -540,7 +745,7 @@ scale = clamp(windowWidth / 1440, 0.78, 1.55)
 
 ---
 
-## 七、粒子总数统计
+## 八、粒子总数统计
 
 | 组件 | 粒子数 |
 |---|---|
@@ -556,7 +761,7 @@ scale = clamp(windowWidth / 1440, 0.78, 1.55)
 
 ---
 
-## 八、关键配置参数
+## 九、关键配置参数
 
 ### 摄像机
 ```
