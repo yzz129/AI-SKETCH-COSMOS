@@ -1,5 +1,6 @@
 export type ParticleCloudPoint = {
   basePosition: [number, number, number];
+  focusPosition?: [number, number, number];
   normal?: [number, number, number];
   x: number;
   y: number;
@@ -15,13 +16,14 @@ export type ParticleCloudPoint = {
   brightness: number;
   depthFactor: number;
   isEdge: boolean;
+  isFocusSample?: boolean;
 };
 
 const TARGET_SIZE = 1.45;
 const MIN_ALPHA = 20;
 const MIN_PARTICLES = 7000;
-const MAX_PARTICLES = 30000;
-const DEFAULT_MAX_SAMPLE_SIZE = 360;
+const MAX_PARTICLES = 90000;
+const DEFAULT_MAX_SAMPLE_SIZE = 512;
 const MAX_EDGE_DISTANCE = 16;
 
 function alphaAt(data: Uint8ClampedArray, width: number, height: number, x: number, y: number) {
@@ -29,32 +31,92 @@ function alphaAt(data: Uint8ClampedArray, width: number, height: number, x: numb
   return data[(y * width + x) * 4 + 3];
 }
 
-function isEdgePixel(data: Uint8ClampedArray, width: number, height: number, x: number, y: number) {
-  for (let dy = -1; dy <= 1; dy += 1) {
-    for (let dx = -1; dx <= 1; dx += 1) {
-      if (dx === 0 && dy === 0) continue;
-      if (alphaAt(data, width, height, x + dx, y + dy) < MIN_ALPHA) {
-        return true;
-      }
+/**
+ * BFS distance transform — computes Chebyshev distance from each foreground pixel
+ * to the nearest edge/transparent pixel. Processes every pixel exactly once (O(n))
+ * instead of the spiral-search O(n × r²).
+ *
+ * Map values: 0 = transparent, 1 = edge pixel, 2–17 = interior distance, 255 = unvisited.
+ */
+function computeEdgeMap(data: Uint8ClampedArray, width: number, height: number) {
+  const total = width * height;
+  const map = new Uint8Array(total);
+  const queue = new Int32Array(total);
+  let head = 0;
+  let tail = 0;
+
+  // Single-pass init: mark transparent, enqueue edges, flag interior
+  for (let i = 0; i < total; i += 1) {
+    const a = data[i * 4 + 3];
+    if (a < MIN_ALPHA) {
+      map[i] = 0;
+      continue;
+    }
+    // Fast edge check on the fly
+    const x = i % width;
+    const y = (i / width) | 0;
+    let isEdge = false;
+    if (x === 0 || y === 0 || x >= width - 1 || y >= height - 1) {
+      isEdge = true;
+    } else {
+      // Unrolled 8-neighbor check
+      if (data[(i - width - 1) * 4 + 3] < MIN_ALPHA) isEdge = true;
+      else if (data[(i - width) * 4 + 3] < MIN_ALPHA) isEdge = true;
+      else if (data[(i - width + 1) * 4 + 3] < MIN_ALPHA) isEdge = true;
+      else if (data[(i - 1) * 4 + 3] < MIN_ALPHA) isEdge = true;
+      else if (data[(i + 1) * 4 + 3] < MIN_ALPHA) isEdge = true;
+      else if (data[(i + width - 1) * 4 + 3] < MIN_ALPHA) isEdge = true;
+      else if (data[(i + width) * 4 + 3] < MIN_ALPHA) isEdge = true;
+      else if (data[(i + width + 1) * 4 + 3] < MIN_ALPHA) isEdge = true;
+    }
+    if (isEdge) {
+      map[i] = 1;
+      queue[tail++] = i;
+    } else {
+      map[i] = 255;
     }
   }
 
-  return false;
-}
+  // BFS outward from edges (8-neighbor → Chebyshev distance)
+  const stride = width;
+  while (head < tail) {
+    const idx = queue[head++];
+    const d = map[idx];
+    if (d >= MAX_EDGE_DISTANCE) continue;
 
-function edgeDistance(data: Uint8ClampedArray, width: number, height: number, x: number, y: number) {
-  if (isEdgePixel(data, width, height, x, y)) return 0;
-
-  for (let radius = 2; radius <= MAX_EDGE_DISTANCE; radius += 1) {
-    for (let oy = -radius; oy <= radius; oy += 1) {
-      for (let ox = -radius; ox <= radius; ox += 1) {
-        if (Math.abs(ox) !== radius && Math.abs(oy) !== radius) continue;
-        if (alphaAt(data, width, height, x + ox, y + oy) < MIN_ALPHA) return radius;
-      }
-    }
+    const nd = d + 1;
+    // Top-left
+    let n = idx - stride - 1;
+    if (map[n] === 255) { map[n] = nd; queue[tail++] = n; }
+    // Top
+    n = idx - stride;
+    if (map[n] === 255) { map[n] = nd; queue[tail++] = n; }
+    // Top-right
+    n = idx - stride + 1;
+    if (map[n] === 255) { map[n] = nd; queue[tail++] = n; }
+    // Left
+    n = idx - 1;
+    if (map[n] === 255) { map[n] = nd; queue[tail++] = n; }
+    // Right
+    n = idx + 1;
+    if (map[n] === 255) { map[n] = nd; queue[tail++] = n; }
+    // Bottom-left
+    n = idx + stride - 1;
+    if (map[n] === 255) { map[n] = nd; queue[tail++] = n; }
+    // Bottom
+    n = idx + stride;
+    if (map[n] === 255) { map[n] = nd; queue[tail++] = n; }
+    // Bottom-right
+    n = idx + stride + 1;
+    if (map[n] === 255) { map[n] = nd; queue[tail++] = n; }
   }
 
-  return MAX_EDGE_DISTANCE;
+  // Remaining 255 → deep interior (clamp to MAX_EDGE_DISTANCE + 1)
+  for (let i = 0; i < total; i += 1) {
+    if (map[i] === 255) map[i] = MAX_EDGE_DISTANCE + 1;
+  }
+
+  return map;
 }
 
 function seededJitter(x: number, y: number, channel: number) {
@@ -138,11 +200,13 @@ function createSpanMetrics(data: Uint8ClampedArray, width: number, height: numbe
 function limitParticles(points: ParticleCloudPoint[]) {
   if (points.length <= MAX_PARTICLES) return points;
 
+  const focusSamples = points.filter((point) => point.isFocusSample);
   const edges = points.filter((point) => point.isEdge);
   const fills = points.filter((point) => !point.isEdge);
-  const edgeBudget = Math.min(edges.length, Math.floor(MAX_PARTICLES * 0.32));
-  const fillBudget = MAX_PARTICLES - edgeBudget;
+  const focusBudget = Math.min(focusSamples.length, Math.floor(MAX_PARTICLES * 0.34));
+  const edgeBudget = Math.min(edges.length, Math.floor(MAX_PARTICLES * 0.3));
   const selected: ParticleCloudPoint[] = [];
+  const selectedKeys = new Set<ParticleCloudPoint>();
 
   const stridePick = (items: ParticleCloudPoint[], budget: number) => {
     if (items.length <= budget) return items;
@@ -156,8 +220,17 @@ function limitParticles(points: ParticleCloudPoint[]) {
     return picked;
   };
 
-  selected.push(...stridePick(edges, edgeBudget));
-  selected.push(...stridePick(fills, fillBudget));
+  const pushUnique = (items: ParticleCloudPoint[]) => {
+    for (const item of items) {
+      if (selectedKeys.has(item)) continue;
+      selected.push(item);
+      selectedKeys.add(item);
+    }
+  };
+
+  pushUnique(stridePick(focusSamples, focusBudget));
+  pushUnique(stridePick(edges, edgeBudget));
+  pushUnique(stridePick(fills, Math.max(0, MAX_PARTICLES - selected.length)));
   return selected;
 }
 
@@ -192,12 +265,15 @@ export function imageDataToParticleCloud(
   const sampled = sampleContext.getImageData(0, 0, sampleWidth, sampleHeight);
   const data = sampled.data;
   const validPixelCount = Math.ceil(data.length / 4);
-  const step = validPixelCount > 90000 ? 2 : 1;
+  const step = 1;
   const centerX = sampleWidth / 2;
   const centerY = sampleHeight / 2;
   const scale = TARGET_SIZE / Math.max(sampleWidth, sampleHeight);
   const points: ParticleCloudPoint[] = [];
   const spanMetrics = createSpanMetrics(data, sampleWidth, sampleHeight);
+
+  // Precompute edge distance map (BFS — O(n) instead of per-pixel spiral search O(n×r²))
+  const edgeMap = computeEdgeMap(data, sampleWidth, sampleHeight);
 
   const pushPoint = (point: Omit<ParticleCloudPoint, 'x' | 'y' | 'z' | 'depthFactor'>) => {
     const [x, y, z] = point.basePosition;
@@ -221,10 +297,11 @@ export function imageDataToParticleCloud(
       const r = data[offset];
       const g = data[offset + 1];
       const b = data[offset + 2];
-      const edge = isEdgePixel(data, sampleWidth, sampleHeight, x, y);
-      const distanceToEdge = edgeDistance(data, sampleWidth, sampleHeight, x, y);
+      const edgeDist = edgeMap[y * sampleWidth + x]; // 0=bg, 1=edge, 2+=interior
+      const edge = edgeDist === 1;
+      const distanceToEdge = edge ? 0 : edgeDist;
       const thickness = clamp(distanceToEdge / MAX_EDGE_DISTANCE, 0, 1);
-      const keepChance = edge ? 0.98 : validPixelCount > 70000 ? 0.62 + thickness * 0.2 : 0.78 + thickness * 0.16;
+      const keepChance = edge ? 1 : validPixelCount > 70000 ? 0.9 + thickness * 0.08 : 0.94 + thickness * 0.05;
 
       if (points.length > MIN_PARTICLES && seededJitter(x, y, 1) > keepChance) continue;
 
@@ -256,6 +333,7 @@ export function imageDataToParticleCloud(
       const baseAlpha = Math.min(1, Math.max(edge ? 0.92 : 0.84, a / 255));
       const shellDepth = (0.055 + volume * 0.34 + rowSpan * 0.055 + columnSpan * 0.03) * (edge ? 1.05 : 1);
       const layerCount = edge ? 5 : volume > 0.68 ? 5 : volume > 0.34 ? 4 : 3;
+      const focusLayerIndex = Math.floor(layerCount / 2);
 
       for (let layer = 0; layer < layerCount; layer += 1) {
         const layerSeed = seededJitter(x, y, 20 + layer);
@@ -291,6 +369,7 @@ export function imageDataToParticleCloud(
 
         pushPoint({
           basePosition: [particleX, particleY, z],
+          focusPosition: [pixelX, pixelY, 0],
           normal: sideNormal,
           r,
           g,
@@ -301,7 +380,8 @@ export function imageDataToParticleCloud(
           flowStrength,
           edgeFactor,
           brightness,
-          isEdge: edge
+          isEdge: edge,
+          isFocusSample: layer === focusLayerIndex
         });
       }
     }

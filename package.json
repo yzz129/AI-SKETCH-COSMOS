@@ -12,6 +12,7 @@
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
     "@react-three/postprocessing": "^3.0.4",
+    "@sparkjsdev/spark": "^0.1.10",
     "@vitejs/plugin-react": "^4.3.4",
     "gsap": "^3.15.0",
     "lucide-react": "^0.468.0",

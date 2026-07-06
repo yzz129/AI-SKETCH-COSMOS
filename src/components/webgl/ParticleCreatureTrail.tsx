@@ -1,5 +1,5 @@
 import { useFrame } from '@react-three/fiber';
-import { useMemo, useRef } from 'react';
+import { MutableRefObject, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import type { ArtworkParticle } from '../../utils/artworkImage';
 
@@ -7,9 +7,10 @@ type ParticleCreatureTrailProps = {
   particles: ArtworkParticle[];
   seed: number;
   intensity: number;
+  spotlightFocusRef?: MutableRefObject<number>;
 };
 
-export function ParticleCreatureTrail({ particles, seed, intensity }: ParticleCreatureTrailProps) {
+export function ParticleCreatureTrail({ particles, seed, intensity, spotlightFocusRef }: ParticleCreatureTrailProps) {
   const pointsRef = useRef<THREE.Points>(null);
   const geometry = useMemo(() => {
     const count = Math.round(150 + intensity * 210);
@@ -53,11 +54,13 @@ export function ParticleCreatureTrail({ particles, seed, intensity }: ParticleCr
     blending: THREE.NormalBlending,
     uniforms: {
       uTime: { value: 0 },
-      uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) }
+      uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
+      uFocusAmount: { value: 0 }
     },
     vertexShader: `
       uniform float uTime;
       uniform float uPixelRatio;
+      uniform float uFocusAmount;
       attribute vec3 color;
       attribute float size;
       attribute float phase;
@@ -74,7 +77,7 @@ export function ParticleCreatureTrail({ particles, seed, intensity }: ParticleCr
         gl_Position = projectionMatrix * mvPosition;
         gl_PointSize = size * 118.0 * uPixelRatio * (1.0 / max(-mvPosition.z, 0.01));
         vColor = color;
-        vAlpha = alpha * 0.78;
+        vAlpha = alpha * 0.78 * (1.0 - smoothstep(0.08, 0.86, uFocusAmount));
       }
     `,
     fragmentShader: `
@@ -91,6 +94,8 @@ export function ParticleCreatureTrail({ particles, seed, intensity }: ParticleCr
 
   useFrame(({ clock }) => {
     material.uniforms.uTime.value = clock.elapsedTime;
+    material.uniforms.uFocusAmount.value = spotlightFocusRef?.current ?? 0;
+    material.visible = (spotlightFocusRef?.current ?? 0) < 0.98;
     if (!pointsRef.current) return;
     pointsRef.current.rotation.z = Math.sin(clock.elapsedTime * 0.6 + seed) * 0.04;
   });

@@ -2,22 +2,76 @@ import { TrackballControls } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import { useRef } from 'react';
 import * as THREE from 'three';
+import { useSketchStore } from '../../stores/useSketchStore';
+import { useCreatureBehaviorStore } from '../../utils/creatureBehavior';
+import { CAMERA_ORBIT_TARGET } from './cosmicAnchors';
 
-const baseTarget = new THREE.Vector3(0, 0.05, -6);
+const BASE_TARGET = CAMERA_ORBIT_TARGET.clone();
+
+/** Lerp factor for smooth camera transitions (per-frame, ~60fps). */
+function smoothFactor(speed: number, delta: number) {
+  return 1 - Math.exp(-delta * speed);
+}
 
 export function CameraRig() {
   const controlsRef = useRef<any>(null);
+  const defaultTarget = useRef(BASE_TARGET.clone());
+  const closeUpTarget = useRef(new THREE.Vector3());
+  const closeUpCamera = useRef(new THREE.Vector3(0, 0, 5));
+  const wasInCloseUp = useRef(false);
 
-  useFrame(() => {
+  useFrame(({ camera }, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
+    const spotlight = useSketchStore.getState().spotlight;
+    const isCloseUp =
+      (spotlight.phase === 'fly-in' || spotlight.phase === 'showcase') &&
+      !!spotlight.creatureId;
+
     const time = performance.now() * 0.001;
-    controls.target.set(
-      baseTarget.x + Math.sin(time * 0.036) * 0.08,
-      baseTarget.y + Math.cos(time * 0.031) * 0.055,
-      baseTarget.z + Math.sin(time * 0.025) * 0.12,
+    const baseTarget = new THREE.Vector3(
+      BASE_TARGET.x + Math.sin(time * 0.036) * 0.08,
+      BASE_TARGET.y + Math.cos(time * 0.031) * 0.055,
+      BASE_TARGET.z + Math.sin(time * 0.025) * 0.12,
     );
+
+    // ── Close-up mode: camera flies to the spotlighted creature ──
+    if (isCloseUp) {
+      wasInCloseUp.current = true;
+      const creaturePos =
+        useCreatureBehaviorStore.getState().creaturePositions[spotlight.creatureId!];
+
+      if (creaturePos) {
+        const target = new THREE.Vector3(...creaturePos);
+        const camPos = new THREE.Vector3(
+          target.x,
+          target.y + 0.22,
+          target.z + 0.95,
+        );
+
+        const speed = spotlight.phase === 'fly-in' ? 3.8 : 2.6;
+        const s = smoothFactor(speed, delta);
+        closeUpTarget.current.lerp(target, s);
+        closeUpCamera.current.lerp(camPos, s);
+
+        // Keep controls internal state tracking — prevents jump on return
+        controls.target.copy(closeUpTarget.current);
+        camera.position.copy(closeUpCamera.current);
+        return;
+      }
+    }
+
+    // ── Normal mode: smooth orbit ──
+    // On first frame after close-up, seed the lerp for smooth return
+    if (wasInCloseUp.current) {
+      wasInCloseUp.current = false;
+      defaultTarget.current.copy(closeUpTarget.current);
+    }
+
+    const s = smoothFactor(1.6, delta);
+    defaultTarget.current.lerp(baseTarget, s);
+    controls.target.copy(defaultTarget.current);
     controls.update();
   });
 
@@ -31,7 +85,7 @@ export function CameraRig() {
       rotateSpeed={0.85}
       staticMoving={false}
       dynamicDampingFactor={0.22}
-      target={baseTarget}
+      target={BASE_TARGET}
     />
   );
 }

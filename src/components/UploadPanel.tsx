@@ -1,38 +1,23 @@
 import { ChangeEvent, useRef } from 'react';
-import { analyzeArtworkFeatures } from '../lib/ai/analyzeArtworkFeatures';
+import { submitArtworkFile } from '../lib/artwork/submitArtworkFile';
 import { useArtworkStore } from '../stores/artworkStore';
 import { useSketchStore } from '../stores/useSketchStore';
-import { processArtworkImage } from '../utils/artworkImage';
 
 export function UploadPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
   const artworks = useArtworkStore((state) => state.artworks);
   const latestArtwork = useArtworkStore((state) => state.latestArtwork);
-  const addArtwork = useArtworkStore((state) => state.addArtwork);
   const clearArtworks = useArtworkStore((state) => state.clearArtworks);
   const status = useSketchStore((state) => state.status);
   const message = useSketchStore((state) => state.message);
-  const isIdleMode = useSketchStore((state) => state.isIdleMode);
-  const setProcessing = useSketchStore((state) => state.setProcessing);
   const setError = useSketchStore((state) => state.setError);
-  const setIdleMode = useSketchStore((state) => state.setIdleMode);
 
   const onFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     try {
-      setProcessing('正在去白底、识别行为特征并生成 3D 粒子生命...');
-      const artwork = await processArtworkImage(file);
-      const features = await analyzeArtworkFeatures(file);
-
-      addArtwork(artwork, features);
-      useSketchStore.setState({
-        status: 'ready',
-        message: `${artwork.name} 已进入星河：3D 粒子生命 / ${features.motionPreset}`,
-        isIdleMode: false,
-        lastActivityAt: Date.now()
-      });
+      await submitArtworkFile(file);
     } catch (error) {
       setError(error instanceof Error ? error.message : '作品进入星河失败，请换一张更清晰的图片。');
     } finally {
@@ -63,7 +48,6 @@ export function UploadPanel() {
       <div className="creature-count" aria-label="Creature count">
         <span>{artworks.length}</span>
         <span>{artworks.length === 1 ? 'work in orbit' : 'works in orbit'}</span>
-        {isIdleMode ? <span className="idle-pill">Idle</span> : null}
       </div>
 
       {latestArtwork ? (
@@ -74,7 +58,7 @@ export function UploadPanel() {
           </div>
           <div>
             <dt>Mode</dt>
-            <dd>Image particles</dd>
+            <dd>{latestArtwork.gaussianModel?.status === 'ready' ? 'TripoSplat .splat' : 'Image particles'}</dd>
           </div>
           <div>
             <dt>Motion</dt>
@@ -100,7 +84,7 @@ export function UploadPanel() {
           onChange={onFileChange}
         />
         <button type="button" className="upload-button" onClick={() => inputRef.current?.click()} disabled={status === 'processing'}>
-          {status === 'processing' ? '识别中...' : '发射作品'}
+          {status === 'processing' ? '生成中...' : '发射作品'}
         </button>
         <button type="button" className="ghost-button" onClick={clearArtworks} disabled={status === 'processing'}>
           Clear
@@ -110,9 +94,6 @@ export function UploadPanel() {
       <div className="screen-actions">
         <button type="button" className="ghost-button" onClick={enterFullscreen}>
           Fullscreen
-        </button>
-        <button type="button" className="ghost-button" onClick={() => setIdleMode(!isIdleMode)}>
-          {isIdleMode ? 'Pause Idle' : 'Idle Mode'}
         </button>
       </div>
     </section>

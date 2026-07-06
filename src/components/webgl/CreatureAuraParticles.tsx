@@ -1,5 +1,5 @@
 import { useFrame } from '@react-three/fiber';
-import { useMemo, useRef } from 'react';
+import { MutableRefObject, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import type { ArtworkParticle } from '../../utils/artworkImage';
 import type { CreatureMotionType } from '../../utils/creatureMotion';
@@ -10,9 +10,10 @@ type CreatureAuraParticlesProps = {
   height: number;
   seed: number;
   motionType: CreatureMotionType;
+  spotlightFocusRef?: MutableRefObject<number>;
 };
 
-export function CreatureAuraParticles({ particles, width, height, seed, motionType }: CreatureAuraParticlesProps) {
+export function CreatureAuraParticles({ particles, width, height, seed, motionType, spotlightFocusRef }: CreatureAuraParticlesProps) {
   const pointsRef = useRef<THREE.Points>(null);
   const geometry = useMemo(() => {
     const count = Math.min(58, Math.max(24, Math.floor(particles.length * 0.045)));
@@ -58,11 +59,13 @@ export function CreatureAuraParticles({ particles, width, height, seed, motionTy
     blending: THREE.NormalBlending,
     uniforms: {
       uTime: { value: 0 },
-      uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) }
+      uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
+      uFocusAmount: { value: 0 }
     },
     vertexShader: `
       uniform float uTime;
       uniform float uPixelRatio;
+      uniform float uFocusAmount;
       attribute vec3 color;
       attribute float size;
       attribute float phase;
@@ -80,7 +83,7 @@ export function CreatureAuraParticles({ particles, width, height, seed, motionTy
         gl_Position = projectionMatrix * mvPosition;
         gl_PointSize = size * 76.0 * uPixelRatio * (1.0 / max(-mvPosition.z, 0.01));
         vColor = color;
-        vAlpha = alpha * 0.58;
+        vAlpha = alpha * 0.58 * (1.0 - smoothstep(0.05, 0.72, uFocusAmount));
       }
     `,
     fragmentShader: `
@@ -97,6 +100,8 @@ export function CreatureAuraParticles({ particles, width, height, seed, motionTy
 
   useFrame(({ clock }) => {
     material.uniforms.uTime.value = clock.elapsedTime;
+    material.uniforms.uFocusAmount.value = spotlightFocusRef?.current ?? 0;
+    material.visible = (spotlightFocusRef?.current ?? 0) < 0.96;
     if (!pointsRef.current) return;
     const speed = motionType === 'fly' || motionType === 'swim' ? 0.12 : 0.075;
     pointsRef.current.rotation.z = clock.elapsedTime * speed + Math.sin(clock.elapsedTime * 0.7 + seed) * 0.04;

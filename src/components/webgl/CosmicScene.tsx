@@ -4,6 +4,7 @@ import { Lighting } from './Lighting';
 import { MeteorLayer } from './MeteorLayer';
 import { OrbitArtwork } from './OrbitArtwork';
 import { PointerInteractionField } from './PointerInteractionField';
+import { SpotlightDirector } from './SpotlightDirector';
 import { StarFood } from './StarFood';
 
 export function CosmicScene() {
@@ -16,6 +17,7 @@ export function CosmicScene() {
       <StarFood />
       <MeteorLayer />
       <Lighting />
+      <SpotlightDirector />
       <OrbitArtwork />
     </>
   );

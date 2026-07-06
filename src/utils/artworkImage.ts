@@ -12,7 +12,7 @@ export type ProcessedArtworkImage = {
   particles: ArtworkParticle[];
 };
 
-const MAX_CANVAS_SIZE = 512;
+const MAX_CANVAS_SIZE = 1024;
 const WHITE_THRESHOLD = 242;
 const ALPHA_THRESHOLD = 20;
 const BACKGROUND_PROTECTION_RADIUS = 1;

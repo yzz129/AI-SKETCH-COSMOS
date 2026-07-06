@@ -1,7 +1,13 @@
 import { create } from 'zustand';
 import type { AIArtworkAnalysis } from '../services/aiImageService';
-import type { Artwork3DModelResult, ArtworkFeatureResult, MotionPreset } from '../types/artwork';
+import type {
+  Artwork3DModelResult,
+  ArtworkFeatureResult,
+  ArtworkGaussianModelResult,
+  MotionPreset
+} from '../types/artwork';
 import type { ProcessedArtworkImage } from '../utils/artworkImage';
+import { useSketchStore } from './useSketchStore';
 import {
   createCreatureBehaviorSignature,
   detectCreatureMotionType,
@@ -9,21 +15,22 @@ import {
   type CreatureBehaviorSignature,
   type CreatureMotionType
 } from '../utils/creatureMotion';
+import { persistArtworks as persistArtworksToIDB, loadArtworks as loadArtworksFromIDB, clearPersistedArtworks } from '../utils/storage';
 
 type ArtworkStore = {
   artworks: StoredArtwork[];
   latestArtwork: StoredArtwork | null;
-  addArtwork: (artwork: ProcessedArtworkImage, features?: ArtworkFeatureResult, model3d?: Artwork3DModelResult) => void;
+  addArtwork: (artwork: ProcessedArtworkImage, features?: ArtworkFeatureResult, model3d?: Artwork3DModelResult) => StoredArtwork;
   updateArtworkFeatures: (id: string, features: ArtworkFeatureResult) => void;
   updateArtworkAnalysis: (id: string, analysis: AIArtworkAnalysis) => void;
+  updateArtworkGaussianModel: (id: string, gaussianModel: ArtworkGaussianModelResult) => void;
   clearArtworks: () => void;
 };
 
 export type StoredArtwork = ProcessedArtworkImage & {
-  previewUrl: string;
-  processedImageUrl?: string;
   features: ArtworkFeatureResult;
   model3d?: Artwork3DModelResult;
+  gaussianModel?: ArtworkGaussianModelResult;
   createdAt: number;
   aiAnalysis?: AIArtworkAnalysis;
   motionType: CreatureMotionType;
@@ -139,10 +146,9 @@ function artworkFromFeatures(
 ): StoredArtwork {
   return {
     ...artwork,
-    previewUrl: artwork.url,
-    processedImageUrl: artwork.url,
     features,
     model3d,
+    gaussianModel: 'gaussianModel' in artwork ? (artwork as StoredArtwork).gaussianModel : undefined,
     createdAt: Date.now(),
     aiAnalysis: analysis,
     motionType: motionTypeFromPreset(features.motionPreset),
@@ -168,10 +174,9 @@ function artworkFromAnalysis(artwork: ProcessedArtworkImage, analysis?: AIArtwor
 
   return {
     ...artwork,
-    previewUrl: artwork.url,
-    processedImageUrl: artwork.url,
     features,
     model3d: 'model3d' in artwork ? (artwork as StoredArtwork).model3d : undefined,
+    gaussianModel: 'gaussianModel' in artwork ? (artwork as StoredArtwork).gaussianModel : undefined,
     createdAt: 'createdAt' in artwork ? (artwork as StoredArtwork).createdAt : Date.now(),
     aiAnalysis: analysis,
     motionType: analysis?.motionType ?? detectCreatureMotionType(artwork.name),
@@ -180,17 +185,24 @@ function artworkFromAnalysis(artwork: ProcessedArtworkImage, analysis?: AIArtwor
   };
 }
 
+// Start empty — hydrated asynchronously from IndexedDB after creation
 export const useArtworkStore = create<ArtworkStore>((set) => ({
   artworks: [],
   latestArtwork: null,
-  addArtwork: (artwork, features, model3d) => set((state) => {
+  addArtwork: (artwork, features, model3d) => {
     const storedArtwork = artworkFromFeatures(artwork, features, model3d);
+    set((state) => {
+      const artworks = [storedArtwork, ...state.artworks].slice(0, 6);
+      persistArtworksToIDB(artworks);
+      useSketchStore.getState().beginSpotlight(storedArtwork.id);
 
-    return {
-      artworks: [storedArtwork, ...state.artworks].slice(0, 12),
-      latestArtwork: storedArtwork
-    };
-  }),
+      return {
+        artworks,
+        latestArtwork: storedArtwork
+      };
+    });
+    return storedArtwork;
+  },
   updateArtworkFeatures: (id, features) => set((state) => {
     let updatedLatest = state.latestArtwork;
     const artworks = state.artworks.map((artwork) => {
@@ -199,6 +211,7 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
       if (state.latestArtwork?.id === id) updatedLatest = updated;
       return updated;
     });
+    persistArtworksToIDB(artworks);
 
     return {
       artworks,
@@ -213,14 +226,49 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
       if (state.latestArtwork?.id === id) updatedLatest = updated;
       return updated;
     });
+    persistArtworksToIDB(artworks);
 
     return {
       artworks,
       latestArtwork: updatedLatest
     };
   }),
-  clearArtworks: () => set({
-    artworks: [],
-    latestArtwork: null
-  })
+  updateArtworkGaussianModel: (id, gaussianModel) => set((state) => {
+    let updatedLatest = state.latestArtwork;
+    const artworks = state.artworks.map((artwork) => {
+      if (artwork.id !== id) return artwork;
+      const updated = { ...artwork, gaussianModel };
+      if (state.latestArtwork?.id === id) updatedLatest = updated;
+      return updated;
+    });
+    persistArtworksToIDB(artworks);
+
+    return {
+      artworks,
+      latestArtwork: updatedLatest
+    };
+  }),
+  clearArtworks: () => {
+    clearPersistedArtworks();
+    useSketchStore.getState().endSpotlight();
+    set({
+      artworks: [],
+      latestArtwork: null
+    });
+  }
 }));
+
+// Hydrate from IndexedDB asynchronously
+loadArtworksFromIDB<StoredArtwork>().then((artworks) => {
+  if (artworks.length > 0) {
+    const hydratedArtworks = artworks.slice(0, 6);
+    if (hydratedArtworks.length !== artworks.length) {
+      persistArtworksToIDB(hydratedArtworks);
+    }
+
+    useArtworkStore.setState({
+      artworks: hydratedArtworks,
+      latestArtwork: hydratedArtworks[0]
+    });
+  }
+});

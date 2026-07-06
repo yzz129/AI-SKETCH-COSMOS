@@ -1,7 +1,8 @@
 import { useFrame } from '@react-three/fiber';
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import type { StoredArtwork } from '../../stores/artworkStore';
+import { useSketchStore } from '../../stores/useSketchStore';
 import { crowdAvoidance, nearestFoodAttraction, pointerAvoidance, useCreatureBehaviorStore } from '../../utils/creatureBehavior';
 import {
   createCreatureMotionConfig,
@@ -13,6 +14,13 @@ import {
 import { CreatureAuraDust } from './CreatureAuraDust';
 import { ParticleCreature } from './ParticleCreature';
 import { ParticleCreatureTrail } from './ParticleCreatureTrail';
+import { SplatCreatureModel } from './SplatCreatureModel';
+import {
+  SPOTLIGHT_FLY_IN_DURATION,
+  SPOTLIGHT_RELEASE_DURATION,
+  SPOTLIGHT_SHOWCASE_DURATION
+} from './spotlightConfig';
+import { CREATURE_ORBIT_CENTER, EXHIBITION_CREATURE_ORBIT } from './cosmicAnchors';
 
 type SpaceCreatureProps = {
   artwork: StoredArtwork;
@@ -20,11 +28,14 @@ type SpaceCreatureProps = {
 };
 
 export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
+  const spotlightCreatureId = useSketchStore((state) => state.spotlight.creatureId);
+  const spotlightPhase = useSketchStore((state) => state.spotlight.phase);
   const groupRef = useRef<THREE.Group>(null);
   const visualRef = useRef<THREE.Group>(null);
   const startTimeRef = useRef<number | null>(null);
   const pulseRef = useRef(0);
   const burstRef = useRef(0);
+  const spotlightFocusRef = useRef(0);
   const pulseStartedAtRef = useRef(-100);
   const burstStartedAtRef = useRef(-100);
   const lastPositionRef = useRef(new THREE.Vector3());
@@ -39,28 +50,81 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
   );
   const curve = useMemo(() => {
     const phase = motion.phase;
-    const xBias = Math.cos(phase) * 0.65;
-    const yBias = Math.sin(phase) * 0.36;
+    const orbitCenter = CREATURE_ORBIT_CENTER;
+    const lane = index % 4;
+    const laneScale = 0.92 + lane * 0.08;
+    const verticalLaneScale = 0.96 + (index % 3) * 0.08;
+    const xRadius = (EXHIBITION_CREATURE_ORBIT.radiusX + motion.radiusX * 0.82) * laneScale;
+    const yRadius = (EXHIBITION_CREATURE_ORBIT.radiusY + motion.radiusY * 0.78) * verticalLaneScale;
+    const zRadius = EXHIBITION_CREATURE_ORBIT.radiusZ + motion.radiusZ * 0.72 + lane * 0.28;
+    const xBias = Math.cos(phase) * 0.36;
+    const yBias = Math.sin(phase) * 0.24;
     const points = [
-      new THREE.Vector3(-4.1 + xBias, -0.72 + yBias, -1.48),
-      new THREE.Vector3(-1.55 + Math.sin(phase) * 0.8, 1.02 - yBias, -0.92),
-      new THREE.Vector3(1.05 + Math.cos(phase * 0.7) * 0.9, 0.24 + yBias, 0.42),
-      new THREE.Vector3(3.55 - xBias, -0.56 - yBias, -1.15),
-      new THREE.Vector3(1.55 - Math.sin(phase) * 0.65, -1.16 + yBias, -1.55),
-      new THREE.Vector3(-2.35 + xBias, 0.36 - yBias, -0.35)
-    ];
+      new THREE.Vector3(-xRadius + xBias, -yRadius * 0.2 + yBias, zRadius * 0.92),
+      new THREE.Vector3(-xRadius * 0.7 + Math.sin(phase) * 0.36, yRadius * 0.88 - yBias, zRadius * 0.36),
+      new THREE.Vector3(-xRadius * 0.08 + Math.cos(phase * 0.7) * 0.3, yRadius * 0.5 + yBias, -zRadius * 0.98),
+      new THREE.Vector3(xRadius * 0.72 - xBias, yRadius * 0.86 - yBias, -zRadius * 0.46),
+      new THREE.Vector3(xRadius - xBias, -yRadius * 0.18 - yBias, zRadius * 1.0),
+      new THREE.Vector3(xRadius * 0.42 - Math.sin(phase) * 0.32, -yRadius * 1.02 + yBias, -zRadius * 0.72),
+      new THREE.Vector3(-xRadius * 0.56 + xBias, -yRadius * 0.72 - yBias, -zRadius * 0.18)
+    ].map((point) => point.add(orbitCenter));
+
+    for (const point of points) {
+      point.z += lane * 0.16;
+    }
 
     return new THREE.CatmullRomCurve3(points, true, 'catmullrom', 0.45);
-  }, [motion.phase]);
+  }, [index, motion.phase, motion.radiusX, motion.radiusY, motion.radiusZ]);
+  const orbitProgressOffset = useMemo(() => (
+    (index * 0.61803398875 + motion.phase * 0.031) % 1
+  ), [index, motion.phase]);
   const interactionMaterial = useMemo(() => new THREE.MeshBasicMaterial({
     transparent: true,
     opacity: 0,
     depthWrite: false,
     depthTest: false
   }), []);
+
+  // ── Preview image plane material (visible during spotlight) ──
+  const [previewTexture, setPreviewTexture] = useState<THREE.Texture | null>(null);
+  const [splatReady, setSplatReady] = useState(false);
+  const previewMaterial = useMemo(() => new THREE.MeshBasicMaterial({
+    map: previewTexture,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.DoubleSide,
+    blending: THREE.NormalBlending,
+  }), [previewTexture]);
+
+  useEffect(() => {
+    let disposed = false;
+    const img = new Image();
+    img.onload = () => {
+      if (disposed) return;
+      const tex = new THREE.Texture(img);
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.needsUpdate = true;
+      setPreviewTexture(tex);
+    };
+    img.src = artwork.url;
+    return () => {
+      disposed = true;
+    };
+  }, [artwork.url]);
+
   const maxSize = 0.62;
   const planeWidth = artwork.aspect >= 1 ? maxSize : maxSize * artwork.aspect;
   const planeHeight = artwork.aspect >= 1 ? maxSize / artwork.aspect : maxSize;
+  const spotlightEnabled = spotlightCreatureId === artwork.id && spotlightPhase !== 'idle';
+  const splatUrl = artwork.gaussianModel?.status === 'ready' ? artwork.gaussianModel.splatUrl : undefined;
+
+  useEffect(() => {
+    setSplatReady(false);
+  }, [splatUrl]);
 
   useFrame(({ clock }, delta) => {
     const group = groupRef.current;
@@ -76,7 +140,16 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
 
     const localTime = time - startTimeRef.current;
     const entryProgress = THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(localTime / 1.15, 0, 1), 0, 1);
-    const progress = (time * motion.speed * 0.088 + motion.phase * 0.07) % 1;
+
+    // ── spotlight showcase mode ──
+    const spotlight = useSketchStore.getState().spotlight;
+    const isSpotlight = spotlight.creatureId === artwork.id && spotlight.phase !== 'idle';
+    const spotlightElapsed = isSpotlight ? (Date.now() - spotlight.startedAt) / 1000 : 0;
+    const spotlightYaw = isSpotlight && spotlight.phase === 'showcase'
+      ? Math.sin(time * 0.22 + motion.phase) * 0.06
+      : 0;
+
+    const progress = (time * motion.speed * 0.088 + orbitProgressOffset) % 1;
     const pathPosition = curve.getPointAt(progress);
     const tangent = curve.getTangentAt(progress).normalize();
     const foodOffset = nearestFoodAttraction(pathPosition, wallTime);
@@ -95,18 +168,42 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
     const x = THREE.MathUtils.lerp(motion.entryX, targetPosition.x, entryProgress);
     const y = THREE.MathUtils.lerp(motion.entryY, targetPosition.y, entryProgress);
     const z = THREE.MathUtils.lerp(motion.entryZ, targetPosition.z, entryProgress);
+    const farOrbitZ = CREATURE_ORBIT_CENTER.z - EXHIBITION_CREATURE_ORBIT.radiusZ - 1.1;
+    const nearOrbitZ = CREATURE_ORBIT_CENTER.z + EXHIBITION_CREATURE_ORBIT.radiusZ + 1.25;
     const depthFactor = THREE.MathUtils.mapLinear(
-      THREE.MathUtils.clamp(z, -2.8, 1.2),
-      -2.8,
-      1.2,
-      0.68,
-      1.16
+      THREE.MathUtils.clamp(z, farOrbitZ, nearOrbitZ),
+      farOrbitZ,
+      nearOrbitZ,
+      0.54,
+      1.38
     );
     const entryGlow = 1 + (1 - entryProgress) * 0.2;
+    const normalScale = motion.baseScale * 0.42 * depthFactor * entryGlow;
 
+    // ── Spotlight: creature stays at path position, camera does the close-up ──
     group.position.set(x, y, z);
-    group.scale.setScalar(motion.baseScale * 0.42 * depthFactor * entryGlow);
-    useCreatureBehaviorStore.getState().setCreaturePosition(artwork.id, [x, y, z]);
+
+    if (isSpotlight && (spotlight.phase === 'fly-in' || spotlight.phase === 'showcase')) {
+      const focusProgress = spotlight.phase === 'fly-in'
+        ? 1 - Math.pow(1 - THREE.MathUtils.clamp(spotlightElapsed / SPOTLIGHT_FLY_IN_DURATION, 0, 1), 3)
+        : 1;
+      spotlightFocusRef.current = focusProgress;
+      // Subtle scale boost only — camera provides the close-up
+      group.scale.setScalar(normalScale * (1 + focusProgress * 0.32));
+    } else if (isSpotlight && spotlight.phase === 'release') {
+      const releaseStart = SPOTLIGHT_FLY_IN_DURATION + SPOTLIGHT_SHOWCASE_DURATION;
+      const p = THREE.MathUtils.clamp((spotlightElapsed - releaseStart) / SPOTLIGHT_RELEASE_DURATION, 0, 1);
+      spotlightFocusRef.current = 1 - p;
+      group.scale.setScalar(normalScale * (1 + (1 - p) * 0.32));
+    } else {
+      spotlightFocusRef.current = 0;
+      group.scale.setScalar(normalScale);
+    }
+    useCreatureBehaviorStore.getState().setCreaturePosition(artwork.id, [
+      group.position.x,
+      group.position.y,
+      group.position.z
+    ]);
 
     const pulseAge = wallTime - pulseStartedAtRef.current;
     pulseRef.current = pulseAge < 1.15 ? Math.sin((1 - pulseAge / 1.15) * Math.PI) * 0.9 : 0;
@@ -132,22 +229,33 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
       );
       const trueYaw = Math.sin(time * 0.34 + motion.phase) * 0.34
         + actionPose.yaw * 0.42
-        + tangent.x * 0.1;
+        + tangent.x * 0.1
+        + spotlightYaw;
       const truePitch = Math.sin(time * 0.28 + motion.phase * 0.7) * 0.1
         + tangent.z * 0.06
         + Math.sin(time * basePose.waveFrequency + motion.phase) * basePose.waveAmplitude * 0.04;
-      visual.rotation.set(truePitch, trueYaw, readableRoll);
+      const focusAmount = spotlightFocusRef.current;
+      visual.rotation.set(
+        THREE.MathUtils.lerp(truePitch, 0, focusAmount),
+        THREE.MathUtils.lerp(trueYaw, spotlightYaw, focusAmount),
+        THREE.MathUtils.lerp(readableRoll, 0, focusAmount)
+      );
 
-      const breath = 1 + Math.sin(time * 1.35 + motion.phase) * 0.045;
+      const breathAmount = THREE.MathUtils.lerp(0.045, 0.008, focusAmount);
+      const breath = 1 + Math.sin(time * 1.35 + motion.phase) * breathAmount;
       const poseScale = THREE.MathUtils.lerp(
         1,
         (basePose.scaleX + basePose.scaleY + actionPose.scaleX + actionPose.scaleY) * 0.25,
-        0.32
+        THREE.MathUtils.lerp(0.32, 0.08, focusAmount)
       );
       visual.scale.setScalar(breath * poseScale);
     }
 
     lastPositionRef.current.copy(group.position);
+
+    // ── Preview image plane opacity ──
+    previewMaterial.opacity = spotlightFocusRef.current * 0.72;
+    previewMaterial.needsUpdate = true;
   });
 
   return (
@@ -157,16 +265,34 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
           particles={artwork.particles}
           seed={motion.seed}
           intensity={preset.trailIntensity * 0.42}
+          spotlightFocusRef={spotlightFocusRef}
         />
 
-        <ParticleCreature
-          particles={artwork.particles}
-          flowAmount={preset.flowAmount * 0.62}
-          breathAmount={0.018 + artwork.behaviorSignature.glow * 0.018}
-          behaviorSignature={artwork.behaviorSignature}
-          interactionPulseRef={pulseRef}
-          burstRef={burstRef}
-        />
+        {splatUrl ? (
+          <SplatCreatureModel
+            url={splatUrl}
+            colors={artwork.features.visualTraits.dominantColors}
+            scale={0.58}
+            onReady={() => setSplatReady(true)}
+            onError={(error) => {
+              setSplatReady(false);
+              console.warn('[triposplat] failed to render splat model:', error);
+            }}
+          />
+        ) : null}
+
+        {(!splatUrl || !splatReady) ? (
+          <ParticleCreature
+            particles={artwork.particles}
+            flowAmount={preset.flowAmount * 0.62}
+            breathAmount={0.018 + artwork.behaviorSignature.glow * 0.018}
+            behaviorSignature={artwork.behaviorSignature}
+            interactionPulseRef={pulseRef}
+            burstRef={burstRef}
+            spotlightFocusRef={spotlightFocusRef}
+            spotlightEnabled={spotlightEnabled}
+          />
+        ) : null}
 
         <CreatureAuraDust
           particles={artwork.particles}
@@ -174,7 +300,19 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
           height={planeHeight}
           seed={motion.seed}
           motionType={artwork.motionType}
+          spotlightFocusRef={spotlightFocusRef}
         />
+
+        {/* Preview image plane — shows the original artwork during spotlight */}
+        <mesh
+          material={previewMaterial}
+          renderOrder={3}
+          position={[0, 0, -0.12]}
+          frustumCulled={false}
+        >
+          <planeGeometry args={[planeWidth, planeHeight]} />
+        </mesh>
+
         <mesh
           material={interactionMaterial}
           onPointerDown={(event) => {

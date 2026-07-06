@@ -153,7 +153,9 @@ export function Effects() {
   }, [composer]);
 
   useFrame(({ clock }, delta) => {
-    const collapse = useSketchStore.getState().collapse;
+    const state = useSketchStore.getState();
+    const collapse = state.collapse;
+    const spotlightActive = state.spotlight.phase !== 'idle';
     const now = Date.now();
     const hasReleased = collapse.releasedAt > 0;
     const heldSeconds = collapse.active ? Math.max(0, (now - collapse.startedAt) / 1000) : collapse.holdDuration / 1000;
@@ -170,14 +172,15 @@ export function Effects() {
       delta
     );
 
+    const bloomTarget = spotlightActive ? 0.055 : 0.3 + collapseStrength.current * 0.08;
     composer.bloomPass.strength = THREE.MathUtils.damp(
       composer.bloomPass.strength,
-      bloomReady ? 0.3 + collapseStrength.current * 0.08 : 0,
+      bloomReady ? bloomTarget : 0,
       3,
       delta
     );
-    composer.bloomPass.threshold = 0.55;
-    composer.bloomPass.radius = 0.4 + collapseStrength.current * 0.06;
+    composer.bloomPass.threshold = spotlightActive ? 0.82 : 0.55;
+    composer.bloomPass.radius = spotlightActive ? 0.12 : 0.4 + collapseStrength.current * 0.06;
     composer.collapsePass.uniforms.uTime.value = clock.elapsedTime;
     composer.collapsePass.uniforms.uCollapse.value = collapseStrength.current;
     composer.collapsePass.uniforms.uCenter.value.set(collapse.center[0], collapse.center[1]);
@@ -185,6 +188,7 @@ export function Effects() {
       ? (clock.elapsedTime * 0.36) % 1
       : THREE.MathUtils.clamp(releasedSeconds / Math.max(releaseDuration, 0.001), 0, 1);
     composer.cinematicPass.uniforms.uTime.value = clock.elapsedTime;
+    composer.cinematicPass.uniforms.uNoise.value = spotlightActive ? 0.006 : 0.015;
     composer.effectComposer.render(delta);
   }, 1);
 

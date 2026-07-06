@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { SampledParticleShape, SampledPoint } from '../utils/imageSampling';
+import { loadSketchCreatures, persistSketchCreatures } from '../utils/storage';
 
 export type Creature = {
   id: string;
@@ -23,23 +24,31 @@ export type CollapseState = {
   holdDuration: number;
 };
 
+export type SpotlightPhase = 'fly-in' | 'showcase' | 'release' | 'idle';
+
+export type SpotlightState = {
+  creatureId: string | null;
+  startedAt: number;
+  phase: SpotlightPhase;
+};
+
 type SketchStore = {
   creatures: Creature[];
   latestCreature: Creature | null;
   status: 'idle' | 'processing' | 'ready' | 'error';
   message: string;
-  isIdleMode: boolean;
-  lastActivityAt: number;
   collapse: CollapseState;
+  spotlight: SpotlightState;
   setProcessing: (message: string) => void;
   addCreatureFromShape: (shape: SampledParticleShape) => void;
   setError: (message: string) => void;
   clearCreatures: () => void;
-  setIdleMode: (enabled: boolean) => void;
-  touchActivity: () => void;
   beginCollapse: (center: [number, number]) => void;
   updateCollapseCenter: (center: [number, number]) => void;
   endCollapse: () => void;
+  beginSpotlight: (creatureId: string) => void;
+  advanceSpotlight: (phase: SpotlightPhase) => void;
+  endSpotlight: () => void;
 };
 
 const depths = [-0.72, -0.36, 0.05, 0.42, 0.78];
@@ -72,13 +81,15 @@ function createCreature(shape: SampledParticleShape, index: number): Creature {
   };
 }
 
+const initialCreatures = loadSketchCreatures<Creature>();
+
 export const useSketchStore = create<SketchStore>((set, get) => ({
-  creatures: [],
-  latestCreature: null,
-  status: 'idle',
-  message: '上传画作，让 AI 识别结构与行为，再把它变成 3D 星光粒子生命。',
-  isIdleMode: true,
-  lastActivityAt: Date.now(),
+  creatures: initialCreatures,
+  latestCreature: initialCreatures.length > 0 ? initialCreatures[initialCreatures.length - 1] : null,
+  status: initialCreatures.length > 0 ? 'idle' as const : 'idle' as const,
+  message: initialCreatures.length > 0
+    ? `${initialCreatures.length} 个粒子生命正在星河中游荡。`
+    : '上传画作，本地提取结构与主色，再把它变成 3D 星光粒子生命。',
   collapse: {
     active: false,
     center: [0.5, 0.5],
@@ -86,44 +97,45 @@ export const useSketchStore = create<SketchStore>((set, get) => ({
     releasedAt: 0,
     holdDuration: 0
   },
+  spotlight: {
+    creatureId: null,
+    startedAt: 0,
+    phase: 'idle'
+  },
   setProcessing: (message) => set({
     status: 'processing',
-    message,
-    isIdleMode: false,
-    lastActivityAt: Date.now()
+    message
   }),
   addCreatureFromShape: (shape) => {
     const currentCreatures = get().creatures;
     const creature = createCreature(shape, currentCreatures.length);
+    const creatures = [...currentCreatures, creature].slice(-12);
+    persistSketchCreatures(creatures);
     set({
-      creatures: [...currentCreatures, creature].slice(-12),
+      creatures,
       latestCreature: creature,
       status: 'ready',
       message: `${shape.name} 已进入星河。`,
-      isIdleMode: false,
-      lastActivityAt: Date.now()
+      spotlight: {
+        creatureId: creature.id,
+        startedAt: Date.now(),
+        phase: 'fly-in'
+      }
     });
   },
   setError: (message) => set({
     status: 'error',
-    message,
-    isIdleMode: false,
-    lastActivityAt: Date.now()
+    message
   }),
-  clearCreatures: () => set({
-    creatures: [],
-    latestCreature: null,
-    status: 'idle',
-    message: '星河已清空，沉浸星空正在待命。',
-    isIdleMode: true,
-    lastActivityAt: Date.now()
-  }),
-  setIdleMode: (enabled) => set({
-    isIdleMode: enabled,
-    message: enabled ? '沉浸模式正在展示星尘流动。' : '沉浸模式已暂停，可以继续上传画作。',
-    lastActivityAt: Date.now()
-  }),
-  touchActivity: () => set({ lastActivityAt: Date.now(), isIdleMode: false }),
+  clearCreatures: () => {
+    persistSketchCreatures([]);
+    set({
+      creatures: [],
+      latestCreature: null,
+      status: 'idle',
+      message: '星河已清空，沉浸星空正在待命。'
+    });
+  },
   beginCollapse: (center) => set({
     collapse: {
       active: true,
@@ -131,9 +143,7 @@ export const useSketchStore = create<SketchStore>((set, get) => ({
       startedAt: Date.now(),
       releasedAt: 0,
       holdDuration: 0
-    },
-    lastActivityAt: Date.now(),
-    isIdleMode: false
+    }
   }),
   updateCollapseCenter: (center) => set((state) => ({
     collapse: {
@@ -153,5 +163,22 @@ export const useSketchStore = create<SketchStore>((set, get) => ({
         holdDuration: Math.max(0, now - state.collapse.startedAt)
       }
     };
+  }),
+  beginSpotlight: (creatureId) => set({
+    spotlight: {
+      creatureId,
+      startedAt: Date.now(),
+      phase: 'fly-in'
+    }
+  }),
+  advanceSpotlight: (phase) => set((state) => ({
+    spotlight: { ...state.spotlight, phase }
+  })),
+  endSpotlight: () => set({
+    spotlight: {
+      creatureId: null,
+      startedAt: 0,
+      phase: 'idle'
+    }
   })
 }));

@@ -28,6 +28,7 @@ const COMPLEXITIES = ['simple', 'medium', 'complex'] as const;
 const BRIGHTNESS_LEVELS = ['low', 'medium', 'high'] as const;
 const SOFTNESS_LEVELS = ['soft', 'normal', 'sharp'] as const;
 const TEXTURE_STYLES = ['handdrawn', 'watercolor', 'crayon', 'flat', 'mixed'] as const;
+const REMOTE_FEATURE_RECOGNITION_ENABLED = false;
 
 const CHINESE_LOCOMOTION_MAP: Record<string, LocomotionType> = {
   飞行: 'flying',
@@ -215,11 +216,15 @@ export async function analyzeArtworkFeatures(file: File): Promise<ArtworkFeature
   const colors = await extractDominantColorsFromImage(file);
   let base: FeatureBase;
 
-  try {
-    const rawFeatures = await callVisionFeatureApi(file);
-    base = normalizeFeatureResult(rawFeatures, colors);
-  } catch (error) {
-    console.warn('AI feature recognition unavailable, using neutral visual fallback.', error);
+  if (REMOTE_FEATURE_RECOGNITION_ENABLED) {
+    try {
+      const rawFeatures = await callVisionFeatureApi(file);
+      base = normalizeFeatureResult(rawFeatures, colors);
+    } catch (error) {
+      console.warn('AI feature recognition unavailable, using neutral visual fallback.', error);
+      base = createNeutralFeatureResult(colors);
+    }
+  } else {
     base = createNeutralFeatureResult(colors);
   }
 

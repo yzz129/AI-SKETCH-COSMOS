@@ -1,6 +1,7 @@
 import { useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { DADAKIDO_WORLD_POSITION } from './cosmicAnchors';
 
 type DadakidoNebulaLayer = {
   geometry: THREE.BufferGeometry;
@@ -434,21 +435,31 @@ function createDadakidoNebula(): DadakidoNebulaLayer {
 function DadakidoNebula({ reveal }: { reveal: number }) {
   const groupRef = useRef<THREE.Group>(null);
   const burstRef = useRef({ glyph: -1, startedAt: -100 });
-  const layer = useMemo(() => createDadakidoNebula(), []);
+  const [layer, setLayer] = useState<DadakidoNebulaLayer | null>(null);
   const { width, height } = useThree((s) => s.size);
   const aspect = width / Math.max(height, 1);
   const scale = Math.max(0.3, Math.min(0.4, aspect / 1.32));
   const xOffset = 0;
   const yOffset = 0;
 
+  // Defer heavy geometry (70K particles) to avoid blocking first paint
+  useEffect(() => {
+    const id = requestIdleCallback(
+      () => setLayer(createDadakidoNebula()),
+      { timeout: 3000 }
+    );
+    return () => cancelIdleCallback(id);
+  }, []);
+
   useEffect(() => {
     return () => {
-      layer.geometry.dispose();
-      layer.material.dispose();
+      layer?.geometry.dispose();
+      layer?.material.dispose();
     };
   }, [layer]);
 
   useFrame(({ clock }) => {
+    if (!layer) return;
     const time = clock.elapsedTime;
     const burstAge = performance.now() * 0.001 - burstRef.current.startedAt;
     const burstProgress = burstAge < 1.35
@@ -470,8 +481,19 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
     }
   });
 
+  if (!layer) return null;
+
   return (
-    <group ref={groupRef} position={[xOffset, yOffset, -8.85]} scale={[scale, scale, scale]} renderOrder={4}>
+    <group
+      ref={groupRef}
+      position={[
+        DADAKIDO_WORLD_POSITION[0] + xOffset,
+        DADAKIDO_WORLD_POSITION[1] + yOffset,
+        DADAKIDO_WORLD_POSITION[2]
+      ]}
+      scale={[scale, scale, scale]}
+      renderOrder={4}
+    >
       <points geometry={layer.geometry} material={layer.material} renderOrder={4} frustumCulled={false} raycast={() => null} />
       {GLYPH_CENTERS.map((center, glyph) => (
         <mesh

@@ -7,22 +7,9 @@ import { Effects } from './Effects';
 import { Scene } from './Scene';
 
 export function WebGLCanvas() {
-  const lastActivityAt = useSketchStore((state) => state.lastActivityAt);
-  const setIdleMode = useSketchStore((state) => state.setIdleMode);
-  const touchActivity = useSketchStore((state) => state.touchActivity);
   const beginCollapse = useSketchStore((state) => state.beginCollapse);
   const updateCollapseCenter = useSketchStore((state) => state.updateCollapseCenter);
   const endCollapse = useSketchStore((state) => state.endCollapse);
-
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      if (Date.now() - lastActivityAt > 90_000) {
-        setIdleMode(true);
-      }
-    }, 10_000);
-
-    return () => window.clearInterval(interval);
-  }, [lastActivityAt, setIdleMode]);
 
   useEffect(() => {
     window.addEventListener('pointerup', endCollapse);
@@ -57,7 +44,6 @@ export function WebGLCanvas() {
     }
 
     event.currentTarget.setPointerCapture(event.pointerId);
-    touchActivity();
     beginCollapse(pointToCollapseCenter(event));
   };
 

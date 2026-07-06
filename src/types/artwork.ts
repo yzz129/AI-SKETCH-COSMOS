@@ -68,6 +68,28 @@ export type Artwork3DModelResult = {
   createdAt: number;
 };
 
+export type ArtworkGaussianModelStatus =
+  | 'queued'
+  | 'processing'
+  | 'ready'
+  | 'failed';
+
+export type ArtworkGaussianModelResult = {
+  jobId: string;
+  sourceArtworkId?: string;
+  source: 'triposplat';
+  status: ArtworkGaussianModelStatus;
+  format: 'splat' | 'ply' | 'both';
+  splatUrl?: string;
+  plyUrl?: string;
+  previewUrl?: string;
+  manifestUrl?: string;
+  gaussianCount: number;
+  progress?: number;
+  message?: string;
+  createdAt: number;
+};
+
 export type Artwork3DTaskState =
   | 'queued'
   | 'running'

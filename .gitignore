@@ -3,3 +3,10 @@ dist
 .DS_Store
 *.log
 .env.local
+backend/.env
+backend/.venv/
+backend/ckpts/
+backend/outputs/
+__pycache__/
+*.pyc
+*.egg-info/
