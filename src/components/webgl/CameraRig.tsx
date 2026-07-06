@@ -53,8 +53,8 @@ export function CameraRig() {
         const target = new THREE.Vector3(...creaturePos).add(new THREE.Vector3(0, 0.08, 0));
         const camPos = new THREE.Vector3(
           target.x,
-          target.y + 0.18,
-          target.z + 1.25,
+          target.y + 0.35,
+          target.z + 2.5,
         );
 
         const speed = spotlight.phase === 'fly-in' ? 2.25 : 2.0;

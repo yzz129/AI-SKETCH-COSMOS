@@ -12,10 +12,12 @@
 
 - **🖼️ AI 画作识别** — 上传 PNG/JPEG/WebP 图片，通过火山方舟 Ark API 分析形态、色彩与行为倾向
 - **✨ 3D 粒子生命** — 画作被采样为数万个彩色粒子，在三维空间中重组为可动生物
-- **🌠 宇宙场景** — 深空背景、星系旋臂、星云带、流星层、闪烁星辰等多层视觉效果
-- **🎯 智能运动** — 根据 AI 分析结果自动匹配运动模式（飞翔/游动/跳跃/漂浮/奔跑/行走）
-- **🖱️ 交互控制** — 鼠标/触摸拖拽旋转视角，粒子生命会响应指针靠近
-- **😴 空闲模式** — 90 秒无操作后自动进入舒缓的自动漫游状态
+- **🌠 宇宙场景** — 深空背景、星系旋臂、星云带、流星层、闪烁星辰、Kepler 轨道行星等多层视觉效果
+- **🪐 轨道行星** — 4 颗粒子行星绕中心 dadakido 做开普勒轨道运动（内快外慢），带 billboard 光环和卫星
+- **🎯 智能运动** — AI 分析结果匹配运动模式（飞翔/游动/跳跃/漂浮/奔跑/行走），生物与行星共享 Kepler 物理轨道
+- **🖱️ 交互控制** — 鼠标/触摸拖拽旋转视角，粒子生命响应指针靠近，点击投喂星食
+- **📐 全响应式** — UI 面板和 3D 场景自动适应任意屏幕尺寸（375px 手机 ~ 4K 大屏），粒子密度随窗口大小动态缩放
+- **✨ 触摸拖尾** — 鼠标/触屏划过产生彩色 3D 粒子拖尾光效
 - **🖥️ 全屏展示** — 支持全屏模式，适合大屏展览
 
 ## 🛠️ 技术栈
@@ -77,24 +79,27 @@ npm run preview
 src/
 ├── components/
 │   ├── webgl/          # WebGL/Three.js 场景组件
-│   │   ├── CosmicScene.tsx        # 主场景组合
-│   │   ├── ParticleCreature.tsx   # 粒子生命核心
+│   │   ├── CosmicScene.tsx        # 主场景（含 ResponsiveCamera FOV 自适应）
+│   │   ├── OrbitalPlanets.tsx     # Kepler 轨道行星（开普勒物理 + billboard 光环）
+│   │   ├── SpaceCreature.tsx      # 粒子生命核心（Kepler 轨道运动）
+│   │   ├── ParticleCreature.tsx   # 粒子生命渲染器
+│   │   ├── CameraRig.tsx          # 摄像机控制（特写/轨道）
 │   │   ├── GalaxySpiral.tsx       # 星系旋臂
-│   │   ├── NebulaRibbons.tsx      # 星云带
+│   │   ├── NebulaRibbons.tsx      # dadakido 文字星云
 │   │   ├── MeteorLayer.tsx        # 流星层
 │   │   ├── DeepStarField.tsx      # 深空星场
 │   │   ├── OrbitArtwork.tsx       # 轨道画作展示
 │   │   └── ...                    # 更多场景元素
 │   ├── space/          # 早期空间场景组件
-│   └── ui/             # UI 面板组件
+│   └── ui/             # UI 面板组件（TouchTrailCanvas 拖尾等）
 ├── lib/
 │   ├── ai/             # AI 分析逻辑
 │   ├── image/          # 图像处理（去底、颜色提取）
 │   └── motion/         # 运动预设解析
 ├── services/           # API 服务层
 ├── stores/             # Zustand 状态管理
-├── utils/              # 工具函数（粒子采样、行为推断等）
-├── hooks/              # 自定义 Hooks
+├── utils/              # 工具函数（粒子采样、行为推断、Kepler 轨道等）
+├── hooks/              # 自定义 Hooks（useResponsiveScale 等）
 └── types/              # TypeScript 类型定义
 ```
 
