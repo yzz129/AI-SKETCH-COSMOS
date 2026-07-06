@@ -1,0 +1,235 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #03010d;
+  color: #fff;
+  font-synthesis: none;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: 0;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  min-width: 320px;
+}
+
+.display-shell,
+.webgl-stage {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.display-shell {
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(circle at 52% 18%, rgba(122, 86, 255, 0.2), transparent 34%),
+    radial-gradient(circle at 18% 72%, rgba(38, 217, 255, 0.13), transparent 28%),
+    linear-gradient(180deg, #03010d 0%, #09051d 48%, #010108 100%);
+}
+
+.webgl-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  isolation: isolate;
+}
+
+.webgl-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 52%, transparent 0, transparent 36%, rgba(0, 0, 0, 0.38) 100%),
+    linear-gradient(115deg, rgba(183, 96, 255, 0.06), transparent 32%, rgba(81, 218, 255, 0.05) 68%, transparent);
+  mix-blend-mode: screen;
+}
+
+.webgl-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+.touch-trail-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
+/* ================================================================== */
+/*  Upload panel — fully responsive (1440 px = 1× reference)           */
+/* ================================================================== */
+
+.upload-panel {
+  position: absolute;
+  top:    clamp(12px, 1.67vw, 28px);
+  left:   clamp(12px, 1.67vw, 28px);
+  z-index: 2;
+  width:  clamp(280px, 25vw, 540px);
+  padding: clamp(12px, 1.25vw, 22px);
+  border: 1px solid rgba(174, 148, 255, 0.26);
+  border-radius: clamp(6px, 0.56vw, 10px);
+  background: rgba(5, 4, 18, 0.74);
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.34), 0 0 36px rgba(107, 87, 255, 0.1);
+  backdrop-filter: blur(16px);
+}
+
+.upload-kicker,
+.upload-status,
+.upload-meta,
+.upload-panel h1 {
+  margin: 0;
+}
+
+.upload-kicker {
+  color: #b9a6ff;
+  font-size: clamp(10px, 0.83vw, 14px);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.upload-panel h1 {
+  margin-top: clamp(4px, 0.42vw, 8px);
+  font-size: clamp(17px, 1.53vw, 28px);
+  line-height: 1.1;
+}
+
+.upload-status {
+  margin-top: clamp(6px, 0.56vw, 10px);
+  color: rgba(239, 234, 255, 0.78);
+  font-size: clamp(11px, 0.90vw, 15px);
+  line-height: 1.45;
+}
+
+.upload-meta {
+  display: grid;
+  gap: clamp(6px, 0.56vw, 10px);
+  margin-top: clamp(10px, 0.97vw, 18px);
+  padding-top: clamp(10px, 0.97vw, 18px);
+  border-top: 1px solid rgba(174, 148, 255, 0.18);
+}
+
+.creature-count {
+  display: flex;
+  align-items: center;
+  gap: clamp(6px, 0.56vw, 10px);
+  margin-top: clamp(10px, 0.97vw, 16px);
+  color: rgba(239, 234, 255, 0.82);
+  font-size: clamp(11px, 0.90vw, 15px);
+}
+
+.creature-count span:first-child {
+  display: inline-grid;
+  min-width:  clamp(28px, 2.36vw, 42px);
+  height:      clamp(28px, 2.36vw, 42px);
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(139, 112, 255, 0.18);
+  color: #c5b7ff;
+  font-size: clamp(15px, 1.25vw, 22px);
+  font-weight: 800;
+}
+
+.idle-pill {
+  margin-left: auto;
+  border: 1px solid rgba(185, 166, 255, 0.28);
+  border-radius: 999px;
+  padding: clamp(3px, 0.28vw, 5px) clamp(7px, 0.63vw, 12px);
+  color: #c8b8ff;
+  font-size: clamp(9px, 0.76vw, 13px);
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.upload-meta div {
+  display: grid;
+  grid-template-columns: clamp(58px, 5vw, 84px) minmax(0, 1fr);
+  gap: clamp(8px, 0.69vw, 12px);
+}
+
+.upload-meta dt {
+  color: rgba(205, 196, 240, 0.66);
+  font-size: clamp(10px, 0.83vw, 14px);
+}
+
+.upload-meta dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: clamp(10px, 0.83vw, 14px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-actions {
+  display: flex;
+  gap: clamp(6px, 0.69vw, 12px);
+  margin-top: clamp(12px, 1.11vw, 20px);
+}
+
+.screen-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(6px, 0.69vw, 12px);
+  margin-top: clamp(6px, 0.69vw, 12px);
+}
+
+.upload-input {
+  display: none;
+}
+
+.upload-button,
+.ghost-button {
+  min-height: clamp(32px, 2.64vw, 48px);
+  border: 0;
+  border-radius: clamp(4px, 0.42vw, 8px);
+  padding: 0 clamp(10px, 0.97vw, 18px);
+  font: inherit;
+  font-size: clamp(11px, 0.90vw, 15px);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.upload-button {
+  flex: 1;
+  background: #b9a6ff;
+  color: #09051d;
+}
+
+.ghost-button {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.upload-button:disabled,
+.ghost-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

@@ -1,0 +1,9 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pillow==11.0.0
+python-dotenv==1.2.2
+
+# Install TripoSplat and its model/runtime dependencies separately in the GPU
+# environment. Keep this file light so the API shell can be started before the
+# heavy inference stack is provisioned.
