@@ -22,6 +22,46 @@
   backdrop-filter: blur(22px) saturate(1.28);
 }
 
+.cosmic-panel__hide,
+.cosmic-panel-toggle {
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(162, 202, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(245, 249, 255, 0.9);
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 22px rgba(93, 180, 255, 0.12);
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.cosmic-panel__hide:hover,
+.cosmic-panel-toggle:hover {
+  transform: translateY(-1px);
+  border-color: rgba(143, 232, 255, 0.48);
+  background: rgba(117, 160, 255, 0.16);
+  box-shadow: 0 0 26px rgba(93, 180, 255, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.cosmic-panel__hide {
+  position: absolute;
+  top: clamp(10px, 0.9vw, 16px);
+  right: clamp(10px, 0.9vw, 16px);
+  width: clamp(34px, 2.36vw, 42px);
+  height: clamp(34px, 2.36vw, 42px);
+  border-radius: 50%;
+}
+
+.cosmic-panel-toggle {
+  position: fixed;
+  top: clamp(14px, 2.22vw, 42px);
+  left: clamp(14px, 2.22vw, 42px);
+  z-index: 20;
+  width: clamp(42px, 3.33vw, 56px);
+  height: clamp(42px, 3.33vw, 56px);
+  border-radius: 50%;
+  backdrop-filter: blur(18px) saturate(1.2);
+}
+
 .cosmic-panel__header h1,
 .cosmic-panel__header p,
 .cosmic-panel__status,

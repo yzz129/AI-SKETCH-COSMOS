@@ -69,6 +69,8 @@ def triposplat_config_status() -> dict:
         "device": device,
         "settings": {
             "steps": int(os.getenv("TRIPOSPLAT_STEPS", "20")),
+            "guidanceScale": float(os.getenv("TRIPOSPLAT_GUIDANCE_SCALE", "1.0")),
+            "shift": float(os.getenv("TRIPOSPLAT_SHIFT", "3.0")),
             "cpuDtype": os.getenv("TRIPOSPLAT_CPU_DTYPE", "float32"),
             "cpuNumGaussiansCap": int(os.getenv("TRIPOSPLAT_CPU_NUM_GAUSSIANS_CAP", "32768")),
             "cpuSubprocess": os.getenv("TRIPOSPLAT_CPU_SUBPROCESS", "true").lower() == "true",
@@ -186,7 +188,7 @@ def generate_triposplat_assets(
         str(source_path),
         seed=int(os.getenv("TRIPOSPLAT_SEED", "42")),
         steps=int(os.getenv("TRIPOSPLAT_STEPS", "20")),
-        guidance_scale=float(os.getenv("TRIPOSPLAT_GUIDANCE_SCALE", "3.0")),
+        guidance_scale=float(os.getenv("TRIPOSPLAT_GUIDANCE_SCALE", "1.0")),
         shift=float(os.getenv("TRIPOSPLAT_SHIFT", "3.0")),
         num_gaussians=effective_num_gaussians,
         show_progress=True,

@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from threading import Condition, Lock
 
 from .schemas import ArtworkAssets, JobResponse, JobStatus
 from .triposplat_worker import generate_triposplat_assets
@@ -26,6 +26,7 @@ class JobRegistry:
     def __init__(self):
         self._jobs: dict[str, GenerationJob] = {}
         self._lock = Lock()
+        self._condition = Condition(self._lock)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="triposplat")
 
     def create(
@@ -46,8 +47,9 @@ class JobRegistry:
             num_gaussians=num_gaussians,
             export_format=export_format,
         )
-        with self._lock:
+        with self._condition:
             self._jobs[job_id] = job
+            self._condition.notify_all()
         self._executor.submit(self._run, job_id)
         return job
 
@@ -55,11 +57,37 @@ class JobRegistry:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def wait_for_change(
+        self,
+        job_id: str,
+        *,
+        last_status: JobStatus | None = None,
+        last_progress: float | None = None,
+        timeout_seconds: float = 0,
+    ) -> GenerationJob | None:
+        def changed() -> bool:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return True
+            if job.status in {JobStatus.ready, JobStatus.failed}:
+                return True
+            if last_status is not None and job.status != last_status:
+                return True
+            if last_progress is not None and job.progress != last_progress:
+                return True
+            return last_status is None and last_progress is None
+
+        with self._condition:
+            if timeout_seconds > 0:
+                self._condition.wait_for(changed, timeout=timeout_seconds)
+            return self._jobs.get(job_id)
+
     def _update(self, job_id: str, **updates):
-        with self._lock:
+        with self._condition:
             job = self._jobs[job_id]
             for key, value in updates.items():
                 setattr(job, key, value)
+            self._condition.notify_all()
 
     def _run(self, job_id: str):
         job = self.get(job_id)

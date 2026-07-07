@@ -63,7 +63,7 @@ export async function submitArtworkFile(file: File) {
     const featuresPromise = analyzeArtworkFeatures(file);
     const gaussianModel = await generateGaussianArtworkModel({
       file,
-      format: 'both',
+      format: 'splat',
       onProgress: (result) => {
         useSketchStore.setState({
           status: 'processing',

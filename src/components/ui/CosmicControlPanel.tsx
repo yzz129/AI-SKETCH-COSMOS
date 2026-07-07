@@ -1,4 +1,5 @@
-import { ChangeEvent, useRef } from 'react';
+import { ChangeEvent, useRef, useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import { submitArtworkFile } from '../../lib/artwork/submitArtworkFile';
 import { useArtworkStore } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
@@ -9,6 +10,7 @@ function renderModeLabel(hasSplat: boolean) {
 
 export function CosmicControlPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [isHidden, setIsHidden] = useState(false);
   const artworks = useArtworkStore((state) => state.artworks);
   const latestArtwork = useArtworkStore((state) => state.latestArtwork);
   const clearArtworks = useArtworkStore((state) => state.clearArtworks);
@@ -51,9 +53,33 @@ export function CosmicControlPanel() {
 
   const hasSplat = latestArtwork?.gaussianModel?.status === 'ready' && Boolean(latestArtwork.gaussianModel.splatUrl);
 
+  if (isHidden) {
+    return (
+      <button
+        type="button"
+        className="cosmic-panel-toggle"
+        aria-label="显示控制面板"
+        title="显示控制面板"
+        onClick={() => setIsHidden(false)}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <Eye size={18} strokeWidth={2.2} aria-hidden="true" />
+      </button>
+    );
+  }
+
   return (
     <section className="cosmic-panel" aria-label="星河画境控制面板" onPointerDown={(event) => event.stopPropagation()}>
       <div className="cosmic-panel__header">
+        <button
+          type="button"
+          className="cosmic-panel__hide"
+          aria-label="隐藏控制面板"
+          title="隐藏控制面板"
+          onClick={() => setIsHidden(true)}
+        >
+          <EyeOff size={18} strokeWidth={2.2} aria-hidden="true" />
+        </button>
         <h1>星河画境</h1>
         <p>上传画纸，后端生成 .splat 模型后进入星河；失败时自动回退为本地 3D 星光粒子生命。</p>
       </div>

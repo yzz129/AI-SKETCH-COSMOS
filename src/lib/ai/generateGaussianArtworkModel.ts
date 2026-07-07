@@ -27,7 +27,8 @@ type GenerateGaussianArtworkModelInput = {
 };
 
 const DEFAULT_GAUSSIAN_COUNT = 65_536;
-const POLL_INTERVAL_MS = 1_000;
+const LONG_POLL_WAIT_MS = 15_000;
+const LEGACY_POLL_INTERVAL_MS = 1_000;
 const MAX_WAIT_MS = 10 * 60_000;
 
 function envBoolean(value: unknown) {
@@ -42,14 +43,14 @@ export function isTripoSplatGenerationEnabled() {
   return envBoolean(import.meta.env.VITE_TRIPOSPLAT_ENABLED) && triposplatApiBase().length > 0;
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
 function absoluteAssetUrl(baseUrl: string, url?: string) {
   if (!url) return undefined;
   if (/^https?:\/\//i.test(url) || url.startsWith('blob:') || url.startsWith('data:')) return url;
   return `${baseUrl}${url.startsWith('/') ? '' : '/'}${url}`;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 async function readJson(response: Response): Promise<TripoSplatJobPayload> {
@@ -99,7 +100,7 @@ function toResult({
 export async function generateGaussianArtworkModel({
   file,
   gaussianCount = DEFAULT_GAUSSIAN_COUNT,
-  format = 'both',
+  format = 'splat',
   onProgress
 }: GenerateGaussianArtworkModelInput): Promise<ArtworkGaussianModelResult> {
   const baseUrl = triposplatApiBase();
@@ -137,11 +138,20 @@ export async function generateGaussianArtworkModel({
   }
 
   const startedAt = Date.now();
+  let lastResult = queued;
 
   while (Date.now() - startedAt < MAX_WAIT_MS) {
-    await sleep(POLL_INTERVAL_MS);
+    const params = new URLSearchParams({
+      waitMs: String(LONG_POLL_WAIT_MS),
+      lastStatus: lastResult.status
+    });
+    if (typeof lastResult.progress === 'number') {
+      params.set('lastProgress', String(lastResult.progress));
+    }
 
-    const pollResponse = await fetch(`${baseUrl}/api/jobs/${encodeURIComponent(created.jobId)}`);
+    const previousResult = lastResult;
+    const pollStartedAt = Date.now();
+    const pollResponse = await fetch(`${baseUrl}/api/jobs/${encodeURIComponent(created.jobId)}?${params}`);
     const polled = await readJson(pollResponse);
 
     if (!pollResponse.ok) {
@@ -164,6 +174,15 @@ export async function generateGaussianArtworkModel({
 
     if (result.status === 'failed') {
       throw new Error(polled.error ?? result.message ?? 'TripoSplat generation failed.');
+    }
+
+    const didNotLongPoll = Date.now() - pollStartedAt < 500
+      && result.status === previousResult.status
+      && result.progress === previousResult.progress;
+    lastResult = result;
+
+    if (didNotLongPoll) {
+      await sleep(LEGACY_POLL_INTERVAL_MS);
     }
   }
 

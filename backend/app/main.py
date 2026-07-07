@@ -1,11 +1,11 @@
 import uuid
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .jobs import job_to_response, jobs
-from .schemas import JobResponse
+from .schemas import JobResponse, JobStatus
 from .storage import create_artwork_dir, ensure_output_root, save_upload
 from .triposplat_worker import triposplat_config_status
 
@@ -37,7 +37,7 @@ def triposplat_health():
 async def create_artwork_job(
     image: UploadFile = File(...),
     numGaussians: int = Form(131_072),
-    format: str = Form("both"),
+    format: str = Form("splat"),
 ):
     triposplat_status = triposplat_config_status()
     if not triposplat_status["ready"]:
@@ -64,8 +64,18 @@ async def create_artwork_job(
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobResponse)
-def get_job(job_id: str):
-    job = jobs.get(job_id)
+def get_job(
+    job_id: str,
+    waitMs: int = Query(0, ge=0, le=30_000),
+    lastStatus: JobStatus | None = None,
+    lastProgress: float | None = None,
+):
+    job = jobs.wait_for_change(
+        job_id,
+        last_status=lastStatus,
+        last_progress=lastProgress,
+        timeout_seconds=waitMs / 1000,
+    ) if waitMs > 0 else jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     return job_to_response(job)
