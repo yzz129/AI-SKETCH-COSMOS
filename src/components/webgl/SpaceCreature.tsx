@@ -320,15 +320,18 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
     () => createCreatureMotionConfig(index, artwork.motionType, artwork.behaviorSignature),
     [artwork.behaviorSignature, artwork.motionType, index]
   );
-  /* ---- Kepler orbit params (same physics as OrbitalPlanets) ---- */
+  /* ---- Spherical shell motion around dadakido ---- */
   const orbitParams = useMemo(() => {
     const baseRadii = [4.2, 5.8, 7.6, 9.5, 11.0, 13.0];
     const orbitRadius = baseRadii[index % baseRadii.length];
-    // Kepler's 3rd law: ω ∝ r^(−3/2)
+    // Keep farther shells slower while letting each creature drift across latitude.
     const orbitSpeed = 0.36 * Math.pow(orbitRadius / 4.2, -1.5);
-    const inclination = (index % 3 - 1) * 0.22;
     const phaseOffset = index * 0.61803398875 + motion.phase * 0.031;
-    return { orbitRadius, orbitSpeed, inclination, phaseOffset };
+    const latitudeSpeed = orbitSpeed * (0.72 + (index % 5) * 0.09);
+    const latitudePhase = motion.phase * 0.17 + index * 1.173;
+    const latitudeAmplitude = 0.72 + (index % 4) * 0.08;
+    const radiusBreath = 0.018 + (index % 3) * 0.006;
+    return { orbitRadius, orbitSpeed, phaseOffset, latitudeSpeed, latitudePhase, latitudeAmplitude, radiusBreath };
   }, [index, motion.phase]);
   const interactionMaterial = useMemo(() => new THREE.MeshBasicMaterial({
     transparent: true,
@@ -421,23 +424,27 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
       ? Math.sin(time * 0.22 + motion.phase) * 0.06
       : 0;
 
-    /* ---- Kepler orbit around dadakido (same physics as planets) ---- */
-    const orbitAngle = time * orbitParams.orbitSpeed + orbitParams.phaseOffset;
-    const cosA = Math.cos(orbitAngle);
-    const sinA = Math.sin(orbitAngle);
-    const cosInc = Math.cos(orbitParams.inclination);
-    const sinInc = Math.sin(orbitParams.inclination);
-    const orbitX = cosInc * cosA * orbitParams.orbitRadius;
-    const orbitY = sinInc * cosA * orbitParams.orbitRadius
-      + Math.sin(time * 0.45 + motion.phase) * 0.15;
-    const orbitZ = cosInc * sinA * orbitParams.orbitRadius;
+    /* ---- Spherical shell motion around dadakido ---- */
+    const azimuth = time * orbitParams.orbitSpeed + orbitParams.phaseOffset;
+    const latitudeWave = time * orbitParams.latitudeSpeed + orbitParams.latitudePhase;
+    const latitude = Math.sin(latitudeWave) * orbitParams.latitudeAmplitude;
+    const radius = orbitParams.orbitRadius * (1 + Math.sin(time * 0.12 + motion.phase) * orbitParams.radiusBreath);
+    const cosLat = Math.cos(latitude);
+    const sinLat = Math.sin(latitude);
+    const cosAz = Math.cos(azimuth);
+    const sinAz = Math.sin(azimuth);
+    const horizontalRadius = radius * cosLat;
+    const orbitX = cosAz * horizontalRadius;
+    const orbitY = sinLat * radius;
+    const orbitZ = sinAz * horizontalRadius;
     const pathPosition = CREATURE_ORBIT_CENTER.clone()
       .add(new THREE.Vector3(orbitX, orbitY, orbitZ));
     // tangent for roll calculation
+    const latitudeVelocity = Math.cos(latitudeWave) * orbitParams.latitudeSpeed * orbitParams.latitudeAmplitude;
     const tangent = new THREE.Vector3(
-      -sinA * cosInc * orbitParams.orbitRadius,
-      cosA * sinInc * orbitParams.orbitRadius - Math.sin(time * 0.45 + motion.phase + 1.57) * 0.15 * 0.45,
-      cosA * cosInc * orbitParams.orbitRadius
+      -radius * cosLat * sinAz * orbitParams.orbitSpeed - radius * sinLat * cosAz * latitudeVelocity,
+      radius * cosLat * latitudeVelocity,
+      radius * cosLat * cosAz * orbitParams.orbitSpeed - radius * sinLat * sinAz * latitudeVelocity
     ).normalize();
     const foodOffset = nearestFoodAttraction(pathPosition, wallTime);
     const avoidOffset = pointerAvoidance(pathPosition).add(crowdAvoidance(artwork.id, pathPosition));

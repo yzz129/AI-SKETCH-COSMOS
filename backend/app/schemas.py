@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Any
 from pydantic import BaseModel
 
 
@@ -25,3 +26,32 @@ class JobResponse(BaseModel):
     message: str | None = None
     artwork: ArtworkAssets | None = None
     error: str | None = None
+
+
+class ArtworkMetadataUpdate(BaseModel):
+    name: str | None = None
+    width: int | None = None
+    height: int | None = None
+    aspect: float | None = None
+    features: dict[str, Any] | None = None
+    gaussianModel: dict[str, Any] | None = None
+
+
+class PersistedArtwork(BaseModel):
+    id: str
+    name: str | None = None
+    sourceUrl: str | None = None
+    previewUrl: str | None = None
+    splatUrl: str | None = None
+    plyUrl: str | None = None
+    manifestUrl: str | None = None
+    gaussianCount: int | None = None
+    width: int | None = None
+    height: int | None = None
+    aspect: float | None = None
+    features: dict[str, Any] | None = None
+    gaussianModel: dict[str, Any] | None = None
+    isDeleted: bool = False
+    deletedAt: str | None = None
+    createdAt: str
+    updatedAt: str

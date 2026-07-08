@@ -1,6 +1,7 @@
 import { useFrame } from '@react-three/fiber';
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { isFlyingPreset, isPlantPreset, isSwimmingPreset } from '../../lib/motion/motionPresetGroups';
 import type { StoredArtwork } from '../../stores/artworkStore';
 import type { MotionPreset } from '../../types/artwork';
 import { crowdAvoidance, nearestFoodAttraction, pointerAvoidance, useCreatureBehaviorStore } from '../../utils/creatureBehavior';
@@ -72,9 +73,9 @@ const AURA_FRAGMENT_SHADER = `
 `;
 
 function modelParticleRadius(motionPreset: MotionPreset) {
-  if (motionPreset === 'plantSway') return 0.72;
-  if (motionPreset === 'butterflyFloat') return 0.95;
-  if (motionPreset === 'fishSwim') return 0.82;
+  if (isPlantPreset(motionPreset)) return 0.72;
+  if (motionPreset === 'butterflyFloat' || motionPreset === 'insectHover') return 0.95;
+  if (isSwimmingPreset(motionPreset)) return 0.82;
   return 0.88;
 }
 
@@ -157,12 +158,15 @@ export function SpaceGeneratedCreature({ artwork, index }: SpaceGeneratedCreatur
         1 + Math.sin(t * 1.42 + phase) * 0.045
       );
 
-      if (features.motionPreset === 'plantSway') {
+      if (isPlantPreset(features.motionPreset)) {
         body.rotation.z = Math.sin(t * 0.72 + phase) * 0.16;
-      } else if (features.motionPreset === 'fishSwim') {
+      } else if (isSwimmingPreset(features.motionPreset)) {
         body.rotation.y = Math.sin(t * 1.18 + phase) * 0.22;
-      } else if (features.motionPreset === 'wingedFly' || features.motionPreset === 'butterflyFloat') {
+      } else if (isFlyingPreset(features.motionPreset)) {
         body.rotation.x = Math.sin(t * 1.05 + phase) * 0.08;
+      } else if (features.motionPreset === 'snakeSlither' || features.motionPreset === 'spiderCrawl') {
+        body.rotation.y = Math.sin(t * 1.35 + phase) * 0.16;
+        body.rotation.z = Math.sin(t * 1.8 + phase) * 0.1;
       } else {
         body.rotation.x = Math.sin(t * 0.68 + phase) * 0.06;
       }
@@ -209,7 +213,7 @@ function GeneratedModelTrail({
   motionPreset: MotionPreset;
 }) {
   const { geometry, material } = useMemo(() => {
-    const count = motionPreset === 'plantSway' ? 120 : 240;
+    const count = isPlantPreset(motionPreset) ? 120 : 240;
     const positions = new Float32Array(count * 3);
     const particleColors = new Float32Array(count * 3);
     const phases = new Float32Array(count);
@@ -224,7 +228,7 @@ function GeneratedModelTrail({
       const side = Math.sin(seed * 3.1 + i * 12.9898) * 0.24;
       const rise = Math.cos(seed * 2.7 + i * 8.271) * 0.18;
 
-      positions[i3] = -0.18 - depth * (motionPreset === 'fishSwim' ? 0.92 : 1.12);
+      positions[i3] = -0.18 - depth * (isSwimmingPreset(motionPreset) ? 0.92 : 1.12);
       positions[i3 + 1] = side * (0.28 + depth * 0.76);
       positions[i3 + 2] = rise * (0.22 + depth * 0.68);
 
@@ -285,10 +289,12 @@ function CosmicBreathingAura({
     side: THREE.BackSide
   }), [colors]);
 
-  const baseScale = motionPreset === 'butterflyFloat'
+  const baseScale = motionPreset === 'butterflyFloat' || motionPreset === 'insectHover'
     ? [0.88, 0.78, 0.7]
-    : motionPreset === 'fishSwim'
+    : isSwimmingPreset(motionPreset)
       ? [0.82, 0.62, 0.58]
+      : isPlantPreset(motionPreset)
+        ? [0.72, 0.86, 0.7]
       : [0.78, 0.72, 0.7];
 
   useFrame(({ clock }) => {

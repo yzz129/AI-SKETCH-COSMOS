@@ -8,6 +8,7 @@ import { useSketchStore } from '../../stores/useSketchStore';
 import type { ArtworkFeatureResult, ArtworkGaussianModelResult } from '../../types/artwork';
 import { processArtworkImage } from '../../utils/artworkImage';
 import type { ProcessedArtworkImage } from '../../utils/artworkImage';
+import { updateBackendArtworkMetadata } from './backendArtworkLibrary';
 
 function localReadyMessage(artwork: ProcessedArtworkImage, features: ArtworkFeatureResult) {
   return `${artwork.name} 已进入星河：3D 粒子生命 / ${features.motionPreset}`;
@@ -74,6 +75,7 @@ export async function submitArtworkFile(file: File) {
 
     const [artwork, features] = await Promise.all([artworkPromise, featuresPromise]);
     useArtworkStore.getState().addArtwork(artwork, features, undefined, gaussianModel);
+    void updateBackendArtworkMetadata(artwork, features, gaussianModel);
     useSketchStore.setState({
       status: 'ready',
       message: splatReadyMessage(artwork, features)

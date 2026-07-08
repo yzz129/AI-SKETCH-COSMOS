@@ -55,7 +55,7 @@ export type AIArtworkAnalysis = {
 
 const DEFAULT_ACTIONS: CreatureActionType[] = ['drift', 'hover', 'shimmer', 'breathe'];
 const ACTION_SET = new Set<CreatureActionType>(CREATURE_ACTION_TYPES);
-const MOTION_TYPES = new Set<CreatureMotionType>(['fly', 'hop', 'swim', 'run', 'walk', 'float']);
+const MOTION_TYPES = new Set<CreatureMotionType>(['fly', 'hop', 'swim', 'run', 'walk', 'crawl', 'float']);
 
 function clamp01(value: unknown, fallback: number) {
   if (typeof value !== 'number' || Number.isNaN(value)) return fallback;

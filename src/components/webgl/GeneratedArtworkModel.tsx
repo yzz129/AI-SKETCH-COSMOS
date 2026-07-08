@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, type MutableRefObject } from 'react';
 import * as THREE from 'three';
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { isFlyingPreset, isPlantPreset, isSwimmingPreset } from '../../lib/motion/motionPresetGroups';
 import type { MotionPreset } from '../../types/artwork';
 
 type GeneratedArtworkModelProps = {
@@ -18,20 +19,34 @@ function resolveAnimationName(
   actions: Record<string, THREE.AnimationAction | null>
 ) {
   const names = Object.keys(actions);
-  const candidates: Record<MotionPreset, string[]> = {
-    wingedFly: ['Fly', 'Flying', 'WingFlap', 'Flap', 'Idle'],
-    butterflyFloat: ['Flutter', 'Fly', 'Float', 'Idle'],
-    quadrupedRun: ['Run', 'Walk', 'Idle'],
-    quadrupedLeap: ['Jump', 'Hop', 'Run', 'Idle'],
-    bipedWalk: ['Walk', 'Idle'],
-    bipedWave: ['Wave', 'Idle'],
-    fishSwim: ['Swim', 'Idle'],
-    plantSway: ['Sway', 'Idle'],
-    spiritFloat: ['Float', 'Idle'],
-    glowIdle: ['Idle']
+  const presetCandidates: Partial<Record<MotionPreset, string[]>> = {
+    horseGallop: ['Gallop', 'Run', 'Walk', 'Idle'],
+    deerBound: ['Jump', 'Hop', 'Run', 'Idle'],
+    rabbitHop: ['Hop', 'Jump', 'Idle'],
+    squirrelDart: ['Run', 'Jump', 'Idle'],
+    elephantWalk: ['Walk', 'Idle'],
+    bearLumber: ['Walk', 'Idle'],
+    bipedJog: ['Run', 'Jog', 'Walk', 'Idle'],
+    bipedDance: ['Dance', 'Wave', 'Idle'],
+    bipedMarch: ['March', 'Walk', 'Idle'],
+    bipedTiptoe: ['Walk', 'Idle'],
+    characterBounce: ['Jump', 'Hop', 'Idle'],
+    robotIdle: ['Idle', 'Walk'],
+    snakeSlither: ['Crawl', 'Slither', 'Walk', 'Idle'],
+    lizardScuttle: ['Crawl', 'Run', 'Walk', 'Idle'],
+    crabSideStep: ['Walk', 'Crawl', 'Idle'],
+    spiderCrawl: ['Crawl', 'Walk', 'Idle'],
+    snailGlide: ['Crawl', 'Idle'],
+    rocketBoost: ['Fly', 'Boost', 'Idle'],
+    vehicleCruise: ['Drive', 'Move', 'Walk', 'Idle']
   };
+  const candidates = presetCandidates[motionPreset]
+    ?? (isFlyingPreset(motionPreset) ? ['Fly', 'Flying', 'WingFlap', 'Flap', 'Flutter', 'Idle']
+      : isSwimmingPreset(motionPreset) ? ['Swim', 'Float', 'Idle']
+        : isPlantPreset(motionPreset) ? ['Sway', 'Grow', 'Idle']
+          : ['Run', 'Walk', 'Float', 'Idle']);
 
-  return candidates[motionPreset].find((name) => names.includes(name)) || names[0];
+  return candidates.find((name) => names.includes(name)) || names[0];
 }
 
 export function GeneratedArtworkModel({
@@ -109,10 +124,13 @@ export function GeneratedArtworkModel({
       scale * (1 + Math.sin(t * 1.33) * 0.034)
     );
 
-    if (motionPreset === 'fishSwim') {
+    if (isSwimmingPreset(motionPreset)) {
       group.rotation.y = Math.sin(t * 1.18) * 0.18;
-    } else if (motionPreset === 'plantSway') {
+    } else if (isPlantPreset(motionPreset)) {
       group.rotation.z = Math.sin(t * 0.72) * 0.12;
+    } else if (motionPreset === 'snakeSlither' || motionPreset === 'eelWiggle') {
+      group.rotation.y = Math.sin(t * 1.45) * 0.22;
+      group.rotation.z = Math.sin(t * 1.05) * 0.08;
     } else {
       group.rotation.x = Math.sin(t * 0.58) * 0.035;
       group.rotation.y = Math.sin(t * 0.34) * 0.12;

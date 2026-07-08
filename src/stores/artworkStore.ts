@@ -15,7 +15,6 @@ import {
   type CreatureBehaviorSignature,
   type CreatureMotionType
 } from '../utils/creatureMotion';
-import { persistArtworks as persistArtworksToIDB, loadArtworks as loadArtworksFromIDB, clearPersistedArtworks } from '../utils/storage';
 
 type ArtworkStore = {
   artworks: StoredArtwork[];
@@ -29,6 +28,7 @@ type ArtworkStore = {
   updateArtworkFeatures: (id: string, features: ArtworkFeatureResult) => void;
   updateArtworkAnalysis: (id: string, analysis: AIArtworkAnalysis) => void;
   updateArtworkGaussianModel: (id: string, gaussianModel: ArtworkGaussianModelResult) => void;
+  hydrateBackendArtworks: (records: BackendArtworkRecord[]) => void;
   clearArtworks: () => void;
 };
 
@@ -41,6 +41,26 @@ export type StoredArtwork = ProcessedArtworkImage & {
   motionType: CreatureMotionType;
   actionTypes: CreatureActionType[];
   behaviorSignature: CreatureBehaviorSignature;
+};
+
+export type BackendArtworkRecord = {
+  id: string;
+  name?: string | null;
+  sourceUrl?: string | null;
+  previewUrl?: string | null;
+  splatUrl?: string | null;
+  plyUrl?: string | null;
+  manifestUrl?: string | null;
+  gaussianCount?: number | null;
+  width?: number | null;
+  height?: number | null;
+  aspect?: number | null;
+  features?: ArtworkFeatureResult | null;
+  gaussianModel?: Partial<ArtworkGaussianModelResult> | null;
+  isDeleted?: boolean;
+  deletedAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
 const DEFAULT_ACTIONS: CreatureActionType[] = ['drift', 'hover', 'shimmer', 'breathe'];
@@ -79,16 +99,50 @@ function motionTypeFromPreset(motionPreset: MotionPreset): CreatureMotionType {
   switch (motionPreset) {
     case 'wingedFly':
     case 'butterflyFloat':
+    case 'birdSoar':
+    case 'birdFlap':
+    case 'insectHover':
+    case 'dragonflyDart':
+    case 'batFlutter':
+    case 'gliderCircle':
+    case 'rocketBoost':
       return 'fly';
     case 'fishSwim':
+    case 'fishCruise':
+    case 'eelWiggle':
+    case 'jellyfishPulse':
+    case 'turtlePaddle':
+    case 'dolphinArc':
+    case 'squidJet':
       return 'swim';
     case 'quadrupedRun':
+    case 'catProwl':
+    case 'dogTrot':
+    case 'horseGallop':
+    case 'deerBound':
+    case 'bearLumber':
+    case 'squirrelDart':
       return 'run';
     case 'quadrupedLeap':
+    case 'rabbitHop':
+    case 'characterBounce':
       return 'hop';
     case 'bipedWalk':
     case 'bipedWave':
+    case 'bipedJog':
+    case 'bipedDance':
+    case 'bipedMarch':
+    case 'bipedTiptoe':
+    case 'robotIdle':
+    case 'elephantWalk':
+    case 'vehicleCruise':
       return 'walk';
+    case 'snakeSlither':
+    case 'lizardScuttle':
+    case 'crabSideStep':
+    case 'spiderCrawl':
+    case 'snailGlide':
+      return 'crawl';
     default:
       return 'float';
   }
@@ -100,20 +154,100 @@ function actionsFromPreset(motionPreset: MotionPreset): CreatureActionType[] {
       return ['glide', 'flutter', 'dart', 'trail'];
     case 'butterflyFloat':
       return ['flutter', 'hover', 'bob', 'shimmer'];
+    case 'birdSoar':
+      return ['glide', 'orbit', 'sweep', 'trail'];
+    case 'birdFlap':
+      return ['flutter', 'glide', 'bob', 'trail'];
+    case 'insectHover':
+      return ['hover', 'flutter', 'dart', 'shimmer'];
+    case 'dragonflyDart':
+      return ['dart', 'hover', 'glide', 'trail'];
+    case 'batFlutter':
+      return ['flutter', 'loop', 'tumble', 'trail'];
+    case 'gliderCircle':
+      return ['glide', 'orbit', 'loop', 'trail'];
     case 'quadrupedRun':
       return ['approach', 'retreat', 'sweep', 'trail'];
     case 'quadrupedLeap':
       return ['hop', 'bob', 'stretch', 'trail'];
+    case 'catProwl':
+      return ['approach', 'retreat', 'sweep', 'breathe'];
+    case 'dogTrot':
+      return ['approach', 'bob', 'trail', 'shimmer'];
+    case 'horseGallop':
+      return ['approach', 'retreat', 'stretch', 'trail'];
+    case 'deerBound':
+      return ['hop', 'stretch', 'glide', 'trail'];
+    case 'bearLumber':
+      return ['approach', 'bob', 'breathe', 'sweep'];
+    case 'rabbitHop':
+      return ['hop', 'bob', 'stretch', 'trail'];
+    case 'squirrelDart':
+      return ['dart', 'hop', 'retreat', 'trail'];
+    case 'elephantWalk':
+      return ['approach', 'bob', 'breathe', 'sweep'];
     case 'bipedWalk':
       return ['approach', 'bob', 'breathe', 'shimmer'];
     case 'bipedWave':
       return ['hover', 'bob', 'wiggle', 'shimmer'];
+    case 'bipedJog':
+      return ['approach', 'bob', 'trail', 'breathe'];
+    case 'bipedDance':
+      return ['sweep', 'bob', 'wiggle', 'tumble'];
+    case 'bipedMarch':
+      return ['approach', 'bob', 'stretch', 'breathe'];
+    case 'bipedTiptoe':
+      return ['approach', 'bob', 'hover', 'breathe'];
+    case 'characterBounce':
+      return ['hop', 'bob', 'wiggle', 'shimmer'];
+    case 'robotIdle':
+      return ['breathe', 'pulse', 'sweep', 'shimmer'];
     case 'fishSwim':
       return ['swim', 'wiggle', 'glide', 'trail'];
+    case 'fishCruise':
+      return ['swim', 'glide', 'sweep', 'trail'];
+    case 'eelWiggle':
+      return ['wiggle', 'swim', 'sweep', 'trail'];
+    case 'jellyfishPulse':
+      return ['pulse', 'bob', 'drift', 'breathe'];
+    case 'turtlePaddle':
+      return ['swim', 'bob', 'glide', 'breathe'];
+    case 'dolphinArc':
+      return ['glide', 'loop', 'swim', 'trail'];
+    case 'squidJet':
+      return ['dart', 'retreat', 'swim', 'trail'];
     case 'plantSway':
       return ['bloom', 'sweep', 'breathe', 'shimmer'];
+    case 'flowerBloom':
+      return ['bloom', 'breathe', 'shimmer', 'stretch'];
+    case 'treeBreeze':
+      return ['sweep', 'breathe', 'drift', 'shimmer'];
+    case 'grassWave':
+      return ['sweep', 'wiggle', 'breathe', 'shimmer'];
+    case 'vineCurl':
+      return ['spiral', 'stretch', 'sweep', 'bloom'];
+    case 'mushroomBob':
+      return ['bob', 'breathe', 'pulse', 'shimmer'];
+    case 'snakeSlither':
+      return ['wiggle', 'sweep', 'approach', 'trail'];
+    case 'lizardScuttle':
+      return ['dart', 'approach', 'retreat', 'wiggle'];
+    case 'crabSideStep':
+      return ['sweep', 'retreat', 'approach', 'bob'];
+    case 'spiderCrawl':
+      return ['approach', 'retreat', 'wiggle', 'trail'];
+    case 'snailGlide':
+      return ['drift', 'approach', 'breathe', 'trail'];
     case 'spiritFloat':
       return ['drift', 'orbit', 'pulse', 'shimmer'];
+    case 'balloonDrift':
+      return ['drift', 'bob', 'hover', 'breathe'];
+    case 'cloudDrift':
+      return ['drift', 'breathe', 'sweep', 'shimmer'];
+    case 'rocketBoost':
+      return ['dart', 'glide', 'trail', 'pulse'];
+    case 'vehicleCruise':
+      return ['approach', 'sweep', 'trail', 'breathe'];
     default:
       return DEFAULT_ACTIONS;
   }
@@ -191,15 +325,50 @@ function artworkFromAnalysis(artwork: ProcessedArtworkImage, analysis?: AIArtwor
   };
 }
 
-// Start empty — hydrated asynchronously from IndexedDB after creation
+function artworkFromBackendRecord(record: BackendArtworkRecord): StoredArtwork {
+  const createdAt = record.createdAt ? Date.parse(record.createdAt) : Date.now();
+  const width = Math.max(1, Math.round(record.width ?? 1));
+  const height = Math.max(1, Math.round(record.height ?? 1));
+  const artwork: ProcessedArtworkImage = {
+    id: record.id,
+    name: record.name || record.id,
+    url: record.previewUrl || record.sourceUrl || '',
+    width,
+    height,
+    aspect: record.aspect && record.aspect > 0 ? record.aspect : width / height,
+    particles: []
+  };
+  const features = record.features ?? defaultFeaturesFromArtwork(artwork);
+  const gaussianModel: ArtworkGaussianModelResult = {
+    jobId: record.gaussianModel?.jobId ?? `persisted-${record.id}`,
+    sourceArtworkId: record.gaussianModel?.sourceArtworkId ?? record.id,
+    source: 'triposplat',
+    status: 'ready',
+    format: record.gaussianModel?.format ?? (record.splatUrl ? 'splat' : 'ply'),
+    splatUrl: record.gaussianModel?.splatUrl ?? record.splatUrl ?? undefined,
+    plyUrl: record.gaussianModel?.plyUrl ?? record.plyUrl ?? undefined,
+    previewUrl: record.gaussianModel?.previewUrl ?? record.previewUrl ?? undefined,
+    manifestUrl: record.gaussianModel?.manifestUrl ?? record.manifestUrl ?? undefined,
+    gaussianCount: record.gaussianModel?.gaussianCount ?? record.gaussianCount ?? 0,
+    progress: 1,
+    message: 'loaded from local library',
+    createdAt: Number.isFinite(createdAt) ? createdAt : Date.now()
+  };
+
+  return {
+    ...artworkFromFeatures(artwork, features, undefined, gaussianModel),
+    createdAt: Number.isFinite(createdAt) ? createdAt : Date.now()
+  };
+}
+
+// Start empty; backend SQLite hydration is triggered from App.
 export const useArtworkStore = create<ArtworkStore>((set) => ({
   artworks: [],
   latestArtwork: null,
   addArtwork: (artwork, features, model3d, gaussianModel) => {
     const storedArtwork = artworkFromFeatures(artwork, features, model3d, gaussianModel);
     set((state) => {
-      const artworks = [storedArtwork, ...state.artworks].slice(0, 6);
-      persistArtworksToIDB(artworks);
+      const artworks = [storedArtwork, ...state.artworks];
       useSketchStore.getState().beginSpotlight(storedArtwork.id);
 
       return {
@@ -217,7 +386,6 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
       if (state.latestArtwork?.id === id) updatedLatest = updated;
       return updated;
     });
-    persistArtworksToIDB(artworks);
 
     return {
       artworks,
@@ -232,7 +400,6 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
       if (state.latestArtwork?.id === id) updatedLatest = updated;
       return updated;
     });
-    persistArtworksToIDB(artworks);
 
     return {
       artworks,
@@ -247,15 +414,35 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
       if (state.latestArtwork?.id === id) updatedLatest = updated;
       return updated;
     });
-    persistArtworksToIDB(artworks);
 
     return {
       artworks,
       latestArtwork: updatedLatest
     };
   }),
+  hydrateBackendArtworks: (records) => set((state) => {
+    if (!records.length) return state;
+
+    const backendArtworks = records
+      .filter((record) => record.splatUrl || record.plyUrl || record.gaussianModel?.splatUrl || record.gaussianModel?.plyUrl)
+      .map(artworkFromBackendRecord);
+    if (!backendArtworks.length) return state;
+
+    const mergedById = new Map<string, StoredArtwork>();
+    for (const artwork of [...backendArtworks, ...state.artworks]) {
+      if (!mergedById.has(artwork.id)) {
+        mergedById.set(artwork.id, artwork);
+      }
+    }
+    const artworks = Array.from(mergedById.values())
+      .sort((a, b) => b.createdAt - a.createdAt);
+
+    return {
+      artworks,
+      latestArtwork: state.latestArtwork ?? artworks[0] ?? null
+    };
+  }),
   clearArtworks: () => {
-    clearPersistedArtworks();
     useSketchStore.getState().endSpotlight();
     set({
       artworks: [],
@@ -264,17 +451,3 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
   }
 }));
 
-// Hydrate from IndexedDB asynchronously
-loadArtworksFromIDB<StoredArtwork>().then((artworks) => {
-  if (artworks.length > 0) {
-    const hydratedArtworks = artworks.slice(0, 6);
-    if (hydratedArtworks.length !== artworks.length) {
-      persistArtworksToIDB(hydratedArtworks);
-    }
-
-    useArtworkStore.setState({
-      artworks: hydratedArtworks,
-      latestArtwork: hydratedArtworks[0]
-    });
-  }
-});

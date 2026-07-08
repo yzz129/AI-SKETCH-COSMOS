@@ -2,9 +2,17 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Condition, Lock
+from time import perf_counter
 
+from .artwork_db import upsert_generated_artwork
+from .perf_logger import log_perf
 from .schemas import ArtworkAssets, JobResponse, JobStatus
+from .storage import asset_url
 from .triposplat_worker import generate_triposplat_assets
+
+
+def _log_perf(job_id: str, artwork_id: str, stage: str, message: str = "") -> None:
+    log_perf(artwork_id, job_id, stage, message)
 
 
 @dataclass
@@ -20,6 +28,8 @@ class GenerationJob:
     message: str | None = "queued"
     artwork: ArtworkAssets | None = None
     error: str | None = None
+    created_at_perf: float = 0
+    processing_started_at_perf: float = 0
 
 
 class JobRegistry:
@@ -46,10 +56,17 @@ class JobRegistry:
             source_path=source_path,
             num_gaussians=num_gaussians,
             export_format=export_format,
+            created_at_perf=perf_counter(),
         )
         with self._condition:
             self._jobs[job_id] = job
             self._condition.notify_all()
+        _log_perf(
+            job_id,
+            artwork_id,
+            "queued",
+            f"gaussians={num_gaussians} format={export_format} source={source_path.name}",
+        )
         self._executor.submit(self._run, job_id)
         return job
 
@@ -95,7 +112,12 @@ class JobRegistry:
             return
 
         try:
+            start = perf_counter()
+            queue_elapsed = start - job.created_at_perf if job.created_at_perf else 0
+            job.processing_started_at_perf = start
+            _log_perf(job.job_id, job.artwork_id, "processing:start", f"queue_elapsed={queue_elapsed:.3f}s")
             self._update(job_id, status=JobStatus.processing, progress=0.08, message="processing")
+            generate_start = perf_counter()
             assets = generate_triposplat_assets(
                 artwork_id=job.artwork_id,
                 artwork_dir=job.artwork_dir,
@@ -103,6 +125,24 @@ class JobRegistry:
                 num_gaussians=job.num_gaussians,
                 export_format=job.export_format,
             )
+            _log_perf(
+                job.job_id,
+                job.artwork_id,
+                "generate_assets:end",
+                f"elapsed={perf_counter() - generate_start:.3f}s",
+            )
+            db_start = perf_counter()
+            upsert_generated_artwork(
+                artwork_id=job.artwork_id,
+                source_path=job.source_path,
+                source_url=asset_url(job.artwork_id, job.source_path.name),
+                preview_url=assets.get("previewUrl"),
+                splat_url=assets.get("splatUrl"),
+                ply_url=assets.get("plyUrl"),
+                manifest_url=assets.get("manifestUrl"),
+                gaussian_count=assets["gaussianCount"],
+            )
+            _log_perf(job.job_id, job.artwork_id, "db_upsert:end", f"elapsed={perf_counter() - db_start:.3f}s")
             self._update(
                 job_id,
                 status=JobStatus.ready,
@@ -110,7 +150,14 @@ class JobRegistry:
                 message="ready",
                 artwork=ArtworkAssets(**assets),
             )
+            _log_perf(
+                job.job_id,
+                job.artwork_id,
+                "ready",
+                f"total_elapsed={perf_counter() - start:.3f}s",
+            )
         except Exception as exc:
+            _log_perf(job.job_id, job.artwork_id, "failed", str(exc).replace("\n", " ")[:800])
             self._update(
                 job_id,
                 status=JobStatus.failed,

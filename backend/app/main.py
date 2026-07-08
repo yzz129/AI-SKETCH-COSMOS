@@ -1,11 +1,23 @@
 import uuid
+from time import perf_counter
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .artwork_db import (
+    backfill_existing_outputs,
+    count_artworks,
+    delete_artwork_permanently,
+    get_artwork,
+    list_artworks,
+    restore_artwork,
+    soft_delete_artwork,
+    update_artwork_metadata,
+)
 from .jobs import job_to_response, jobs
-from .schemas import JobResponse, JobStatus
+from .perf_logger import log_perf
+from .schemas import ArtworkMetadataUpdate, JobResponse, JobStatus, PersistedArtwork
 from .storage import create_artwork_dir, ensure_output_root, save_upload
 from .triposplat_worker import triposplat_config_status
 
@@ -18,9 +30,17 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count"],
 )
 
 app.mount("/assets", StaticFiles(directory=str(ensure_output_root())), name="assets")
+
+
+@app.on_event("startup")
+def hydrate_artwork_database():
+    imported = backfill_existing_outputs()
+    if imported:
+        print(f"[artwork-db] imported {imported} existing artwork outputs")
 
 
 @app.get("/health")
@@ -33,12 +53,32 @@ def triposplat_health():
     return triposplat_config_status()
 
 
+@app.get("/api/artworks", response_model=list[PersistedArtwork])
+def get_artworks(
+    response: Response,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    status: str = Query("active", pattern="^(active|deleted|all)$"),
+):
+    response.headers["X-Total-Count"] = str(count_artworks(status=status))
+    return list_artworks(limit=limit, offset=offset, status=status)
+
+
+@app.get("/api/artworks/{artwork_id}", response_model=PersistedArtwork)
+def get_artwork_by_id(artwork_id: str):
+    artwork = get_artwork(artwork_id)
+    if artwork is None:
+        raise HTTPException(status_code=404, detail="artwork not found")
+    return artwork
+
+
 @app.post("/api/artworks", response_model=JobResponse)
 async def create_artwork_job(
     image: UploadFile = File(...),
     numGaussians: int = Form(131_072),
     format: str = Form("splat"),
 ):
+    request_start = perf_counter()
     triposplat_status = triposplat_config_status()
     if not triposplat_status["ready"]:
         raise HTTPException(status_code=503, detail={"message": "TripoSplat backend is not ready", "status": triposplat_status})
@@ -50,8 +90,20 @@ async def create_artwork_job(
     if numGaussians < 4_096 or numGaussians > 262_144:
         raise HTTPException(status_code=400, detail="numGaussians must be between 4096 and 262144")
 
+    create_dir_start = perf_counter()
     artwork_id, artwork_dir = create_artwork_dir()
+    log_perf(artwork_id, "request", "create_artwork_dir", f"elapsed={perf_counter() - create_dir_start:.3f}s")
+    save_start = perf_counter()
     source_path = save_upload(image.file, artwork_dir, image.filename or "source.png")
+    log_perf(
+        artwork_id,
+        "request",
+        "save_upload",
+        (
+            f"elapsed={perf_counter() - save_start:.3f}s "
+            f"filename={image.filename or 'source.png'} bytes={source_path.stat().st_size}"
+        ),
+    )
     job = jobs.create(
         job_id=f"job_{uuid.uuid4().hex}",
         artwork_id=artwork_id,
@@ -60,7 +112,55 @@ async def create_artwork_job(
         num_gaussians=numGaussians,
         export_format=export_format,
     )
+    log_perf(
+        artwork_id,
+        job.job_id,
+        "request:end",
+        (
+            f"elapsed={perf_counter() - request_start:.3f}s gaussians={numGaussians} format={export_format}"
+        ),
+    )
     return job_to_response(job)
+
+
+@app.patch("/api/artworks/{artwork_id}/metadata")
+def patch_artwork_metadata(artwork_id: str, payload: ArtworkMetadataUpdate):
+    updated = update_artwork_metadata(
+        artwork_id,
+        name=payload.name,
+        width=payload.width,
+        height=payload.height,
+        aspect=payload.aspect,
+        features=payload.features,
+        gaussian_model=payload.gaussianModel,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="artwork not found")
+    return {"ok": True}
+
+
+@app.delete("/api/artworks/{artwork_id}")
+def remove_artwork(artwork_id: str):
+    deleted = soft_delete_artwork(artwork_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="artwork not found")
+    return {"ok": True}
+
+
+@app.post("/api/artworks/{artwork_id}/restore")
+def restore_removed_artwork(artwork_id: str):
+    restored = restore_artwork(artwork_id)
+    if not restored:
+        raise HTTPException(status_code=404, detail="artwork not found")
+    return {"ok": True}
+
+
+@app.delete("/api/artworks/{artwork_id}/permanent")
+def remove_artwork_permanently(artwork_id: str):
+    deleted = delete_artwork_permanently(artwork_id, delete_files=True)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="artwork not found")
+    return {"ok": True}
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobResponse)

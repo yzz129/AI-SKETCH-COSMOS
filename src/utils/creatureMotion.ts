@@ -1,4 +1,4 @@
-export type CreatureMotionType = 'fly' | 'hop' | 'swim' | 'run' | 'walk' | 'float';
+export type CreatureMotionType = 'fly' | 'hop' | 'swim' | 'run' | 'walk' | 'crawl' | 'float';
 
 export const CREATURE_ACTION_TYPES = [
   'glide',
@@ -159,6 +159,8 @@ export function getCreatureMotionPreset(
         return { speed: 0.32, radiusX: 0.9, radiusY: 0.32, radiusZ: 0.86, flowAmount: 0.88, trailIntensity: 0.92, rotationAmount: 0.09 };
       case 'walk':
         return { speed: 0.2, radiusX: 0.56, radiusY: 0.26, radiusZ: 0.6, flowAmount: 0.68, trailIntensity: 0.72, rotationAmount: 0.06 };
+      case 'crawl':
+        return { speed: 0.18, radiusX: 0.66, radiusY: 0.18, radiusZ: 0.58, flowAmount: 0.62, trailIntensity: 0.64, rotationAmount: 0.055 };
       case 'float':
       default:
         return { speed: 0.24, radiusX: 0.72, radiusY: 0.44, radiusZ: 0.8, flowAmount: 0.82, trailIntensity: 0.86, rotationAmount: 0.075 };
@@ -354,6 +356,18 @@ export function getCreatureMotionPose(motionType: CreatureMotionType, time: numb
         waveAmplitude: 0.006,
         waveFrequency: 1.7
       };
+    case 'crawl':
+      return {
+        extraX: Math.sin(time * 0.7 + phase) * 0.065,
+        extraY: Math.abs(Math.sin(time * 1.45 + phase)) * 0.028,
+        extraZ: Math.sin(time * 0.92 + phase) * 0.08,
+        rotationZ: Math.sin(time * 1.8 + phase) * 0.052,
+        scaleX: 1 + Math.sin(time * 1.7 + phase) * 0.035,
+        scaleY: 1 - Math.abs(Math.sin(time * 1.7 + phase)) * 0.022,
+        wingFlap: Math.sin(time * 2.2 + phase),
+        waveAmplitude: 0.026,
+        waveFrequency: 5.6
+      };
     case 'float':
     default:
       return {
@@ -385,6 +399,8 @@ export function getTrailProfile(motionType: CreatureMotionType, signature?: Part
       return { count: Math.round(105 * boost), length: 0.7 * boost, spread: 0.2 };
     case 'walk':
       return { count: Math.round(95 * boost), length: 0.64 * boost, spread: 0.16 };
+    case 'crawl':
+      return { count: Math.round(90 * boost), length: 0.58 * boost, spread: 0.14 };
     case 'float':
     default:
       return { count: Math.round(120 * boost), length: 0.84 * boost, spread: 0.22 };

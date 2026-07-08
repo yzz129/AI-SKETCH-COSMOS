@@ -1,12 +1,16 @@
 import os
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
+from typing import Iterator
 
 from dotenv import load_dotenv
 from PIL import Image
 
+from .perf_logger import log_perf
 from .storage import asset_url, write_manifest
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +24,43 @@ REQUIRED_TRIPOSPLAT_PATHS = {
     "TRIPOSPLAT_FLUX2_VAE_ENCODER_PATH": "file",
     "TRIPOSPLAT_RMBG_PATH": "file",
 }
+
+
+def _log_perf(artwork_id: str, stage: str, message: str = "") -> None:
+    log_perf(artwork_id, "triposplat", stage, message)
+
+
+def _gpu_snapshot() -> str:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return "cuda=unavailable"
+        allocated = torch.cuda.memory_allocated() / 1024 / 1024
+        reserved = torch.cuda.memory_reserved() / 1024 / 1024
+        return f"cuda_allocated={allocated:.0f}MiB cuda_reserved={reserved:.0f}MiB"
+    except Exception as exc:
+        return f"cuda_snapshot_error={type(exc).__name__}"
+
+
+@contextmanager
+def _timed_stage(
+    artwork_id: str,
+    stage: str,
+    timings: dict[str, float] | None = None,
+    **fields: object,
+) -> Iterator[None]:
+    detail = " ".join(f"{key}={value}" for key, value in fields.items() if value is not None)
+    start = time.perf_counter()
+    _log_perf(artwork_id, f"{stage}:start", detail)
+    try:
+        yield
+    finally:
+        elapsed = time.perf_counter() - start
+        if timings is not None:
+            timings[stage] = elapsed
+        gpu = _gpu_snapshot()
+        _log_perf(artwork_id, f"{stage}:end", f"elapsed={elapsed:.3f}s {gpu}")
 
 
 def _optional_path(name: str) -> str | None:
@@ -169,36 +210,62 @@ def generate_triposplat_assets(
     num_gaussians: int,
     export_format: str,
 ) -> dict:
+    total_start = time.perf_counter()
+    timings: dict[str, float] = {}
     effective_num_gaussians = num_gaussians
+    steps = int(os.getenv("TRIPOSPLAT_STEPS", "20"))
+    guidance_scale = float(os.getenv("TRIPOSPLAT_GUIDANCE_SCALE", "1.0"))
+    shift = float(os.getenv("TRIPOSPLAT_SHIFT", "3.0"))
+    seed = int(os.getenv("TRIPOSPLAT_SEED", "42"))
+    _log_perf(
+        artwork_id,
+        "generate:start",
+        (
+            f"source={source_path.name} requested_gaussians={num_gaussians} "
+            f"format={export_format} steps={steps} guidanceScale={guidance_scale} shift={shift} seed={seed}"
+        ),
+    )
     if os.getenv("TRIPOSPLAT_DEVICE", "cuda").startswith("cpu"):
         cpu_cap = int(os.getenv("TRIPOSPLAT_CPU_NUM_GAUSSIANS_CAP", "32768"))
         effective_num_gaussians = min(num_gaussians, cpu_cap)
         if os.getenv("TRIPOSPLAT_CPU_SUBPROCESS", "true").lower() == "true" and not os.getenv("TRIPOSPLAT_IN_SUBPROCESS"):
-            return _generate_with_subprocess(
-                artwork_id=artwork_id,
-                artwork_dir=artwork_dir,
-                source_path=source_path,
-                num_gaussians=effective_num_gaussians,
-                export_format=export_format,
-            )
+            with _timed_stage(artwork_id, "cpu_subprocess", timings, gaussians=effective_num_gaussians):
+                return _generate_with_subprocess(
+                    artwork_id=artwork_id,
+                    artwork_dir=artwork_dir,
+                    source_path=source_path,
+                    num_gaussians=effective_num_gaussians,
+                    export_format=export_format,
+                )
 
-    pipeline = load_pipeline()
+    with _timed_stage(artwork_id, "load_pipeline", timings):
+        pipeline = load_pipeline()
 
-    gaussian, prepared = pipeline.run(
-        str(source_path),
-        seed=int(os.getenv("TRIPOSPLAT_SEED", "42")),
-        steps=int(os.getenv("TRIPOSPLAT_STEPS", "20")),
-        guidance_scale=float(os.getenv("TRIPOSPLAT_GUIDANCE_SCALE", "1.0")),
-        shift=float(os.getenv("TRIPOSPLAT_SHIFT", "3.0")),
-        num_gaussians=effective_num_gaussians,
-        show_progress=True,
+    with _timed_stage(
+        artwork_id,
+        "pipeline_run",
+        timings,
+        gaussians=effective_num_gaussians,
+        steps=steps,
+        guidanceScale=guidance_scale,
+        format=export_format,
+    ):
+        gaussian, prepared = pipeline.run(
+            str(source_path),
+            seed=seed,
+            steps=steps,
+            guidance_scale=guidance_scale,
+            shift=shift,
+            num_gaussians=effective_num_gaussians,
+            show_progress=True,
     )
 
     preview_path = artwork_dir / "preprocessed_image.webp"
-    if isinstance(prepared, Image.Image):
-        prepared.save(preview_path)
-    elif hasattr(prepared, "save"):
-        prepared.save(preview_path)
+    with _timed_stage(artwork_id, "save_preview", timings):
+        if isinstance(prepared, Image.Image):
+            prepared.save(preview_path)
+        elif hasattr(prepared, "save"):
+            prepared.save(preview_path)
 
     splat_path = artwork_dir / "model.splat"
     ply_path = artwork_dir / "model.ply"
@@ -206,9 +273,11 @@ def generate_triposplat_assets(
     write_ply = export_format in {"ply", "both"}
 
     if write_splat:
-        gaussian.save_splat(splat_path)
+        with _timed_stage(artwork_id, "save_splat", timings, path=splat_path.name):
+            gaussian.save_splat(splat_path)
     if write_ply:
-        gaussian.save_ply(ply_path)
+        with _timed_stage(artwork_id, "save_ply", timings, path=ply_path.name):
+            gaussian.save_ply(ply_path)
 
     manifest = {
         "id": artwork_id,
@@ -224,8 +293,26 @@ def generate_triposplat_assets(
             "rotation": [1, 0, 0, 0],
             "center": [0, 0, 0],
         },
+        "performance": {
+            "steps": steps,
+            "guidanceScale": guidance_scale,
+            "shift": shift,
+            "seed": seed,
+            "requestedGaussianCount": num_gaussians,
+            "effectiveGaussianCount": effective_num_gaussians,
+            "format": export_format,
+            "timingsSeconds": {key: round(value, 3) for key, value in timings.items()},
+        },
     }
-    write_manifest(artwork_dir, manifest)
+    with _timed_stage(artwork_id, "write_manifest", timings):
+        write_manifest(artwork_dir, manifest)
+
+    total_elapsed = time.perf_counter() - total_start
+    _log_perf(
+        artwork_id,
+        "generate:end",
+        f"elapsed={total_elapsed:.3f}s effective_gaussians={effective_num_gaussians}",
+    )
 
     return {
         "splatUrl": manifest["assets"]["splat"],
