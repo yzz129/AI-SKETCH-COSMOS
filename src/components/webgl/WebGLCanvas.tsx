@@ -36,7 +36,7 @@ export function WebGLCanvas() {
 
   const isPanelEvent = (event: PointerEvent<HTMLDivElement>) => {
     const target = event.target;
-    return target instanceof HTMLElement && Boolean(target.closest('.cosmic-panel, .cosmic-panel-toggle, .upload-panel'));
+    return target instanceof HTMLElement && Boolean(target.closest('.cosmic-panel, .cosmic-panel-compact, .cosmic-panel-toggle, .upload-panel'));
   };
 
   const handleStagePointerDown = (event: PointerEvent<HTMLDivElement>) => {

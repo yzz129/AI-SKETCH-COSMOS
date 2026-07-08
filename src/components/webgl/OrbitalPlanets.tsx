@@ -2,6 +2,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { CREATURE_ORBIT_CENTER } from './cosmicAnchors';
+import { hasCreaturePriorityHit } from './pointerPriority';
 
 /* ------------------------------------------------------------------ */
 /*  responsive density — debounced to avoid recreating geometries      */
@@ -443,6 +444,7 @@ function ParticlePlanet({ spec, index }: { spec: PlanetSpec; index: number }) {
         <mesh
           material={hitMaterial}
           onPointerDown={(event) => {
+            if (hasCreaturePriorityHit(event)) return;
             event.stopPropagation();
             burstStartedAtRef.current = performance.now() * 0.001;
           }}

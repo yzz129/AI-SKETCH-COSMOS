@@ -156,7 +156,7 @@ export function SplatCreatureModel({
     const isBursting = burstPhase < 0.995;
     const showFlightModel = flightOpacity > 0.01;
     const burstShake = Math.sin(t * 28 + motionPhase) * burstShock;
-    showcaseSpinRef.current += delta * THREE.MathUtils.lerp(0.42, 0.86, focus);
+    showcaseSpinRef.current += delta * THREE.MathUtils.lerp(0.42, 0.1, focus);
     const freeYaw = (
       Math.sin(t * 0.34 + motionPhase) * 0.16 +
       Math.sin(t * 0.11 + motionPhase * 0.7) * 0.07

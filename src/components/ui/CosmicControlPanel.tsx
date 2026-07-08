@@ -1,5 +1,5 @@
 import { ChangeEvent, useRef, useState } from 'react';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, Upload } from 'lucide-react';
 import { submitArtworkFile } from '../../lib/artwork/submitArtworkFile';
 import { useArtworkStore } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
@@ -7,6 +7,17 @@ import { useSketchStore } from '../../stores/useSketchStore';
 function renderModeLabel(hasSplat: boolean) {
   return hasSplat ? 'TripoSplat .splat' : '图片 3D 粒子化';
 }
+
+type WindowWithFilePicker = Window & {
+  showOpenFilePicker?: (options?: {
+    excludeAcceptAllOption?: boolean;
+    multiple?: boolean;
+    types?: Array<{
+      description?: string;
+      accept: Record<string, string[]>;
+    }>;
+  }) => Promise<Array<{ getFile: () => Promise<File> }>>;
+};
 
 export function CosmicControlPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -29,6 +40,53 @@ export function CosmicControlPanel() {
     } finally {
       event.target.value = '';
     }
+  };
+
+  const openArtworkPicker = async () => {
+    if (status === 'processing') return;
+
+    const isFullscreenLike = Boolean(document.fullscreenElement)
+      || (
+        Math.abs(window.innerWidth - window.screen.width) <= 2
+        && Math.abs(window.innerHeight - window.screen.height) <= 2
+      );
+    const picker = (window as WindowWithFilePicker).showOpenFilePicker;
+
+    if (isFullscreenLike && picker) {
+      try {
+        const [handle] = await picker({
+          excludeAcceptAllOption: false,
+          multiple: false,
+          types: [{
+            description: 'Artwork image',
+            accept: {
+              'image/png': ['.png'],
+              'image/jpeg': ['.jpg', '.jpeg'],
+              'image/webp': ['.webp']
+            }
+          }]
+        });
+        const file = await handle?.getFile();
+        if (file) {
+          await submitArtworkFile(file);
+        }
+
+        if (!document.fullscreenElement) {
+          await document.documentElement.requestFullscreen().catch(() => undefined);
+        }
+        return;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        console.warn('[cosmos] showOpenFilePicker failed:', error);
+      }
+    }
+
+    if (isFullscreenLike) {
+      setError('当前浏览器全屏上传会退出全屏，请先退出全屏后上传，或使用支持文件选择 API 的浏览器。');
+      return;
+    }
+
+    inputRef.current?.click();
   };
 
   const clearAllArtworks = () => {
@@ -55,6 +113,23 @@ export function CosmicControlPanel() {
 
   if (isHidden) {
     return (
+      <div className="cosmic-panel-compact" onPointerDown={(event) => event.stopPropagation()}>
+        <input
+          ref={inputRef}
+          className="cosmic-panel__input"
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          onChange={onFileChange}
+        />
+        <button
+          type="button"
+          className="cosmic-panel-compact__upload"
+          onClick={openArtworkPicker}
+          disabled={status === 'processing'}
+        >
+          <Upload size={17} strokeWidth={2.2} aria-hidden="true" />
+          <span>{status === 'processing' ? '生成中' : '发布作品'}</span>
+        </button>
       <button
         type="button"
         className="cosmic-panel-toggle"
@@ -65,6 +140,7 @@ export function CosmicControlPanel() {
       >
         <Eye size={18} strokeWidth={2.2} aria-hidden="true" />
       </button>
+      </div>
     );
   }
 
@@ -128,7 +204,7 @@ export function CosmicControlPanel() {
           accept="image/png,image/jpeg,image/webp"
           onChange={onFileChange}
         />
-        <button type="button" className="cosmic-button cosmic-button--primary" onClick={() => inputRef.current?.click()} disabled={status === 'processing'}>
+        <button type="button" className="cosmic-button cosmic-button--primary" onClick={openArtworkPicker} disabled={status === 'processing'}>
           {status === 'processing' ? '生成中...' : '发射作品'}
         </button>
         <button type="button" className="cosmic-button" onClick={clearAllArtworks} disabled={status === 'processing'}>

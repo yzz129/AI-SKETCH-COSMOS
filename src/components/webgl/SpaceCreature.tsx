@@ -21,6 +21,7 @@ import {
   SPOTLIGHT_SHOWCASE_DURATION
 } from './spotlightConfig';
 import { CREATURE_ORBIT_CENTER } from './cosmicAnchors';
+import { markCreaturePriorityHit } from './pointerPriority';
 
 type SpaceCreatureProps = {
   artwork: StoredArtwork;
@@ -35,6 +36,7 @@ type RespawnMeteorTrailProps = {
   startRef: MutableRefObject<THREE.Vector3 | null>;
   endRef: MutableRefObject<THREE.Vector3 | null>;
   startedAtRef: MutableRefObject<number>;
+  duration?: number;
 };
 
 function createRespawnTrailMaterial(core: boolean) {
@@ -127,7 +129,12 @@ function createRespawnHeadTexture() {
   return texture;
 }
 
-function RespawnMeteorTrail({ startRef, endRef, startedAtRef }: RespawnMeteorTrailProps) {
+function RespawnMeteorTrail({
+  startRef,
+  endRef,
+  startedAtRef,
+  duration = RESPAWN_TRAIL_DURATION
+}: RespawnMeteorTrailProps) {
   const mainRef = useRef<THREE.Mesh>(null);
   const coreRef = useRef<THREE.Mesh>(null);
   const headRef = useRef<THREE.Mesh>(null);
@@ -169,7 +176,7 @@ function RespawnMeteorTrail({ startRef, endRef, startedAtRef }: RespawnMeteorTra
     if (!start || !end || !main || !core || !headMesh) return;
 
     const age = performance.now() * 0.001 - startedAtRef.current;
-    const fadeEnd = RESPAWN_TRAIL_DURATION + 0.55;
+    const fadeEnd = duration + 0.55;
     if (age < 0 || age > fadeEnd) {
       main.visible = false;
       core.visible = false;
@@ -186,10 +193,10 @@ function RespawnMeteorTrail({ startRef, endRef, startedAtRef }: RespawnMeteorTra
       return;
     }
 
-    const progress = THREE.MathUtils.clamp(age / RESPAWN_TRAIL_DURATION, 0, 1);
+    const progress = THREE.MathUtils.clamp(age / duration, 0, 1);
     const eased = 1 - Math.pow(1 - progress, 3);
     const fadeIn = THREE.MathUtils.smoothstep(progress, 0.015, 0.12);
-    const fadeOut = 1 - THREE.MathUtils.smoothstep(age, RESPAWN_TRAIL_DURATION * 0.9, fadeEnd);
+    const fadeOut = 1 - THREE.MathUtils.smoothstep(age, duration * 0.9, fadeEnd);
     const fade = fadeIn * fadeOut;
     const spatialSeed = Math.abs(
       Math.sin(
@@ -277,6 +284,7 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
   const spotlightPhase = useSketchStore((state) => state.spotlight.phase);
   const groupRef = useRef<THREE.Group>(null);
   const visualRef = useRef<THREE.Group>(null);
+  const interactionMeshRef = useRef<THREE.Mesh>(null);
   const startTimeRef = useRef<number | null>(null);
   const pulseRef = useRef(0);
   const burstRef = useRef(0);
@@ -285,6 +293,11 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
   const spotlightFocusRef = useRef(0);
   const spotlightAnchorRef = useRef<THREE.Vector3 | null>(null);
   const wasSpotlightRef = useRef(false);
+  const spotlightReleaseTrailStartRef = useRef<THREE.Vector3 | null>(null);
+  const spotlightReleaseTrailEndRef = useRef<THREE.Vector3 | null>(null);
+  const spotlightReleaseTrailStartedAtRef = useRef(-100);
+  const spotlightReleaseStartedRef = useRef(false);
+  const spotlightPreviousPhaseRef = useRef(spotlightPhase);
   const pulseStartedAtRef = useRef(-100);
   const burstStartedAtRef = useRef(-100);
   const burstAnchorRef = useRef<THREE.Vector3 | null>(null);
@@ -296,6 +309,7 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
   const respawnTrailStartedAtRef = useRef(-100);
   const flightModelWorldPositionRef = useRef(new THREE.Vector3());
   const flightModelOpacityRef = useRef(0);
+  const visibleInteractionPositionRef = useRef(new THREE.Vector3());
   const lastPositionRef = useRef(new THREE.Vector3());
   const smoothedOffsetRef = useRef(new THREE.Vector3());
   const preset = useMemo(
@@ -322,7 +336,6 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
     depthWrite: false,
     depthTest: false
   }), []);
-  const worldPositionScratchRef = useRef(new THREE.Vector3());
 
   // ── Preview image plane material (visible during spotlight) ──
   const [previewTexture, setPreviewTexture] = useState<THREE.Texture | null>(null);
@@ -460,6 +473,7 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
     const releaseProgress = isSpotlight && spotlight.phase === 'release'
       ? THREE.MathUtils.clamp((spotlightElapsed - releaseStart) / SPOTLIGHT_RELEASE_DURATION, 0, 1)
       : 0;
+    const releaseEased = 1 - Math.pow(1 - releaseProgress, 3);
 
     if (isSpotlight && (spotlight.phase === 'fly-in' || spotlight.phase === 'showcase')) {
       if (!wasSpotlightRef.current || !spotlightAnchorRef.current) {
@@ -468,12 +482,22 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
           : pathWorldPosition.clone();
       }
       wasSpotlightRef.current = true;
+      spotlightReleaseStartedRef.current = false;
       group.position.copy(spotlightAnchorRef.current);
     } else if (isSpotlight && spotlight.phase === 'release' && spotlightAnchorRef.current) {
-      group.position.lerpVectors(spotlightAnchorRef.current, pathWorldPosition, releaseProgress);
+      if (!spotlightReleaseStartedRef.current || spotlightPreviousPhaseRef.current !== 'release') {
+        spotlightReleaseTrailStartRef.current = spotlightAnchorRef.current.clone();
+        spotlightReleaseTrailEndRef.current = pathWorldPosition.clone();
+        spotlightReleaseTrailStartedAtRef.current = wallTime;
+        spotlightReleaseStartedRef.current = true;
+      } else {
+        spotlightReleaseTrailEndRef.current = pathWorldPosition.clone();
+      }
+      group.position.lerpVectors(spotlightAnchorRef.current, pathWorldPosition, releaseEased);
     } else {
       wasSpotlightRef.current = false;
       spotlightAnchorRef.current = null;
+      spotlightReleaseStartedRef.current = false;
       group.position.copy(pathWorldPosition);
     }
 
@@ -486,7 +510,7 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
       group.scale.setScalar(normalScale * (1 + focusProgress * 0.08));
     } else if (isSpotlight && spotlight.phase === 'release') {
       spotlightFocusRef.current = 1 - releaseProgress;
-      group.scale.setScalar(normalScale * (1 + (1 - releaseProgress) * 0.08));
+      group.scale.setScalar(normalScale * (1 + (1 - releaseEased) * 0.08));
     } else {
       spotlightFocusRef.current = 0;
       group.scale.setScalar(normalScale);
@@ -564,6 +588,16 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
       flightModelOpacityRef.current = 0;
     }
 
+    visibleInteractionPositionRef.current.copy(
+      flightModelOpacityRef.current > 0.01
+        ? flightModelWorldPositionRef.current
+        : group.position
+    );
+    if (interactionMeshRef.current) {
+      interactionMeshRef.current.position.copy(visibleInteractionPositionRef.current);
+      interactionMeshRef.current.scale.setScalar(group.scale.x);
+    }
+
     useCreatureBehaviorStore.getState().setCreaturePosition(artwork.id, [
       group.position.x,
       group.position.y,
@@ -623,6 +657,7 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
     // ── Preview image plane opacity ──
     previewMaterial.opacity = splatUrl ? 0 : spotlightFocusRef.current * 0.72;
     previewMaterial.needsUpdate = true;
+    spotlightPreviousPhaseRef.current = spotlight.phase;
   });
 
   return (
@@ -631,6 +666,12 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
         startRef={respawnTrailStartRef}
         endRef={respawnTrailEndRef}
         startedAtRef={respawnTrailStartedAtRef}
+      />
+      <RespawnMeteorTrail
+        startRef={spotlightReleaseTrailStartRef}
+        endRef={spotlightReleaseTrailEndRef}
+        startedAtRef={spotlightReleaseTrailStartedAtRef}
+        duration={SPOTLIGHT_RELEASE_DURATION}
       />
       <group ref={groupRef} renderOrder={10}>
       <group ref={visualRef}>
@@ -697,29 +738,31 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
             <planeGeometry args={[planeWidth, planeHeight]} />
           </mesh>
         ) : null}
-
-        <mesh
-          material={interactionMaterial}
-          onPointerDown={(event) => {
-            event.stopPropagation();
-            const now = performance.now() * 0.001;
-            groupRef.current?.getWorldPosition(worldPositionScratchRef.current);
-            burstAnchorRef.current = worldPositionScratchRef.current.clone();
-            respawnPositionRef.current = null;
-            respawnTrailStartRef.current = null;
-            respawnTrailEndRef.current = null;
-            respawnTrailStartedAtRef.current = -100;
-            burstWasActiveRef.current = false;
-            pulseStartedAtRef.current = now;
-            burstStartedAtRef.current = now;
-            burstPhaseRef.current = 0;
-            reappearRef.current = 0;
-          }}
-        >
-          <sphereGeometry args={[Math.max(planeWidth, planeHeight) * 0.58, 16, 10]} />
-        </mesh>
       </group>
       </group>
+      <mesh
+        ref={interactionMeshRef}
+        material={interactionMaterial}
+        userData={markCreaturePriorityHit()}
+        onPointerDown={(event) => {
+          if (spotlightEnabled) {
+            return;
+          }
+          const now = performance.now() * 0.001;
+          burstAnchorRef.current = visibleInteractionPositionRef.current.clone();
+          respawnPositionRef.current = null;
+          respawnTrailStartRef.current = null;
+          respawnTrailEndRef.current = null;
+          respawnTrailStartedAtRef.current = -100;
+          burstWasActiveRef.current = false;
+          pulseStartedAtRef.current = now;
+          burstStartedAtRef.current = now;
+          burstPhaseRef.current = 0;
+          reappearRef.current = 0;
+        }}
+      >
+        <sphereGeometry args={[Math.max(planeWidth, planeHeight) * 0.58, 16, 10]} />
+      </mesh>
     </>
   );
 }

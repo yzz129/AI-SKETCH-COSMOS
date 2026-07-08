@@ -2,6 +2,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { DADAKIDO_WORLD_POSITION } from './cosmicAnchors';
+import { hasCreaturePriorityHit } from './pointerPriority';
 
 type DadakidoNebulaLayer = {
   geometry: THREE.BufferGeometry;
@@ -500,6 +501,7 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
           key={`${GLYPHS[glyph]}-${glyph}`}
           position={[center, -0.08, 0.06]}
           onPointerDown={(event) => {
+            if (hasCreaturePriorityHit(event)) return;
             event.stopPropagation();
             burstRef.current = { glyph, startedAt: performance.now() * 0.001 };
           }}

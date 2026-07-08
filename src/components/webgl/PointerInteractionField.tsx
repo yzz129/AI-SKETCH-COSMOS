@@ -3,6 +3,7 @@ import { useMemo } from 'react';
 import * as THREE from 'three';
 import { useCreatureBehaviorStore } from '../../utils/creatureBehavior';
 import { DADAKIDO_WORLD_POSITION, EXHIBITION_CREATURE_ORBIT, POINTER_INTERACTION_PLANE_Z } from './cosmicAnchors';
+import { hasCreaturePriorityHit } from './pointerPriority';
 
 const pointerPosition = new THREE.Vector3();
 
@@ -24,6 +25,7 @@ export function PointerInteractionField() {
   };
 
   const addFood = (event: ThreeEvent<PointerEvent>) => {
+    if (hasCreaturePriorityHit(event)) return;
     updatePointer(event);
     useCreatureBehaviorStore.getState().addStarFood([
       event.point.x,

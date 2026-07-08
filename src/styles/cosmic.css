@@ -23,7 +23,8 @@
 }
 
 .cosmic-panel__hide,
-.cosmic-panel-toggle {
+.cosmic-panel-toggle,
+.cosmic-panel-compact__upload {
   display: grid;
   place-items: center;
   border: 1px solid rgba(162, 202, 255, 0.22);
@@ -35,11 +36,44 @@
 }
 
 .cosmic-panel__hide:hover,
-.cosmic-panel-toggle:hover {
+.cosmic-panel-toggle:hover,
+.cosmic-panel-compact__upload:hover:not(:disabled) {
   transform: translateY(-1px);
   border-color: rgba(143, 232, 255, 0.48);
   background: rgba(117, 160, 255, 0.16);
   box-shadow: 0 0 26px rgba(93, 180, 255, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.cosmic-panel-compact {
+  position: fixed;
+  top: clamp(14px, 2.22vw, 42px);
+  left: clamp(14px, 2.22vw, 42px);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: clamp(8px, 0.83vw, 14px);
+}
+
+.cosmic-panel-compact__upload {
+  min-height: clamp(42px, 3.33vw, 56px);
+  border-color: rgba(136, 233, 255, 0.48);
+  border-radius: 999px;
+  padding: 0 clamp(14px, 1.25vw, 22px);
+  grid-auto-flow: column;
+  gap: 8px;
+  background:
+    linear-gradient(135deg, rgba(124, 237, 255, 0.96), rgba(159, 128, 255, 0.94));
+  color: #07081b;
+  font: inherit;
+  font-size: clamp(12px, 0.9vw, 15px);
+  font-weight: 900;
+  box-shadow: 0 0 34px rgba(96, 213, 255, 0.26);
+  backdrop-filter: blur(18px) saturate(1.2);
+}
+
+.cosmic-panel-compact__upload:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .cosmic-panel__hide {
@@ -52,10 +86,6 @@
 }
 
 .cosmic-panel-toggle {
-  position: fixed;
-  top: clamp(14px, 2.22vw, 42px);
-  left: clamp(14px, 2.22vw, 42px);
-  z-index: 20;
   width: clamp(42px, 3.33vw, 56px);
   height: clamp(42px, 3.33vw, 56px);
   border-radius: 50%;
