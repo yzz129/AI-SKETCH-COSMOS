@@ -28,6 +28,8 @@ type ArtworkStore = {
   updateArtworkFeatures: (id: string, features: ArtworkFeatureResult) => void;
   updateArtworkAnalysis: (id: string, analysis: AIArtworkAnalysis) => void;
   updateArtworkGaussianModel: (id: string, gaussianModel: ArtworkGaussianModelResult) => void;
+  removeArtwork: (id: string) => void;
+  upsertBackendArtwork: (record: BackendArtworkRecord) => void;
   hydrateBackendArtworks: (records: BackendArtworkRecord[]) => void;
   clearArtworks: () => void;
 };
@@ -361,6 +363,10 @@ function artworkFromBackendRecord(record: BackendArtworkRecord): StoredArtwork {
   };
 }
 
+function backendArtworkKey(artwork: StoredArtwork) {
+  return artwork.gaussianModel?.sourceArtworkId ?? artwork.id;
+}
+
 // Start empty; backend SQLite hydration is triggered from App.
 export const useArtworkStore = create<ArtworkStore>((set) => ({
   artworks: [],
@@ -420,18 +426,58 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
       latestArtwork: updatedLatest
     };
   }),
-  hydrateBackendArtworks: (records) => set((state) => {
-    if (!records.length) return state;
+  removeArtwork: (id) => set((state) => {
+    const artworks = state.artworks.filter((artwork) => artwork.id !== id && artwork.gaussianModel?.sourceArtworkId !== id);
+    const latestArtwork = state.latestArtwork?.id === id || state.latestArtwork?.gaussianModel?.sourceArtworkId === id
+      ? artworks[0] ?? null
+      : state.latestArtwork;
+    if (state.latestArtwork?.id === id || state.latestArtwork?.gaussianModel?.sourceArtworkId === id) {
+      useSketchStore.getState().endSpotlight();
+    }
 
+    return {
+      artworks,
+      latestArtwork
+    };
+  }),
+  upsertBackendArtwork: (record) => set((state) => {
+    if (!(record.splatUrl || record.plyUrl || record.gaussianModel?.splatUrl || record.gaussianModel?.plyUrl)) {
+      return state;
+    }
+
+    const restored = artworkFromBackendRecord(record);
+    const existingIndex = state.artworks.findIndex((artwork) => artwork.id === restored.id || artwork.gaussianModel?.sourceArtworkId === restored.id);
+    const artworks = existingIndex >= 0
+      ? state.artworks.map((artwork) => artwork.id === restored.id || artwork.gaussianModel?.sourceArtworkId === restored.id ? restored : artwork)
+      : [restored, ...state.artworks];
+
+    artworks.sort((a, b) => b.createdAt - a.createdAt);
+
+    return {
+      artworks,
+      latestArtwork: state.latestArtwork?.id === restored.id
+        ? restored
+        : state.latestArtwork ?? restored
+    };
+  }),
+  hydrateBackendArtworks: (records) => set((state) => {
     const backendArtworks = records
       .filter((record) => record.splatUrl || record.plyUrl || record.gaussianModel?.splatUrl || record.gaussianModel?.plyUrl)
       .map(artworkFromBackendRecord);
-    if (!backendArtworks.length) return state;
+    const activeBackendIds = new Set(records.map((record) => record.id));
 
     const mergedById = new Map<string, StoredArtwork>();
-    for (const artwork of [...backendArtworks, ...state.artworks]) {
-      if (!mergedById.has(artwork.id)) {
-        mergedById.set(artwork.id, artwork);
+    for (const artwork of backendArtworks) {
+      mergedById.set(backendArtworkKey(artwork), artwork);
+    }
+    for (const artwork of state.artworks) {
+      const sourceArtworkId = artwork.gaussianModel?.sourceArtworkId;
+      if (sourceArtworkId && !activeBackendIds.has(sourceArtworkId)) {
+        continue;
+      }
+      const key = backendArtworkKey(artwork);
+      if (!mergedById.has(key)) {
+        mergedById.set(key, artwork);
       }
     }
     const artworks = Array.from(mergedById.values())
@@ -439,7 +485,9 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
 
     return {
       artworks,
-      latestArtwork: state.latestArtwork ?? artworks[0] ?? null
+      latestArtwork: state.latestArtwork && artworks.some((artwork) => artwork.id === state.latestArtwork?.id)
+        ? state.latestArtwork
+        : artworks[0] ?? null
     };
   }),
   clearArtworks: () => {

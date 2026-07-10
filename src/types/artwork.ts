@@ -69,6 +69,20 @@ export type MotionPreset =
   | 'rocketBoost'
   | 'vehicleCruise';
 
+export type ArtworkMotionPart =
+  | 'head'
+  | 'ears'
+  | 'leftArm'
+  | 'rightArm'
+  | 'arms'
+  | 'leftLeg'
+  | 'rightLeg'
+  | 'legs'
+  | 'tail'
+  | 'wings'
+  | 'fins'
+  | 'body';
+
 export type ArtworkFeatureResult = {
   subjectCategory: SubjectCategory;
 
@@ -99,6 +113,7 @@ export type ArtworkFeatureResult = {
   };
 
   motionPreset: MotionPreset;
+  motionParts?: ArtworkMotionPart[];
 };
 
 export type Artwork3DModelResult = {

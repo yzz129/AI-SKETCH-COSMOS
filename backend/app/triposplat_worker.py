@@ -5,7 +5,7 @@ import time
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from dotenv import load_dotenv
 from PIL import Image
@@ -220,6 +220,7 @@ def generate_triposplat_assets(
     source_path: Path,
     num_gaussians: int,
     export_format: str,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict:
     total_start = time.perf_counter()
     timings: dict[str, float] = {}
@@ -240,6 +241,8 @@ def generate_triposplat_assets(
             f"trustSourceAlpha={trust_source_alpha}"
         ),
     )
+    if progress_callback:
+        progress_callback(0.12, "正在生成 Seedream 3D 参考图")
 
     if os.getenv("TRIPOSPLAT_IN_SUBPROCESS"):
         seedream_preparation = SeedreamPreparation(
@@ -262,6 +265,13 @@ def generate_triposplat_assets(
             f"fallback={seedream_preparation.fallback_reason or 'none'}"
         ),
     )
+    if progress_callback:
+        progress_callback(
+            0.45 if seedream_preparation.used else 0.28,
+            "Seedream 参考图已生成，正在加载 TripoSplat 管线"
+            if seedream_preparation.used
+            else "正在使用原图加载 TripoSplat 管线",
+        )
 
     if os.getenv("TRIPOSPLAT_DEVICE", "cuda").startswith("cpu"):
         cpu_cap = int(os.getenv("TRIPOSPLAT_CPU_NUM_GAUSSIANS_CAP", "32768"))
@@ -278,6 +288,8 @@ def generate_triposplat_assets(
 
     with _timed_stage(artwork_id, "load_pipeline", timings):
         pipeline = load_pipeline()
+    if progress_callback:
+        progress_callback(0.5, "TripoSplat 管线已就绪，正在生成 Gaussian Splat")
 
     with _timed_stage(
         artwork_id,
@@ -301,6 +313,8 @@ def generate_triposplat_assets(
             trust_source_alpha=trust_source_alpha,
             show_progress=True,
         )
+    if progress_callback:
+        progress_callback(0.9, "Gaussian Splat 已生成，正在保存预览和模型")
 
     preview_path = artwork_dir / "preprocessed_image.webp"
     with _timed_stage(artwork_id, "save_preview", timings):
@@ -308,6 +322,8 @@ def generate_triposplat_assets(
             prepared.save(preview_path)
         elif hasattr(prepared, "save"):
             prepared.save(preview_path)
+    if progress_callback:
+        progress_callback(0.94, "预览图已保存，正在导出模型")
 
     splat_path = artwork_dir / "model.splat"
     ply_path = artwork_dir / "model.ply"
@@ -320,6 +336,8 @@ def generate_triposplat_assets(
     if write_ply:
         with _timed_stage(artwork_id, "save_ply", timings, path=ply_path.name):
             gaussian.save_ply(ply_path)
+    if progress_callback:
+        progress_callback(0.97, "模型已导出，正在写入清单")
 
     manifest = {
         "id": artwork_id,

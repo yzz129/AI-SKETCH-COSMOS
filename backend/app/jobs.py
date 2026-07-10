@@ -120,15 +120,25 @@ class JobRegistry:
                 job_id,
                 status=JobStatus.processing,
                 progress=0.08,
-                message="preparing Seedream 3D reference and generating TripoSplat",
+                message="任务已开始，正在准备生成流程",
             )
             generate_start = perf_counter()
+
+            def report_progress(progress: float, message: str) -> None:
+                self._update(
+                    job_id,
+                    status=JobStatus.processing,
+                    progress=progress,
+                    message=message,
+                )
+
             assets = generate_triposplat_assets(
                 artwork_id=job.artwork_id,
                 artwork_dir=job.artwork_dir,
                 source_path=job.source_path,
                 num_gaussians=job.num_gaussians,
                 export_format=job.export_format,
+                progress_callback=report_progress,
             )
             _log_perf(
                 job.job_id,

@@ -1,5 +1,6 @@
 import type {
   ArtworkFeatureResult,
+  ArtworkMotionPart,
   LocomotionType,
   SubjectCategory
 } from '../../types/artwork';
@@ -28,6 +29,20 @@ const COMPLEXITIES = ['simple', 'medium', 'complex'] as const;
 const BRIGHTNESS_LEVELS = ['low', 'medium', 'high'] as const;
 const SOFTNESS_LEVELS = ['soft', 'normal', 'sharp'] as const;
 const TEXTURE_STYLES = ['handdrawn', 'watercolor', 'crayon', 'flat', 'mixed'] as const;
+const MOTION_PARTS: ArtworkMotionPart[] = [
+  'head',
+  'ears',
+  'leftArm',
+  'rightArm',
+  'arms',
+  'leftLeg',
+  'rightLeg',
+  'legs',
+  'tail',
+  'wings',
+  'fins',
+  'body'
+];
 const REMOTE_FEATURE_RECOGNITION_ENABLED = import.meta.env.VITE_ARTWORK_FEATURE_RECOGNITION !== 'false';
 
 const CHINESE_LOCOMOTION_MAP: Record<string, LocomotionType> = {
@@ -119,6 +134,26 @@ function normalizeColorList(value: unknown, fallback: string[]) {
   return colors.length ? colors.slice(0, 5) : fallback;
 }
 
+function normalizeMotionParts(value: unknown, fallback: ArtworkMotionPart[]) {
+  if (!Array.isArray(value)) return fallback;
+  const allowed = new Set(MOTION_PARTS);
+  const parts = value
+    .filter((part): part is ArtworkMotionPart => typeof part === 'string' && allowed.has(part as ArtworkMotionPart));
+  return Array.from(new Set(parts)).slice(0, 8);
+}
+
+function fallbackMotionParts(features: FeatureBase): ArtworkMotionPart[] {
+  const parts: ArtworkMotionPart[] = [];
+  if (features.morphology.hasHead) parts.push('head');
+  if (features.morphology.hasArms) parts.push('arms');
+  if (features.morphology.hasLegs) parts.push('legs');
+  if (features.morphology.hasTail) parts.push('tail');
+  if (features.morphology.hasWings) parts.push('wings');
+  if (features.morphology.hasFins) parts.push('fins');
+  if (!parts.length) parts.push('body');
+  return parts;
+}
+
 function normalizeLocomotion(value: unknown, fallback: LocomotionType): LocomotionType {
   if (typeof value !== 'string') return fallback;
   if (LOCOMOTION_TYPES.includes(value as LocomotionType)) return value as LocomotionType;
@@ -148,7 +183,7 @@ function normalizeFeatureResult(raw: unknown, colors: string[]): FeatureBase {
   const wingCount = pickNumberEnum(morphology.wingCount, [0, 1, 2, 4] as const, fallback.morphology.wingCount);
   const legCount = pickNumberEnum(morphology.legCount, [0, 2, 4, 6, 8] as const, fallback.morphology.legCount);
 
-  return {
+  const normalized: FeatureBase = {
     subjectCategory: pickEnum(input.subjectCategory, SUBJECT_CATEGORIES, fallback.subjectCategory),
     morphology: {
       hasWings: pickBoolean(morphology.hasWings, wingCount > 0),
@@ -193,6 +228,10 @@ function normalizeFeatureResult(raw: unknown, colors: string[]): FeatureBase {
       textureStyle: pickEnum(visualTraits.textureStyle, TEXTURE_STYLES, fallback.visualTraits.textureStyle)
     }
   };
+  return {
+    ...normalized,
+    motionParts: normalizeMotionParts(input.motionParts, fallbackMotionParts(normalized))
+  } as FeatureBase & { motionParts: ArtworkMotionPart[] };
 }
 
 async function callVisionFeatureApi(file: File) {
@@ -230,6 +269,9 @@ export async function analyzeArtworkFeatures(file: File): Promise<ArtworkFeature
 
   return {
     ...base,
-    motionPreset: resolveMotionPreset(base)
+    motionPreset: resolveMotionPreset(base),
+    motionParts: 'motionParts' in base
+      ? (base as FeatureBase & { motionParts?: ArtworkMotionPart[] }).motionParts
+      : fallbackMotionParts(base)
   };
 }

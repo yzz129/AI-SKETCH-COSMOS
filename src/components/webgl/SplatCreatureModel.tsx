@@ -41,6 +41,15 @@ type SplatCpuDeformer = {
   scale: THREE.Vector3;
   quaternion: THREE.Quaternion;
   color: THREE.Color;
+  anchor: THREE.Vector3;
+  local: THREE.Vector3;
+  rotated: THREE.Vector3;
+  motionParts: number[];
+  activePart: number;
+  actionStartedAt: number;
+  actionDuration: number;
+  nextActionAt: number;
+  randomSeed: number;
 };
 
 const CPU_DEFORM_HZ = 18;
@@ -54,6 +63,51 @@ let cpuDeformBudgetFrame = -1;
 let cpuDeformBudgetUsed = 0;
 const cpuDeformActiveSlots = new Map<string, number>();
 const cpuDeformRestUntil = new Map<string, number>();
+
+const SPLAT_PART_HEAD = 1;
+const SPLAT_PART_LEFT_ARM = 2;
+const SPLAT_PART_RIGHT_ARM = 3;
+const SPLAT_PART_LEFT_LEG = 4;
+const SPLAT_PART_RIGHT_LEG = 5;
+const SPLAT_PART_TAIL = 6;
+
+function motionPartIdsFromFeatures(features: ArtworkFeatureResult) {
+  const ids = new Set<number>();
+  const addArms = () => {
+    ids.add(SPLAT_PART_LEFT_ARM);
+    ids.add(SPLAT_PART_RIGHT_ARM);
+  };
+  const addLegs = () => {
+    ids.add(SPLAT_PART_LEFT_LEG);
+    ids.add(SPLAT_PART_RIGHT_LEG);
+  };
+
+  for (const part of features.motionParts ?? []) {
+    if (part === 'head' || part === 'ears') ids.add(SPLAT_PART_HEAD);
+    else if (part === 'leftArm') ids.add(SPLAT_PART_LEFT_ARM);
+    else if (part === 'rightArm') ids.add(SPLAT_PART_RIGHT_ARM);
+    else if (part === 'arms' || part === 'wings') addArms();
+    else if (part === 'leftLeg') ids.add(SPLAT_PART_LEFT_LEG);
+    else if (part === 'rightLeg') ids.add(SPLAT_PART_RIGHT_LEG);
+    else if (part === 'legs') addLegs();
+    else if (part === 'tail' || part === 'fins') ids.add(SPLAT_PART_TAIL);
+    else if (part === 'body') {
+      if (features.morphology.hasHead) ids.add(SPLAT_PART_HEAD);
+      if (features.morphology.hasArms || features.morphology.hasWings) addArms();
+      if (features.morphology.hasLegs) addLegs();
+      if (features.morphology.hasTail || features.morphology.hasFins) ids.add(SPLAT_PART_TAIL);
+    }
+  }
+
+  if (!ids.size) {
+    if (features.morphology.hasHead) ids.add(SPLAT_PART_HEAD);
+    if (features.morphology.hasArms || features.morphology.hasWings) addArms();
+    if (features.morphology.hasLegs) addLegs();
+    if (features.morphology.hasTail || features.morphology.hasFins) ids.add(SPLAT_PART_TAIL);
+  }
+
+  return ids;
+}
 
 export function SplatCreatureModel({
   url,
@@ -393,6 +447,68 @@ function characteristicFeatureMask(
   return outer;
 }
 
+function classifySplatMotionPart(
+  features: ArtworkFeatureResult,
+  nx: number,
+  ny: number,
+  nz: number,
+  radial: number,
+  mask: number
+) {
+  const absX = Math.abs(nx);
+  const absY = Math.abs(ny);
+  const side = THREE.MathUtils.smoothstep(absX, 0.34, 0.92);
+  const top = THREE.MathUtils.smoothstep(ny, 0.38, 0.94);
+  const bottom = THREE.MathUtils.smoothstep(-ny, 0.36, 0.94);
+  const outer = THREE.MathUtils.smoothstep(radial, 0.64, 1.16);
+  const sideSign = nx >= 0 ? 1 : -1;
+  const { morphology, behaviorTraits, motionPreset } = features;
+  const isSwimmer = morphology.hasTail
+    || morphology.hasFins
+    || behaviorTraits.locomotionType === 'swimming'
+    || motionPreset.includes('fish')
+    || motionPreset.includes('eel')
+    || motionPreset.includes('dolphin')
+    || motionPreset.includes('squid');
+
+  if (morphology.hasLegs && bottom > 0.18 && absX > 0.12) {
+    return {
+      part: sideSign < 0 ? SPLAT_PART_LEFT_LEG : SPLAT_PART_RIGHT_LEG,
+      weight: THREE.MathUtils.clamp(bottom * (0.55 + side * 0.45) * mask, 0, 1),
+    };
+  }
+
+  if (morphology.hasArms && side > 0.2 && ny > -0.36 && ny < 0.62) {
+    return {
+      part: sideSign < 0 ? SPLAT_PART_LEFT_ARM : SPLAT_PART_RIGHT_ARM,
+      weight: THREE.MathUtils.clamp(side * (1 - bottom * 0.45) * mask, 0, 1),
+    };
+  }
+
+  if (isSwimmer && outer > 0.22 && (Math.abs(nz) > 0.18 || absX > 0.42)) {
+    return {
+      part: SPLAT_PART_TAIL,
+      weight: THREE.MathUtils.clamp(outer * (0.6 + absY * 0.25) * mask, 0, 1),
+    };
+  }
+
+  if (top > 0.22) {
+    return {
+      part: SPLAT_PART_HEAD,
+      weight: THREE.MathUtils.clamp(top * (0.6 + outer * 0.3) * mask, 0, 1),
+    };
+  }
+
+  if (outer > 0.48 && (morphology.hasTail || morphology.hasFins)) {
+    return {
+      part: SPLAT_PART_TAIL,
+      weight: THREE.MathUtils.clamp(outer * mask * 0.85, 0, 1),
+    };
+  }
+
+  return { part: 0, weight: 0 };
+}
+
 function createSplatCpuDeformer(mesh: SparkSplatMesh, features: ArtworkFeatureResult): SplatCpuDeformer | null {
   if (!mesh.packedSplats?.setSplat) return null;
 
@@ -418,13 +534,16 @@ function createSplatCpuDeformer(mesh: SparkSplatMesh, features: ArtworkFeatureRe
   const quaternions = new Float32Array(targetCount * 4);
   const opacities = new Float32Array(targetCount);
   const colors = new Float32Array(targetCount * 3);
-  const shape = new Float32Array(targetCount * 4);
+  const shape = new Float32Array(targetCount * 5);
+  const enabledParts = motionPartIdsFromFeatures(features);
+  const motionParts = new Set<number>();
   let cursor = 0;
 
   mesh.forEachSplat((index, splatCenter, splatScale, splatQuaternion, opacity, splatColor) => {
     if (index % stride !== 0 || cursor >= targetCount) return;
     const i3 = cursor * 3;
     const i4 = cursor * 4;
+    const i5 = cursor * 5;
     const nx = THREE.MathUtils.clamp((splatCenter.x - center.x) / (safeSize.x * 0.5), -1, 1);
     const ny = THREE.MathUtils.clamp((splatCenter.y - center.y) / (safeSize.y * 0.5), -1, 1);
     const nz = THREE.MathUtils.clamp((splatCenter.z - center.z) / (safeSize.z * 0.5), -1, 1);
@@ -432,6 +551,9 @@ function createSplatCpuDeformer(mesh: SparkSplatMesh, features: ArtworkFeatureRe
     const edge = THREE.MathUtils.clamp((Math.abs(nx) + Math.abs(ny) + Math.abs(nz)) / 2.15, 0, 1.25);
     const limbMask = characteristicFeatureMask(features, nx, ny, nz, radial, edge);
     if (limbMask <= 0.32) return;
+    const motionPart = classifySplatMotionPart(features, nx, ny, nz, radial, limbMask);
+    if (motionPart.part === 0 || motionPart.weight <= 0.12) return;
+    if (enabledParts.size > 0 && !enabledParts.has(motionPart.part)) return;
 
     indices[cursor] = index;
     centers[i3] = splatCenter.x;
@@ -448,10 +570,12 @@ function createSplatCpuDeformer(mesh: SparkSplatMesh, features: ArtworkFeatureRe
     colors[i3] = splatColor.r;
     colors[i3 + 1] = splatColor.g;
     colors[i3 + 2] = splatColor.b;
-    shape[i4] = nx;
-    shape[i4 + 1] = ny;
-    shape[i4 + 2] = nz;
-    shape[i4 + 3] = limbMask;
+    shape[i5] = nx;
+    shape[i5 + 1] = ny;
+    shape[i5 + 2] = nz;
+    shape[i5 + 3] = motionPart.part;
+    shape[i5 + 4] = motionPart.weight;
+    motionParts.add(motionPart.part);
     cursor += 1;
   });
 
@@ -464,7 +588,7 @@ function createSplatCpuDeformer(mesh: SparkSplatMesh, features: ArtworkFeatureRe
     quaternions: quaternions.slice(0, cursor * 4),
     opacities: opacities.slice(0, cursor),
     colors: colors.slice(0, cursor * 3),
-    shape: shape.slice(0, cursor * 4),
+    shape: shape.slice(0, cursor * 5),
     maxDimension,
     lastUpdate: -100,
     cursor: 0,
@@ -473,7 +597,16 @@ function createSplatCpuDeformer(mesh: SparkSplatMesh, features: ArtworkFeatureRe
     center: new THREE.Vector3(),
     scale: new THREE.Vector3(),
     quaternion: new THREE.Quaternion(),
-    color: new THREE.Color()
+    color: new THREE.Color(),
+    anchor: new THREE.Vector3(),
+    local: new THREE.Vector3(),
+    rotated: new THREE.Vector3(),
+    motionParts: Array.from(motionParts),
+    activePart: 0,
+    actionStartedAt: -100,
+    actionDuration: 1,
+    nextActionAt: 0,
+    randomSeed: Math.abs(Math.sin(maxDimension * 97.13 + cursor * 13.71) * 10000)
   };
 }
 
@@ -518,6 +651,53 @@ function restoreSplatCpuDeformation(mesh: SparkSplatMesh, deformer: SplatCpuDefo
   }
 }
 
+function seededUnit(seed: number) {
+  const value = Math.sin(seed * 12.9898) * 43758.5453;
+  return value - Math.floor(value);
+}
+
+function updateActiveSplatPart(deformer: SplatCpuDeformer, time: number) {
+  if (!deformer.motionParts.length) return;
+  if (time < deformer.nextActionAt) return;
+
+  const pickSeed = deformer.randomSeed + time * 0.37 + deformer.motionParts.length * 3.1;
+  let nextIndex = Math.floor(seededUnit(pickSeed) * deformer.motionParts.length) % deformer.motionParts.length;
+  let nextPart = deformer.motionParts[nextIndex];
+
+  if (deformer.motionParts.length > 1 && nextPart === deformer.activePart) {
+    nextIndex = (nextIndex + 1) % deformer.motionParts.length;
+    nextPart = deformer.motionParts[nextIndex];
+  }
+
+  deformer.activePart = nextPart;
+  deformer.actionStartedAt = time;
+  deformer.actionDuration = 1.35 + seededUnit(pickSeed + 7.7) * 1.1;
+  deformer.nextActionAt = time + deformer.actionDuration + 0.35 + seededUnit(pickSeed + 13.3) * 0.95;
+  deformer.randomSeed += 1.618;
+}
+
+function splatPartActionEnvelope(deformer: SplatCpuDeformer, time: number) {
+  const progress = THREE.MathUtils.clamp((time - deformer.actionStartedAt) / Math.max(0.001, deformer.actionDuration), 0, 1);
+  const fadeIn = THREE.MathUtils.smoothstep(progress, 0, 0.22);
+  const fadeOut = 1 - THREE.MathUtils.smoothstep(progress, 0.72, 1);
+  return fadeIn * fadeOut;
+}
+
+function companionPartInfluence(activePart: number, part: number) {
+  if (part === activePart) return 1;
+  if (
+    (activePart === SPLAT_PART_LEFT_ARM && part === SPLAT_PART_RIGHT_ARM)
+    || (activePart === SPLAT_PART_RIGHT_ARM && part === SPLAT_PART_LEFT_ARM)
+    || (activePart === SPLAT_PART_LEFT_LEG && part === SPLAT_PART_RIGHT_LEG)
+    || (activePart === SPLAT_PART_RIGHT_LEG && part === SPLAT_PART_LEFT_LEG)
+  ) {
+    return 0.28;
+  }
+  if (activePart === SPLAT_PART_HEAD && (part === SPLAT_PART_LEFT_ARM || part === SPLAT_PART_RIGHT_ARM)) return 0.14;
+  if (activePart === SPLAT_PART_TAIL && (part === SPLAT_PART_LEFT_LEG || part === SPLAT_PART_RIGHT_LEG)) return 0.16;
+  return 0.06;
+}
+
 function updateSplatCpuDeformation(
   mesh: SparkSplatMesh,
   deformer: SplatCpuDeformer,
@@ -534,40 +714,92 @@ function updateSplatCpuDeformation(
   deformer.lastUpdate = time;
   const strength = THREE.MathUtils.clamp(energy, 0, 1.1);
   const count = deformer.indices.length;
+  const breathe = Math.sin(time * 1.15) * deformer.maxDimension * 0.01 * strength;
+  updateActiveSplatPart(deformer, time);
+  const actionEnvelope = splatPartActionEnvelope(deformer, time);
 
   for (let write = 0; write < writes; write += 1) {
     const entry = deformer.cursor;
     deformer.cursor = (deformer.cursor + 1) % count;
     const i3 = entry * 3;
     const i4 = entry * 4;
-    const x = deformer.shape[i4];
-    const y = deformer.shape[i4 + 1];
-    const z = deformer.shape[i4 + 2];
-    const mask = deformer.shape[i4 + 3];
-    const phase = (x >= 0 ? 0.0 : Math.PI) + (y > 0.35 ? 0.35 : 0.0) + (y < -0.35 ? -0.35 : 0.0);
-    const side = THREE.MathUtils.smoothstep(Math.abs(x), 0.24, 0.98);
-    const topBottom = THREE.MathUtils.smoothstep(Math.abs(y), 0.24, 0.96);
-    const radial = THREE.MathUtils.clamp(Math.sqrt(x * x + z * z), 0, 1.45);
-    const tail = THREE.MathUtils.smoothstep(radial, 0.5, 1.18);
+    const i5 = entry * 5;
+    const x = deformer.shape[i5];
+    const y = deformer.shape[i5 + 1];
+    const z = deformer.shape[i5 + 2];
+    const part = deformer.shape[i5 + 3];
+    const partWeight = deformer.shape[i5 + 4];
     const signX = x >= 0 ? 1 : -1;
-    const bodyWave = Math.sin(time * 2.7 + x * 1.35 + phase);
-    const tailWave = Math.sin(time * 3.8 + x * 2.2 + phase) * tail;
-    const limbSwing = Math.sin(time * 3.2 + phase) * side;
-    const verticalNod = Math.cos(time * 2.4 + phase) * topBottom;
-    const breathe = Math.sin(time * 1.15);
-    const amp = deformer.maxDimension * 0.115 * strength * (0.35 + mask * 0.65);
-    const radialLen = Math.max(0.001, Math.sqrt(x * x + y * y * 0.62 + z * z));
+    const phase = signX < 0 ? Math.PI : 0;
+    const partInfluence = companionPartInfluence(deformer.activePart, part);
+    const softActivation = 0.08 + actionEnvelope * partInfluence;
+    const weight = THREE.MathUtils.clamp(partWeight * strength * softActivation, 0, 1);
+    let angleX = 0;
+    let angleY = 0;
+    let angleZ = 0;
+    let offsetY = 0;
+    let offsetZ = 0;
+
+    if (part === SPLAT_PART_LEFT_ARM || part === SPLAT_PART_RIGHT_ARM) {
+      deformer.anchor.set(signX * 0.34, 0.05, 0);
+      angleX = Math.sin(time * 2.0 + phase) * 0.16 + Math.sin(time * 0.72 + phase) * 0.04;
+      angleZ = Math.sin(time * 1.82 + phase + 0.8) * signX * 0.14;
+      offsetY = Math.cos(time * 2.0 + phase) * 0.01;
+    } else if (part === SPLAT_PART_LEFT_LEG || part === SPLAT_PART_RIGHT_LEG) {
+      deformer.anchor.set(signX * 0.18, -0.42, 0);
+      angleX = Math.sin(time * 1.76 + phase + 0.4) * 0.13;
+      angleZ = Math.sin(time * 1.38 + phase) * signX * 0.06;
+      offsetY = Math.max(0, Math.sin(time * 1.76 + phase)) * 0.016;
+    } else if (part === SPLAT_PART_TAIL) {
+      deformer.anchor.set(0, -0.08, z >= 0 ? 0.42 : -0.42);
+      angleY = Math.sin(time * 1.95 + phase + z * 0.22) * 0.2;
+      angleX = Math.cos(time * 1.42 + phase) * 0.07;
+      offsetZ = Math.sin(time * 1.95 + phase) * 0.016;
+    } else {
+      deformer.anchor.set(0, 0.28, 0);
+      angleY = Math.sin(time * 0.76 + phase) * 0.04;
+      angleZ = Math.sin(time * 1.02 + phase) * 0.032;
+      offsetY = Math.sin(time * 1.25 + phase) * 0.01;
+    }
+
+    deformer.local.set(x - deformer.anchor.x, y - deformer.anchor.y, z - deformer.anchor.z);
+    deformer.rotated.copy(deformer.local);
+
+    if (angleX !== 0) {
+      const cos = Math.cos(angleX);
+      const sin = Math.sin(angleX);
+      const ry = deformer.rotated.y * cos - deformer.rotated.z * sin;
+      const rz = deformer.rotated.y * sin + deformer.rotated.z * cos;
+      deformer.rotated.y = ry;
+      deformer.rotated.z = rz;
+    }
+    if (angleY !== 0) {
+      const cos = Math.cos(angleY);
+      const sin = Math.sin(angleY);
+      const rx = deformer.rotated.x * cos + deformer.rotated.z * sin;
+      const rz = -deformer.rotated.x * sin + deformer.rotated.z * cos;
+      deformer.rotated.x = rx;
+      deformer.rotated.z = rz;
+    }
+    if (angleZ !== 0) {
+      const cos = Math.cos(angleZ);
+      const sin = Math.sin(angleZ);
+      const rx = deformer.rotated.x * cos - deformer.rotated.y * sin;
+      const ry = deformer.rotated.x * sin + deformer.rotated.y * cos;
+      deformer.rotated.x = rx;
+      deformer.rotated.y = ry;
+    }
 
     deformer.center.set(
       deformer.centers[i3]
-        + (x / radialLen) * breathe * amp * 0.18
-        + signX * limbSwing * amp * 0.64,
+        + (deformer.rotated.x - deformer.local.x) * deformer.maxDimension * weight
+        + x * breathe * weight,
       deformer.centers[i3 + 1]
-        + verticalNod * amp * 0.42,
+        + (deformer.rotated.y - deformer.local.y) * deformer.maxDimension * weight
+        + offsetY * deformer.maxDimension * weight,
       deformer.centers[i3 + 2]
-        + bodyWave * amp * 0.35
-        + tailWave * amp * 1.35
-        + limbSwing * amp * 0.24
+        + (deformer.rotated.z - deformer.local.z) * deformer.maxDimension * weight
+        + offsetZ * deformer.maxDimension * weight
     );
     deformer.scale.set(
       deformer.scales[i3],

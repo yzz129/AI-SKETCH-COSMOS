@@ -192,6 +192,7 @@ function createArtworkFeaturePrompt() {
 - 适合飞行、奔跑、跳跃、游动、漂浮、爬行、摇摆、生长还是静止发光
 - 画面主色、亮度、柔软程度、手绘材质风格
 - 气质：cute / dreamy / playful / gentle / mysterious
+- 适合做局部运动的身体部位 motionParts：从 head、ears、leftArm、rightArm、arms、leftLeg、rightLeg、legs、tail、wings、fins、body 中选择 1 到 6 个。优先选择图中真实存在且适合整体摆动/点头/抬腿/摆尾的部位。
 
 请严格输出 JSON，不要 Markdown，不要解释，不要额外字段。下面 JSON 中的值只是类型示例，请必须根据图像内容改写每一个值。格式必须完全符合：
 {
@@ -218,7 +219,8 @@ function createArtworkFeaturePrompt() {
     "brightness": "low | medium | high",
     "softness": "soft | normal | sharp",
     "textureStyle": "handdrawn | watercolor | crayon | flat | mixed"
-  }
+  },
+  "motionParts": ["head", "leftArm", "rightArm", "tail"]
 }
 
 约束：
@@ -226,7 +228,8 @@ function createArtworkFeaturePrompt() {
 - legCount 只能是 0、2、4、6、8。
 - 如果画面主体不清晰，subjectCategory 使用 abstract，locomotionType 使用 floating 或 idle。
 - 不要输出 motionPreset，前端会自行映射。
-- dominantColors 必须是十六进制颜色字符串数组。`;
+- dominantColors 必须是十六进制颜色字符串数组。
+- motionParts 不要包含图中不存在的部位；如果不能判断，就输出 ["body"]。`;
 }
 
 function createLegacyRecognitionPrompt() {

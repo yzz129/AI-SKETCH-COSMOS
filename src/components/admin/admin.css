@@ -228,7 +228,7 @@
 
 .admin-bulkbar {
   display: grid;
-  grid-template-columns: minmax(92px, 1fr) minmax(64px, auto) 88px;
+  grid-template-columns: minmax(92px, 1fr) minmax(64px, auto) repeat(2, minmax(88px, auto));
   align-items: center;
   gap: 8px;
   min-height: 36px;
@@ -259,6 +259,12 @@
   font: inherit;
   font-size: 0.78rem;
   font-weight: 900;
+}
+
+.admin-bulkbar button.admin-bulkbar__danger {
+  border-color: rgba(190, 42, 72, 0.34);
+  background: #ffe4e9;
+  color: #9d1530;
 }
 
 .admin-bulkbar button:disabled {

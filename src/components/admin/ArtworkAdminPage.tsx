@@ -19,10 +19,20 @@ import {
   patchBackendArtworkRecord,
   restoreBackendArtwork
 } from '../../lib/artwork/backendArtworkLibrary';
-import type { BackendArtworkRecord } from '../../stores/artworkStore';
+import { type BackendArtworkRecord, useArtworkStore } from '../../stores/artworkStore';
 import './admin.css';
 
 const PAGE_SIZE = 20;
+const ARTWORK_LIBRARY_CHANGED_EVENT = 'artwork-library-changed';
+
+function notifyArtworkLibraryChanged() {
+  if ('BroadcastChannel' in window) {
+    const channel = new BroadcastChannel(ARTWORK_LIBRARY_CHANGED_EVENT);
+    channel.postMessage({ changedAt: Date.now() });
+    channel.close();
+  }
+  localStorage.setItem(ARTWORK_LIBRARY_CHANGED_EVENT, String(Date.now()));
+}
 
 function formatDate(value?: string | null) {
   if (!value) return '-';
@@ -50,6 +60,8 @@ function parseJsonField(value: string, field: string) {
 }
 
 export function ArtworkAdminPage() {
+  const removeArtwork = useArtworkStore((store) => store.removeArtwork);
+  const upsertBackendArtwork = useArtworkStore((store) => store.upsertBackendArtwork);
   const [records, setRecords] = useState<BackendArtworkRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -194,6 +206,8 @@ export function ArtworkAdminPage() {
     setMessage('');
     try {
       await deleteBackendArtwork(selected.id);
+      removeArtwork(selected.id);
+      notifyArtworkLibraryChanged();
       setMessage('已从前端页面移除，模型文件已保留');
       const nextPage = records.length <= 1 && page > 0 ? page - 1 : page;
       if (nextPage !== page) {
@@ -211,6 +225,8 @@ export function ArtworkAdminPage() {
     setMessage('');
     try {
       await restoreBackendArtwork(selected.id);
+      upsertBackendArtwork({ ...selected, isDeleted: false, deletedAt: null });
+      notifyArtworkLibraryChanged();
       setMessage('已恢复到前端页面');
       const nextPage = records.length <= 1 && page > 0 ? page - 1 : page;
       if (nextPage !== page) {
@@ -231,6 +247,8 @@ export function ArtworkAdminPage() {
     setMessage('');
     try {
       await deleteBackendArtworkRecord(selected.id);
+      removeArtwork(selected.id);
+      notifyArtworkLibraryChanged();
       setMessage('已彻底删除数据库记录和模型文件');
       const nextPage = records.length <= 1 && page > 0 ? page - 1 : page;
       if (nextPage !== page) {
@@ -255,6 +273,13 @@ export function ArtworkAdminPage() {
     setIsLoading(true);
     try {
       await Promise.all(ids.map((id) => isDeletedView ? restoreBackendArtwork(id) : deleteBackendArtwork(id)));
+      if (isDeletedView) {
+        const selectedRecords = records.filter((record) => selectedIds.has(record.id));
+        selectedRecords.forEach((record) => upsertBackendArtwork({ ...record, isDeleted: false, deletedAt: null }));
+      } else {
+        ids.forEach(removeArtwork);
+      }
+      notifyArtworkLibraryChanged();
       setSelectedIds(new Set());
       setMessage(isDeletedView ? `已恢复 ${ids.length} 个作品` : `已移除 ${ids.length} 个作品`);
       const nextPage = records.length <= ids.length && page > 0 ? page - 1 : page;
@@ -265,6 +290,33 @@ export function ArtworkAdminPage() {
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : isDeletedView ? '批量恢复失败' : '批量移除失败');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const runSelectedPermanentDelete = async () => {
+    const ids = [...selectedIds];
+    if (!ids.length) return;
+    const confirmed = window.confirm(`彻底删除 ${ids.length} 个作品？这会同时删除数据库记录和本地模型文件，无法恢复。`);
+    if (!confirmed) return;
+
+    setMessage('');
+    setIsLoading(true);
+    try {
+      await Promise.all(ids.map((id) => deleteBackendArtworkRecord(id)));
+      ids.forEach(removeArtwork);
+      notifyArtworkLibraryChanged();
+      setSelectedIds(new Set());
+      setMessage(`已彻底删除 ${ids.length} 个作品`);
+      const nextPage = records.length <= ids.length && page > 0 ? page - 1 : page;
+      if (nextPage !== page) {
+        setPage(nextPage);
+      } else {
+        await loadRecords(nextPage, status);
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '批量彻底删除失败');
     } finally {
       setIsLoading(false);
     }
@@ -351,6 +403,16 @@ export function ArtworkAdminPage() {
             <button type="button" onClick={runSelectedBatchAction} disabled={selectedCount === 0 || isLoading}>
               {isDeletedView ? '批量恢复' : '批量移除'}
             </button>
+            {isDeletedView ? (
+              <button
+                className="admin-bulkbar__danger"
+                type="button"
+                onClick={runSelectedPermanentDelete}
+                disabled={selectedCount === 0 || isLoading}
+              >
+                彻底删除
+              </button>
+            ) : null}
           </div>
 
           <div className="admin-record-list">
