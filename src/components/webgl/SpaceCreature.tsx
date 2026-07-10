@@ -20,6 +20,7 @@ import {
   SPOTLIGHT_RELEASE_DURATION,
   SPOTLIGHT_SHOWCASE_DURATION
 } from './spotlightConfig';
+import { useAutoCosmicInteractionStore } from './autoCosmicInteractionStore';
 import { CREATURE_ORBIT_CENTER } from './cosmicAnchors';
 import { markCreaturePriorityHit } from './pointerPriority';
 
@@ -29,8 +30,10 @@ type SpaceCreatureProps = {
 };
 
 const RESPAWN_TRAIL_DURATION = 1.65;
-const RESPAWN_REAPPEAR_DELAY = 1.35;
 const RESPAWN_TRAIL_MODEL_CLEARANCE = 0.42;
+const RESPAWN_REAPPEAR_DURATION = 2.4;
+const RESPAWN_RETURN_DELAY = 1.8;
+const RESPAWN_RETURN_DURATION = 4.8;
 
 type RespawnMeteorTrailProps = {
   startRef: MutableRefObject<THREE.Vector3 | null>;
@@ -265,14 +268,14 @@ function RespawnMeteorTrail({
   });
 
   return (
-    <group renderOrder={12} frustumCulled={false}>
-      <mesh ref={mainRef} material={mainMaterial} renderOrder={12} frustumCulled={false} visible={false}>
+    <group renderOrder={12} frustumCulled>
+      <mesh ref={mainRef} material={mainMaterial} renderOrder={12} frustumCulled visible={false}>
         <planeGeometry args={[1, 1]} />
       </mesh>
-      <mesh ref={coreRef} material={coreMaterial} renderOrder={13} frustumCulled={false} visible={false}>
+      <mesh ref={coreRef} material={coreMaterial} renderOrder={13} frustumCulled visible={false}>
         <planeGeometry args={[1, 1]} />
       </mesh>
-      <mesh ref={headRef} material={headMaterial} renderOrder={14} frustumCulled={false} visible={false}>
+      <mesh ref={headRef} material={headMaterial} renderOrder={14} frustumCulled visible={false}>
         <planeGeometry args={[1, 1]} />
       </mesh>
     </group>
@@ -282,6 +285,7 @@ function RespawnMeteorTrail({
 export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
   const spotlightCreatureId = useSketchStore((state) => state.spotlight.creatureId);
   const spotlightPhase = useSketchStore((state) => state.spotlight.phase);
+  const autoCreaturePulse = useAutoCosmicInteractionStore((state) => state.creaturePulse);
   const groupRef = useRef<THREE.Group>(null);
   const visualRef = useRef<THREE.Group>(null);
   const interactionMeshRef = useRef<THREE.Mesh>(null);
@@ -302,13 +306,9 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
   const burstStartedAtRef = useRef(-100);
   const burstAnchorRef = useRef<THREE.Vector3 | null>(null);
   const burstWasActiveRef = useRef(false);
+  const lastAutoCreaturePulseRef = useRef(0);
   const respawnPositionRef = useRef<THREE.Vector3 | null>(null);
   const respawnStartedAtRef = useRef(-100);
-  const respawnTrailStartRef = useRef<THREE.Vector3 | null>(null);
-  const respawnTrailEndRef = useRef<THREE.Vector3 | null>(null);
-  const respawnTrailStartedAtRef = useRef(-100);
-  const flightModelWorldPositionRef = useRef(new THREE.Vector3());
-  const flightModelOpacityRef = useRef(0);
   const visibleInteractionPositionRef = useRef(new THREE.Vector3());
   const lastPositionRef = useRef(new THREE.Vector3());
   const smoothedOffsetRef = useRef(new THREE.Vector3());
@@ -376,6 +376,21 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
   const planeHeight = artwork.aspect >= 1 ? maxSize / artwork.aspect : maxSize;
   const spotlightEnabled = spotlightCreatureId === artwork.id && spotlightPhase !== 'idle';
   const splatUrl = artwork.gaussianModel?.status === 'ready' ? artwork.gaussianModel.splatUrl : undefined;
+
+  useEffect(() => {
+    if (autoCreaturePulse.id === 0 || autoCreaturePulse.id === lastAutoCreaturePulseRef.current) return;
+    if (autoCreaturePulse.creatureId !== artwork.id || spotlightEnabled) return;
+
+    lastAutoCreaturePulseRef.current = autoCreaturePulse.id;
+    const now = performance.now() * 0.001;
+    burstAnchorRef.current = visibleInteractionPositionRef.current.clone();
+    respawnPositionRef.current = null;
+    burstWasActiveRef.current = false;
+    pulseStartedAtRef.current = now;
+    burstStartedAtRef.current = now;
+    burstPhaseRef.current = 0;
+    reappearRef.current = 0;
+  }, [artwork.id, autoCreaturePulse, spotlightEnabled]);
 
   const pickRespawnPosition = (awayFrom?: THREE.Vector3) => {
     for (let attempt = 0; attempt < 12; attempt += 1) {
@@ -525,7 +540,7 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
     const pulseAge = wallTime - pulseStartedAtRef.current;
     pulseRef.current = pulseAge < 1.15 ? Math.sin((1 - pulseAge / 1.15) * Math.PI) * 0.9 : 0;
     const burstAge = wallTime - burstStartedAtRef.current;
-    const burstDuration = splatUrl ? 1.55 : 1.35;
+    const burstDuration = splatUrl ? 1.85 : 1.65;
     const burstActive = burstAge >= 0 && burstAge < burstDuration;
     const burstProgress = THREE.MathUtils.clamp(burstAge / burstDuration, 0, 1);
     burstRef.current = burstActive ? Math.sin(burstProgress * Math.PI) : 0;
@@ -538,9 +553,6 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
       burstWasActiveRef.current = true;
       respawnPositionRef.current = nextRespawnPosition;
       respawnStartedAtRef.current = wallTime;
-      respawnTrailStartRef.current = previousBurstAnchor.clone();
-      respawnTrailEndRef.current = nextRespawnPosition.clone();
-      respawnTrailStartedAtRef.current = wallTime;
       reappearRef.current = 0;
     }
 
@@ -551,9 +563,6 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
         const nextRespawnPosition = pickRespawnPosition(previousBurstAnchor);
         respawnPositionRef.current = nextRespawnPosition;
         respawnStartedAtRef.current = wallTime;
-        respawnTrailStartRef.current = previousBurstAnchor ?? group.position.clone();
-        respawnTrailEndRef.current = nextRespawnPosition.clone();
-        respawnTrailStartedAtRef.current = wallTime;
       }
       burstAnchorRef.current = null;
     }
@@ -563,11 +572,24 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
       reappearRef.current = 0;
     } else if (respawnPositionRef.current) {
       const respawnAge = wallTime - respawnStartedAtRef.current;
-      const visibleAge = Math.max(0, respawnAge - RESPAWN_REAPPEAR_DELAY);
-      const fadeProgress = THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(visibleAge / 1.05, 0, 1), 0, 1);
-      const returnProgress = THREE.MathUtils.smoothstep(THREE.MathUtils.clamp((visibleAge - 1.0) / 3.2, 0, 1), 0, 1);
+      const visibleAge = Math.max(0, respawnAge - burstDuration - 0.12);
+      const fadeProgress = THREE.MathUtils.smootherstep(
+        THREE.MathUtils.clamp(visibleAge / RESPAWN_REAPPEAR_DURATION, 0, 1),
+        0,
+        1
+      );
+      const returnProgress = THREE.MathUtils.smootherstep(
+        THREE.MathUtils.clamp(
+          (visibleAge - RESPAWN_RETURN_DELAY) / RESPAWN_RETURN_DURATION,
+          0,
+          1
+        ),
+        0,
+        1
+      );
       group.position.lerpVectors(respawnPositionRef.current, pathWorldPosition, returnProgress);
       reappearRef.current = fadeProgress;
+      group.scale.multiplyScalar(THREE.MathUtils.lerp(0.76, 1, fadeProgress));
 
       if (returnProgress >= 0.995) {
         respawnPositionRef.current = null;
@@ -577,29 +599,7 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
       reappearRef.current = 1;
     }
 
-    const trailStart = respawnTrailStartRef.current;
-    const trailEnd = respawnTrailEndRef.current;
-    const trailAge = wallTime - respawnTrailStartedAtRef.current;
-    const flightFadeEnd = RESPAWN_TRAIL_DURATION + 0.22;
-    if (trailStart && trailEnd && trailAge >= 0 && trailAge < flightFadeEnd) {
-      const flightProgress = THREE.MathUtils.clamp(trailAge / RESPAWN_TRAIL_DURATION, 0, 1);
-      const flightEased = 1 - Math.pow(1 - flightProgress, 3);
-      const flightOpacity = THREE.MathUtils.smoothstep(flightProgress, 0.01, 0.12)
-        * (1 - THREE.MathUtils.smoothstep(trailAge, RESPAWN_TRAIL_DURATION * 0.9, flightFadeEnd));
-      flightModelWorldPositionRef.current
-        .copy(trailStart)
-        .lerp(trailEnd, flightEased);
-      flightModelOpacityRef.current = flightOpacity * 0.92;
-    } else {
-      flightModelWorldPositionRef.current.copy(group.position);
-      flightModelOpacityRef.current = 0;
-    }
-
-    visibleInteractionPositionRef.current.copy(
-      flightModelOpacityRef.current > 0.01
-        ? flightModelWorldPositionRef.current
-        : group.position
-    );
+    visibleInteractionPositionRef.current.copy(group.position);
     if (interactionMeshRef.current) {
       interactionMeshRef.current.position.copy(visibleInteractionPositionRef.current);
       interactionMeshRef.current.scale.setScalar(group.scale.x);
@@ -670,11 +670,6 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
   return (
     <>
       <RespawnMeteorTrail
-        startRef={respawnTrailStartRef}
-        endRef={respawnTrailEndRef}
-        startedAtRef={respawnTrailStartedAtRef}
-      />
-      <RespawnMeteorTrail
         startRef={spotlightReleaseTrailStartRef}
         endRef={spotlightReleaseTrailEndRef}
         startedAtRef={spotlightReleaseTrailStartedAtRef}
@@ -695,13 +690,12 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
           <SplatCreatureModel
             url={splatUrl}
             colors={artwork.features.visualTraits.dominantColors}
+            features={artwork.features}
             scale={1.1}
             spotlightFocusRef={spotlightFocusRef}
             burstRef={burstRef}
             burstPhaseRef={burstPhaseRef}
             reappearRef={reappearRef}
-            flightWorldPositionRef={flightModelWorldPositionRef}
-            flightOpacityRef={flightModelOpacityRef}
             onReady={() => setSplatReady(true)}
             onError={(error) => {
               setSplatReady(false);
@@ -717,7 +711,8 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
             breathAmount={0.018 + artwork.behaviorSignature.glow * 0.018}
             behaviorSignature={artwork.behaviorSignature}
             interactionPulseRef={pulseRef}
-            burstRef={burstRef}
+            burstPhaseRef={burstPhaseRef}
+            reappearRef={reappearRef}
             spotlightFocusRef={spotlightFocusRef}
             spotlightEnabled={spotlightEnabled}
           />
@@ -740,7 +735,7 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
             material={previewMaterial}
             renderOrder={3}
             position={[0, 0, -0.12]}
-            frustumCulled={false}
+            frustumCulled
           >
             <planeGeometry args={[planeWidth, planeHeight]} />
           </mesh>
@@ -758,9 +753,6 @@ export function SpaceCreature({ artwork, index }: SpaceCreatureProps) {
           const now = performance.now() * 0.001;
           burstAnchorRef.current = visibleInteractionPositionRef.current.clone();
           respawnPositionRef.current = null;
-          respawnTrailStartRef.current = null;
-          respawnTrailEndRef.current = null;
-          respawnTrailStartedAtRef.current = -100;
           burstWasActiveRef.current = false;
           pulseStartedAtRef.current = now;
           burstStartedAtRef.current = now;

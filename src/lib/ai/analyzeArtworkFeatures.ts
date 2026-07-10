@@ -28,7 +28,7 @@ const COMPLEXITIES = ['simple', 'medium', 'complex'] as const;
 const BRIGHTNESS_LEVELS = ['low', 'medium', 'high'] as const;
 const SOFTNESS_LEVELS = ['soft', 'normal', 'sharp'] as const;
 const TEXTURE_STYLES = ['handdrawn', 'watercolor', 'crayon', 'flat', 'mixed'] as const;
-const REMOTE_FEATURE_RECOGNITION_ENABLED = false;
+const REMOTE_FEATURE_RECOGNITION_ENABLED = import.meta.env.VITE_ARTWORK_FEATURE_RECOGNITION !== 'false';
 
 const CHINESE_LOCOMOTION_MAP: Record<string, LocomotionType> = {
   飞行: 'flying',

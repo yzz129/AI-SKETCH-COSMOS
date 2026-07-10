@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { DADAKIDO_WORLD_POSITION } from './cosmicAnchors';
 import { hasCreaturePriorityHit } from './pointerPriority';
+import { useAutoCosmicInteractionStore } from './autoCosmicInteractionStore';
 
 type DadakidoNebulaLayer = {
   geometry: THREE.BufferGeometry;
@@ -436,7 +437,9 @@ function createDadakidoNebula(): DadakidoNebulaLayer {
 function DadakidoNebula({ reveal }: { reveal: number }) {
   const groupRef = useRef<THREE.Group>(null);
   const burstRef = useRef({ glyph: -1, startedAt: -100 });
+  const lastAutoPulseRef = useRef(0);
   const [layer, setLayer] = useState<DadakidoNebulaLayer | null>(null);
+  const nebulaPulse = useAutoCosmicInteractionStore((state) => state.nebulaPulse);
   const { width, height } = useThree((s) => s.size);
   const aspect = width / Math.max(height, 1);
   const scale = Math.max(0.3, Math.min(0.4, aspect / 1.32));
@@ -458,6 +461,15 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
       layer?.material.dispose();
     };
   }, [layer]);
+
+  useEffect(() => {
+    if (nebulaPulse.id === 0 || nebulaPulse.id === lastAutoPulseRef.current) return;
+    lastAutoPulseRef.current = nebulaPulse.id;
+    burstRef.current = {
+      glyph: THREE.MathUtils.euclideanModulo(nebulaPulse.glyph, GLYPHS.length),
+      startedAt: performance.now() * 0.001
+    };
+  }, [nebulaPulse]);
 
   useFrame(({ clock }) => {
     if (!layer) return;

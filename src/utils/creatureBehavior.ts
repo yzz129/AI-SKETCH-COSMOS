@@ -85,17 +85,30 @@ export function pointerAvoidance(from: THREE.Vector3) {
   return from.clone().sub(pointerPosition).normalize().multiplyScalar(strength);
 }
 
+const CROWD_AVOIDANCE_RADIUS = 1.35;
+const CROWD_AVOIDANCE_RADIUS_SQ = CROWD_AVOIDANCE_RADIUS * CROWD_AVOIDANCE_RADIUS;
+const MAX_CROWD_NEIGHBORS = 4;
+const crowdDelta = new THREE.Vector3();
+
 export function crowdAvoidance(id: string, from: THREE.Vector3) {
   const positions = useCreatureBehaviorStore.getState().creaturePositions;
   const avoidance = new THREE.Vector3();
+  let neighbors = 0;
 
-  Object.entries(positions).forEach(([otherId, position]) => {
-    if (otherId === id) return;
-    const other = new THREE.Vector3(...position);
-    const distance = from.distanceTo(other);
-    if (distance <= 0.001 || distance > 1.35) return;
-    avoidance.add(from.clone().sub(other).normalize().multiplyScalar((1 - distance / 1.35) * 0.22));
-  });
+  for (const [otherId, position] of Object.entries(positions)) {
+    if (otherId === id) continue;
+
+    crowdDelta.set(from.x - position[0], from.y - position[1], from.z - position[2]);
+    const distanceSq = crowdDelta.lengthSq();
+    if (distanceSq <= 0.000001 || distanceSq > CROWD_AVOIDANCE_RADIUS_SQ) continue;
+
+    const distance = Math.sqrt(distanceSq);
+    const strength = (1 - distance / CROWD_AVOIDANCE_RADIUS) * 0.22;
+    avoidance.addScaledVector(crowdDelta, strength / distance);
+    neighbors += 1;
+
+    if (neighbors >= MAX_CROWD_NEIGHBORS) break;
+  }
 
   return avoidance;
 }

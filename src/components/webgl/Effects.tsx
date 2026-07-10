@@ -112,7 +112,7 @@ export function Effects() {
   const composer = useMemo(() => {
     const effectComposer = new EffectComposer(gl);
     const renderPass = new RenderPass(scene, camera);
-    const bloomPass = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0, 0.6, 0.18);
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0, 0.22, 0.72);
     const collapsePass = new ShaderPass(CollapsePass);
     const cinematicPass = new ShaderPass(CinematicPass);
     const outputPass = new OutputPass();
@@ -172,15 +172,15 @@ export function Effects() {
       delta
     );
 
-    const bloomTarget = spotlightActive ? 0.055 : 0.3 + collapseStrength.current * 0.08;
+    const bloomTarget = spotlightActive ? 0.035 : 0.18 + collapseStrength.current * 0.04;
     composer.bloomPass.strength = THREE.MathUtils.damp(
       composer.bloomPass.strength,
       bloomReady ? bloomTarget : 0,
       3,
       delta
     );
-    composer.bloomPass.threshold = spotlightActive ? 0.82 : 0.55;
-    composer.bloomPass.radius = spotlightActive ? 0.12 : 0.4 + collapseStrength.current * 0.06;
+    composer.bloomPass.threshold = spotlightActive ? 0.86 : 0.72;
+    composer.bloomPass.radius = spotlightActive ? 0.08 : 0.22 + collapseStrength.current * 0.03;
     composer.collapsePass.uniforms.uTime.value = clock.elapsedTime;
     composer.collapsePass.uniforms.uCollapse.value = collapseStrength.current;
     composer.collapsePass.uniforms.uCenter.value.set(collapse.center[0], collapse.center[1]);
@@ -188,7 +188,7 @@ export function Effects() {
       ? (clock.elapsedTime * 0.36) % 1
       : THREE.MathUtils.clamp(releasedSeconds / Math.max(releaseDuration, 0.001), 0, 1);
     composer.cinematicPass.uniforms.uTime.value = clock.elapsedTime;
-    composer.cinematicPass.uniforms.uNoise.value = spotlightActive ? 0.006 : 0.015;
+    composer.cinematicPass.uniforms.uNoise.value = spotlightActive ? 0.004 : 0.009;
     composer.effectComposer.render(delta);
   }, 1);
 

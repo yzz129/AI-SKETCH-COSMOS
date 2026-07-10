@@ -1,11 +1,48 @@
 import { ChangeEvent, useRef, useState } from 'react';
 import { Eye, EyeOff, Upload } from 'lucide-react';
 import { submitArtworkFile } from '../../lib/artwork/submitArtworkFile';
-import { useArtworkStore } from '../../stores/artworkStore';
+import { useArtworkStore, type StoredArtwork } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
 
 function renderModeLabel(hasSplat: boolean) {
   return hasSplat ? 'TripoSplat .splat' : '图片 3D 粒子化';
+}
+
+function formatCount(value: number | undefined) {
+  return Math.max(0, Math.round(value ?? 0)).toLocaleString();
+}
+
+function formatArtworkSize(artwork: StoredArtwork) {
+  const aspect = Number.isFinite(artwork.aspect) ? artwork.aspect.toFixed(2) : '-';
+  return `${Math.round(artwork.width)} × ${Math.round(artwork.height)} / 比例 ${aspect}`;
+}
+
+function formatStructure(artwork: StoredArtwork) {
+  const { morphology } = artwork.features;
+  const parts = [
+    morphology.hasHead ? '头部' : null,
+    morphology.hasArms ? '手臂' : null,
+    morphology.hasLegs ? `${morphology.legCount} 腿` : null,
+    morphology.hasWings ? `${morphology.wingCount} 翅膀` : null,
+    morphology.hasTail ? '尾巴' : null,
+    morphology.hasFins ? '鱼鳍' : null
+  ].filter(Boolean);
+
+  return `${parts.length ? parts.join(' / ') : '无明确肢体'} · ${morphology.bodyOrientation} · ${morphology.silhouetteComplexity}`;
+}
+
+function formatBehavior(artwork: StoredArtwork) {
+  const { behaviorTraits } = artwork.features;
+  return `${behaviorTraits.locomotionType} / ${behaviorTraits.energyLevel} / ${behaviorTraits.personalityFeel}`;
+}
+
+function formatVisualTraits(artwork: StoredArtwork) {
+  const { visualTraits } = artwork.features;
+  return `${visualTraits.brightness} / ${visualTraits.softness} / ${visualTraits.textureStyle}`;
+}
+
+function formatModelId(artwork: StoredArtwork) {
+  return artwork.gaussianModel?.sourceArtworkId ?? artwork.id;
 }
 
 type WindowWithFilePicker = Window & {
@@ -110,6 +147,12 @@ export function CosmicControlPanel() {
   };
 
   const hasSplat = latestArtwork?.gaussianModel?.status === 'ready' && Boolean(latestArtwork.gaussianModel.splatUrl);
+  const latestDustCount = latestArtwork
+    ? hasSplat
+      ? latestArtwork.gaussianModel?.gaussianCount
+      : latestArtwork.particles.length
+    : 0;
+  const latestDustLabel = hasSplat ? '高斯点' : '图片粒子';
 
   if (isHidden) {
     return (
@@ -178,20 +221,40 @@ export function CosmicControlPanel() {
             <dd>{renderModeLabel(hasSplat)}</dd>
           </div>
           <div>
+            <dt>ID</dt>
+            <dd>{formatModelId(latestArtwork)}</dd>
+          </div>
+          <div>
+            <dt>尺寸</dt>
+            <dd>{formatArtworkSize(latestArtwork)}</dd>
+          </div>
+          <div>
             <dt>动作</dt>
             <dd>{latestArtwork.features.motionPreset}</dd>
           </div>
           <div>
             <dt>星尘</dt>
-            <dd>{latestArtwork.particles.length.toLocaleString()}</dd>
+            <dd>{formatCount(latestDustCount)} {latestDustLabel}</dd>
           </div>
           <div>
             <dt>主色</dt>
-            <dd>{latestArtwork.features.visualTraits.dominantColors.slice(0, 3).join(' / ')}</dd>
+            <dd>{latestArtwork.features.visualTraits.dominantColors.slice(0, 5).join(' / ')}</dd>
           </div>
           <div>
-            <dt>分析</dt>
-            <dd>{latestArtwork.features.subjectCategory} / {latestArtwork.features.behaviorTraits.locomotionType}</dd>
+            <dt>类别</dt>
+            <dd>{latestArtwork.features.subjectCategory}</dd>
+          </div>
+          <div>
+            <dt>结构</dt>
+            <dd>{formatStructure(latestArtwork)}</dd>
+          </div>
+          <div>
+            <dt>行为</dt>
+            <dd>{formatBehavior(latestArtwork)}</dd>
+          </div>
+          <div>
+            <dt>视觉</dt>
+            <dd>{formatVisualTraits(latestArtwork)}</dd>
           </div>
         </dl>
       ) : null}

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { CREATURE_ORBIT_CENTER } from './cosmicAnchors';
 import { hasCreaturePriorityHit } from './pointerPriority';
+import { useAutoCosmicInteractionStore } from './autoCosmicInteractionStore';
 
 /* ------------------------------------------------------------------ */
 /*  responsive density — debounced to avoid recreating geometries      */
@@ -341,8 +342,10 @@ function ParticlePlanet({ spec, index }: { spec: PlanetSpec; index: number }) {
   const ringGroupRef = useRef<THREE.Group>(null);
   const moonOrbitRef = useRef<THREE.Group>(null);
   const burstStartedAtRef = useRef(-100);
+  const lastAutoPulseRef = useRef(0);
   const { camera } = useThree();
   const densityMul = useDensityMul();
+  const planetPulseId = useAutoCosmicInteractionStore((state) => state.planetPulseId);
 
   const hitMaterial = useMemo(() => new THREE.MeshBasicMaterial({
     transparent: true,
@@ -365,6 +368,13 @@ function ParticlePlanet({ spec, index }: { spec: PlanetSpec; index: number }) {
       hitMaterial.dispose();
     };
   }, [hitMaterial, layers]);
+
+  useEffect(() => {
+    if (planetPulseId === 0 || planetPulseId === lastAutoPulseRef.current) return;
+    if ((planetPulseId + index) % PLANETS.length !== 0) return;
+    lastAutoPulseRef.current = planetPulseId;
+    burstStartedAtRef.current = performance.now() * 0.001;
+  }, [index, planetPulseId]);
 
   useFrame(({ clock }) => {
     const time = clock.elapsedTime;

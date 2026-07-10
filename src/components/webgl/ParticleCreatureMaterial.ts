@@ -95,24 +95,35 @@ export function createParticleCreatureMaterial({ outline = false }: { outline?: 
         p += volumeNormal * uParticleSpread * 0.024 * (1.0 - aEdgeFactor) * focusSpread;
         vec3 pulseDirection = normalize(vec3(aBasePosition.xy, aBasePosition.z * 1.6) + vec3(0.001));
         p += pulseDirection * uInteractionPulse * mix(0.006, 0.026, 1.0 - aEdgeFactor) * focusPulse;
-        vec3 burstDirection = normalize(mix(pulseDirection, volumeNormal, 0.62) + vec3(
-          sin(aPhase * 2.4),
-          cos(aPhase * 1.9),
-          sin(aPhase * 1.3 + 0.8)
-        ) * 0.12);
-        float burstNoise = 0.72 + 0.5 * sin(aPhase * 4.2 + uTime * 0.8);
-        p += burstDirection * uBurstProgress * mix(0.34, 0.78, 1.0 - aEdgeFactor) * burstNoise * focusPulse;
+        float burstSeedA = fract(sin(
+          aPhase * 12.9898 + dot(aBasePosition.xy, vec2(78.233, 37.719))
+        ) * 43758.5453);
+        float burstSeedB = fract(sin(
+          aPhase * 39.3467 + dot(aBasePosition.yz, vec2(11.135, 83.155))
+        ) * 24634.6345);
+        float burstAzimuth = burstSeedA * 6.28318530718;
+        float burstZ = burstSeedB * 2.0 - 1.0;
+        float burstRadius = sqrt(max(0.0, 1.0 - burstZ * burstZ));
+        vec3 sphericalDirection = vec3(
+          cos(burstAzimuth) * burstRadius,
+          sin(burstAzimuth) * burstRadius,
+          burstZ
+        );
+        vec3 burstDirection = normalize(mix(sphericalDirection, pulseDirection, 0.18));
+        float burstSpeed = mix(1.15, 2.75, fract(burstSeedA * 7.31 + burstSeedB * 3.17));
+        float burstTravel = uBurstProgress * (0.72 + uBurstProgress * 0.42);
+        p += burstDirection * burstTravel * burstSpeed * mix(0.82, 1.12, 1.0 - aEdgeFactor) * focusPulse;
         p += vec3(
           sin(aPhase + uTime * 7.0),
           cos(aPhase * 0.9 + uTime * 6.2),
           sin(aPhase * 1.2 + uTime * 5.8)
-        ) * uBurstProgress * 0.035 * focusPulse;
+        ) * uBurstProgress * 0.075 * focusPulse;
 
         vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mvPosition;
 
         float depthSize = mix(0.76, 1.24, aDepthFactor);
-        gl_PointSize = aSize * depthSize * mix(1.05, 1.14, uOutline) * uPointSizeBoost * (1.0 + uInteractionPulse * 0.08 + uBurstProgress * 1.2) * uPixelRatio;
+        gl_PointSize = aSize * depthSize * mix(1.05, 1.14, uOutline) * uPointSizeBoost * (1.0 + uInteractionPulse * 0.08 + uBurstProgress * 1.75) * uPixelRatio;
         vec3 viewNormal = normalize(normalMatrix * volumeNormal);
         float sideLight = dot(viewNormal, normalize(vec3(-0.34, 0.46, 0.82))) * 0.5 + 0.5;
         float fillLight = dot(viewNormal, normalize(vec3(0.38, -0.28, 0.82))) * 0.5 + 0.5;
@@ -121,7 +132,7 @@ export function createParticleCreatureMaterial({ outline = false }: { outline?: 
         vVolumeShade = clamp(depthLight * mix(0.68, 1.14, vModelLight) + aEdgeFactor * 0.07, 0.28, 1.08);
         vBrightness = aBrightness;
         vColor = min(color * (0.86 + aEdgeFactor * 0.06), vec3(0.94));
-        vAlpha = aAlpha * uAlphaMultiplier * mix(0.42, 0.76, aDepthFactor) * mix(0.86, 0.98, aEdgeFactor) * (1.0 + uInteractionPulse * 0.04 + uBurstProgress * 0.55);
+        vAlpha = aAlpha * uAlphaMultiplier * mix(0.42, 0.76, aDepthFactor) * mix(0.86, 0.98, aEdgeFactor) * (1.0 + uInteractionPulse * 0.04 + uBurstProgress * 0.9);
         vEdgeFactor = aEdgeFactor;
         vDepthFactor = aDepthFactor;
         vFocusAmount = focusAmount;

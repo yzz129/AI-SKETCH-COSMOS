@@ -434,7 +434,12 @@ def _image_to_pil(image) -> Image.Image:
     raise TypeError(f"unsupported image type: {type(image)}")
 
 
-def preprocess_image(image, rmbg: BiRefNet, erode_radius: int = 1) -> Image.Image:
+def preprocess_image(
+        image,
+        rmbg: BiRefNet,
+        erode_radius: int = 1,
+        trust_source_alpha: bool = False,
+) -> Image.Image:
     image = _image_to_pil(image)
     size = _CANVAS_SIZE
     w, h = image.size
@@ -442,7 +447,7 @@ def preprocess_image(image, rmbg: BiRefNet, erode_radius: int = 1) -> Image.Imag
     image = image.resize((max(1, int(round(w * s))), max(1, int(round(h * s)))), Image.LANCZOS)
     has_real_alpha = (image.mode == "RGBA"
                       and np.array(image.getchannel(3), dtype=np.int32).min() < 255)
-    if not has_real_alpha:
+    if not has_real_alpha or not trust_source_alpha:
         image = rmbg.remove_background(image.convert("RGB"))
     if erode_radius > 0:
         image.putalpha(image.getchannel(3).filter(ImageFilter.MinFilter(2 * erode_radius + 1)))
@@ -521,8 +526,18 @@ class TripoSplatPipeline:
         self.flow_model  = load_flow_model  (ckpt_path,               device=self._device, dtype=model_dtype)
         self.decoder     = load_decoder     (decoder_path,            device=self._device, dtype=model_dtype)
 
-    def preprocess_image(self, image, erode_radius: int = 1) -> Image.Image:
-        return preprocess_image(image, self.rmbg, erode_radius=erode_radius)
+    def preprocess_image(
+            self,
+            image,
+            erode_radius: int = 1,
+            trust_source_alpha: bool = False,
+    ) -> Image.Image:
+        return preprocess_image(
+            image,
+            self.rmbg,
+            erode_radius=erode_radius,
+            trust_source_alpha=trust_source_alpha,
+        )
 
     def encode_image(self, image: Image.Image, generator: torch.Generator = None) -> dict:
         return encode_image(image, self.dinov3, self.vae_encoder, generator=generator)
@@ -554,7 +569,7 @@ class TripoSplatPipeline:
     @torch.no_grad()
     def run(self, image, seed: int = 42, steps: int = 20, guidance_scale: float = 3.0,
             shift: float = 3.0, num_gaussians=262144, erode_radius: int = 1,
-            show_progress: bool = False, callback=None):
+            trust_source_alpha: bool = False, show_progress: bool = False, callback=None):
         """
         Args:
             image: Input image. Accepts a file path / PIL.Image / torch.Tensor
@@ -583,6 +598,9 @@ class TripoSplatPipeline:
                 background removal, to avoid segmentation-border bleed before
                 compositing on black. `0` disables; `1` is a 3×3 minimum filter.
                 Recommend: 1.
+            trust_source_alpha: Keep alpha from RGBA source images instead of
+                rerunning background removal. Disabled by default to avoid
+                baked-in white outlines from source cutouts.
             show_progress: Print a `tqdm` progress bar over sampler steps.
             callback: Optional `fn(step, total)` invoked after each sampler step.
                 Useful for external progress UIs (e.g. ComfyUI's
@@ -600,7 +618,11 @@ class TripoSplatPipeline:
             counts = [self._validate_num_gaussians(num_gaussians)]
 
         gen = torch.Generator(device=self._device).manual_seed(seed)
-        prepared = self.preprocess_image(image, erode_radius=erode_radius)
+        prepared = self.preprocess_image(
+            image,
+            erode_radius=erode_radius,
+            trust_source_alpha=trust_source_alpha,
+        )
         cond = self.encode_image(prepared, generator=gen)
         out = self.sample_latent(cond, steps=steps, guidance_scale=guidance_scale, shift=shift,
                                  generator=gen, show_progress=show_progress, callback=callback)

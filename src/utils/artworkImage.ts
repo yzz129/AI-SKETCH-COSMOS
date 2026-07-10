@@ -15,7 +15,7 @@ export type ProcessedArtworkImage = {
 const MAX_CANVAS_SIZE = 1024;
 const WHITE_THRESHOLD = 242;
 const ALPHA_THRESHOLD = 20;
-const BACKGROUND_PROTECTION_RADIUS = 1;
+const BACKGROUND_PROTECTION_RADIUS = 3;
 
 function isWhitePixel(r: number, g: number, b: number) {
   return r > WHITE_THRESHOLD && g > WHITE_THRESHOLD && b > WHITE_THRESHOLD;

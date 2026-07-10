@@ -2,10 +2,12 @@ import { useFrame } from '@react-three/fiber';
 import { type MutableRefObject, type RefObject, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import type { SplatMesh as SparkSplatMesh } from '@sparkjsdev/spark';
+import type { ArtworkFeatureResult } from '../../types/artwork';
 
 type SplatCreatureModelProps = {
   url: string;
   colors: string[];
+  features: ArtworkFeatureResult;
   scale?: number;
   spotlightFocusRef?: RefObject<number>;
   burstRef?: MutableRefObject<number>;
@@ -22,9 +24,41 @@ type SplatParticleProxy = {
   material: THREE.ShaderMaterial;
 };
 
+type SplatCpuDeformer = {
+  indices: Uint32Array;
+  centers: Float32Array;
+  scales: Float32Array;
+  quaternions: Float32Array;
+  opacities: Float32Array;
+  colors: Float32Array;
+  shape: Float32Array;
+  maxDimension: number;
+  lastUpdate: number;
+  cursor: number;
+  restoreCursor: number;
+  isDeformed: boolean;
+  center: THREE.Vector3;
+  scale: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  color: THREE.Color;
+};
+
+const CPU_DEFORM_HZ = 18;
+const CPU_DEFORM_NEAR_DISTANCE = 11;
+const CPU_DEFORM_FOCUS_DISTANCE = 15;
+const CPU_DEFORM_FRAME_BUDGET = Number.POSITIVE_INFINITY;
+const CPU_DEFORM_ACTIVE_SECONDS = 10;
+const CPU_DEFORM_REST_SECONDS = 3;
+const CPU_DEFORM_MAX_ACTIVE_MODELS = 10;
+let cpuDeformBudgetFrame = -1;
+let cpuDeformBudgetUsed = 0;
+const cpuDeformActiveSlots = new Map<string, number>();
+const cpuDeformRestUntil = new Map<string, number>();
+
 export function SplatCreatureModel({
   url,
   colors,
+  features,
   scale = 0.58,
   spotlightFocusRef,
   burstRef,
@@ -38,12 +72,15 @@ export function SplatCreatureModel({
   const meshRef = useRef<SparkSplatMesh | null>(null);
   const particleProxyGroupRef = useRef<THREE.Group>(null);
   const particleProxyRef = useRef<THREE.Points>(null);
+  const cpuDeformerRef = useRef<SplatCpuDeformer | null>(null);
   const baseScaleRef = useRef(scale);
   const basePositionRef = useRef(new THREE.Vector3());
   const flightLocalPositionRef = useRef(new THREE.Vector3());
+  const cameraDistancePositionRef = useRef(new THREE.Vector3());
   const showcaseSpinRef = useRef(0);
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
+  const cpuScheduleId = useMemo(() => `splat-${Math.abs(hashString(url))}`, [url]);
   const [failed, setFailed] = useState(false);
   const [splat, setSplat] = useState<SparkSplatMesh | null>(null);
   const [particleProxy, setParticleProxy] = useState<SplatParticleProxy | null>(null);
@@ -57,9 +94,7 @@ export function SplatCreatureModel({
   ], []);
   const motionPhase = useMemo(() => {
     let hash = 0;
-    for (let i = 0; i < url.length; i += 1) {
-      hash = (hash * 31 + url.charCodeAt(i)) | 0;
-    }
+    hash = hashString(url);
     return Math.abs(hash % 10_000) / 10_000 * Math.PI * 2;
   }, [url]);
 
@@ -79,6 +114,7 @@ export function SplatCreatureModel({
       return null;
     });
     meshRef.current = null;
+    cpuDeformerRef.current = null;
 
     import('@sparkjsdev/spark')
       .then(({ SplatMesh }) => {
@@ -89,6 +125,7 @@ export function SplatCreatureModel({
             if (disposed || meshRef.current !== loaded) return;
             baseScaleRef.current = normalizeSplatMesh(loaded, scale);
             basePositionRef.current.copy(loaded.position);
+            cpuDeformerRef.current = createSplatCpuDeformer(loaded, features);
             setParticleProxy((proxy) => {
               proxy?.geometry.dispose();
               proxy?.material.dispose();
@@ -108,6 +145,7 @@ export function SplatCreatureModel({
             if (disposed || meshRef.current !== initializedMesh) return;
             baseScaleRef.current = normalizeSplatMesh(initializedMesh, scale);
             basePositionRef.current.copy(initializedMesh.position);
+            cpuDeformerRef.current = createSplatCpuDeformer(initializedMesh, features);
             setParticleProxy((proxy) => {
               proxy?.geometry.dispose();
               proxy?.material.dispose();
@@ -130,6 +168,7 @@ export function SplatCreatureModel({
     return () => {
       disposed = true;
       meshRef.current = null;
+      cpuDeformerRef.current = null;
       loadedMesh?.dispose();
       setParticleProxy((proxy) => {
         proxy?.geometry.dispose();
@@ -137,9 +176,9 @@ export function SplatCreatureModel({
         return null;
       });
     };
-  }, [motionPhase, scale, url]);
+  }, [colors, features, motionPhase, scale, url]);
 
-  useFrame(({ clock }, delta) => {
+  useFrame(({ clock, camera }, delta) => {
     const mesh = meshRef.current;
     if (!mesh || failed) return;
 
@@ -196,8 +235,27 @@ export function SplatCreatureModel({
       mesh.parent?.worldToLocal(flightLocalPositionRef.current);
       mesh.position.copy(flightLocalPositionRef.current).add(basePositionRef.current);
     }
+    const distanceToCamera = mesh.getWorldPosition(cameraDistancePositionRef.current).distanceTo(camera.position);
+    const distanceCulled = distanceToCamera > 28 && !showFlightModel && !isBursting;
     mesh.opacity = THREE.MathUtils.lerp(0.86, 0.97, glowPulse) * Math.max(reappear, flightOpacity);
-    mesh.visible = !isBursting || showFlightModel;
+    mesh.visible = (!isBursting || showFlightModel) && !distanceCulled;
+
+    const deformer = cpuDeformerRef.current;
+    if (deformer) {
+      const canUseCpuSlot = reserveCpuDeformModelSlot(cpuScheduleId, t);
+      const deformDistance = THREE.MathUtils.lerp(CPU_DEFORM_NEAR_DISTANCE, CPU_DEFORM_FOCUS_DISTANCE, focus);
+      const cpuDeformActive = mesh.visible
+        && !isBursting
+        && canUseCpuSlot
+        && distanceToCamera < deformDistance
+        && Math.max(reappear, flightOpacity) > 0.2;
+      if (cpuDeformActive) {
+        const deformEnergy = (0.62 + freeMotion * 0.38 + focus * 0.18) * (1 - burstShock);
+        updateSplatCpuDeformation(mesh, deformer, t, deformEnergy);
+      } else if (deformer.isDeformed) {
+        restoreSplatCpuDeformation(mesh, deformer);
+      }
+    }
 
     const proxyGroup = particleProxyGroupRef.current;
     const proxyPoints = particleProxyRef.current;
@@ -205,7 +263,7 @@ export function SplatCreatureModel({
       proxyGroup.position.copy(basePositionRef.current);
       proxyGroup.rotation.copy(mesh.rotation);
       proxyGroup.scale.copy(mesh.scale).multiplyScalar(0.9);
-      proxyGroup.visible = isBursting;
+      proxyGroup.visible = isBursting && !distanceCulled;
       const material = proxyPoints.material as THREE.ShaderMaterial | undefined;
       if (!material?.uniforms) return;
       material.uniforms.uTime.value = t;
@@ -213,8 +271,9 @@ export function SplatCreatureModel({
       material.uniforms.uShock.value = burstShock;
       material.uniforms.uOpacity.value = THREE.MathUtils.smoothstep(burstPhase, 0.01, 0.16)
         * (1 - THREE.MathUtils.smoothstep(burstPhase, 0.74, 1.0))
-        * 1.18;
+        * 1.32;
     }
+
   });
 
   if (failed || !splat) return null;
@@ -228,12 +287,313 @@ export function SplatCreatureModel({
             geometry={particleProxy.geometry}
             material={particleProxy.material}
             renderOrder={13}
-            frustumCulled={false}
+            frustumCulled
           />
         </group>
       ) : null}
     </group>
   );
+}
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
+function reserveCpuDeformModelSlot(id: string, time: number) {
+  for (const [activeId, activeUntil] of cpuDeformActiveSlots) {
+    if (activeUntil <= time) {
+      cpuDeformActiveSlots.delete(activeId);
+      cpuDeformRestUntil.set(activeId, time + CPU_DEFORM_REST_SECONDS);
+    }
+  }
+
+  const activeUntil = cpuDeformActiveSlots.get(id);
+  if (activeUntil && activeUntil > time) {
+    return true;
+  }
+
+  const restUntil = cpuDeformRestUntil.get(id);
+  if (restUntil && restUntil > time) return false;
+  if (restUntil && restUntil <= time) cpuDeformRestUntil.delete(id);
+
+  if (cpuDeformActiveSlots.size >= CPU_DEFORM_MAX_ACTIVE_MODELS) return false;
+
+  cpuDeformActiveSlots.set(id, time + CPU_DEFORM_ACTIVE_SECONDS);
+  return true;
+}
+
+function resetCpuDeformBudget(time: number) {
+  const frame = Math.floor(time * 60);
+  if (frame !== cpuDeformBudgetFrame) {
+    cpuDeformBudgetFrame = frame;
+    cpuDeformBudgetUsed = 0;
+  }
+}
+
+function reserveCpuDeformWrites(time: number, requested: number) {
+  resetCpuDeformBudget(time);
+  const remaining = Math.max(0, CPU_DEFORM_FRAME_BUDGET - cpuDeformBudgetUsed);
+  const granted = Math.min(requested, remaining);
+  cpuDeformBudgetUsed += granted;
+  return granted;
+}
+
+function characteristicFeatureMask(
+  features: ArtworkFeatureResult,
+  nx: number,
+  ny: number,
+  _nz: number,
+  radial: number,
+  edge: number
+) {
+  const { morphology, behaviorTraits, motionPreset, subjectCategory } = features;
+  const absX = Math.abs(nx);
+  const absY = Math.abs(ny);
+  const side = THREE.MathUtils.smoothstep(absX, 0.42, 0.98);
+  const top = THREE.MathUtils.smoothstep(ny, 0.28, 0.96);
+  const bottom = THREE.MathUtils.smoothstep(-ny, 0.2, 0.92);
+  const outer = Math.max(THREE.MathUtils.smoothstep(radial, 0.58, 1.22), edge * 0.72);
+
+  if (morphology.hasWings || motionPreset.includes('Fly') || motionPreset.includes('bird') || motionPreset.includes('Flutter')) {
+    return side * (0.45 + top * 0.55);
+  }
+
+  if (
+    morphology.hasTail ||
+    morphology.hasFins ||
+    behaviorTraits.locomotionType === 'swimming' ||
+    motionPreset.includes('fish') ||
+    motionPreset.includes('eel') ||
+    motionPreset.includes('dolphin') ||
+    motionPreset.includes('squid')
+  ) {
+    return Math.max(side, outer) * (0.55 + THREE.MathUtils.smoothstep(absY, 0.05, 0.72) * 0.25);
+  }
+
+  if (morphology.hasLegs || behaviorTraits.locomotionType === 'walking' || behaviorTraits.locomotionType === 'running') {
+    return bottom * (0.35 + side * 0.65);
+  }
+
+  if (morphology.hasArms) {
+    return side * (1 - THREE.MathUtils.smoothstep(absY, 0.88, 1.18));
+  }
+
+  if (subjectCategory === 'plant' || behaviorTraits.locomotionType === 'growing' || behaviorTraits.locomotionType === 'swaying') {
+    return Math.max(top, outer * 0.72);
+  }
+
+  if (morphology.hasHead || subjectCategory === 'character') {
+    return top * (0.55 + outer * 0.45);
+  }
+
+  return outer;
+}
+
+function createSplatCpuDeformer(mesh: SparkSplatMesh, features: ArtworkFeatureResult): SplatCpuDeformer | null {
+  if (!mesh.packedSplats?.setSplat) return null;
+
+  const total = Math.max(1, mesh.packedSplats?.numSplats ?? mesh.numSplats ?? 0);
+  if (!total) return null;
+
+  const box = mesh.getBoundingBox(true);
+  const center = new THREE.Vector3();
+  const size = new THREE.Vector3();
+  box.getCenter(center);
+  box.getSize(size);
+  const safeSize = new THREE.Vector3(
+    Math.max(size.x, 0.0001),
+    Math.max(size.y, 0.0001),
+    Math.max(size.z, 0.0001)
+  );
+  const maxDimension = Math.max(safeSize.x, safeSize.y, safeSize.z, 0.0001);
+  const stride = 1;
+  const targetCount = total;
+  const indices = new Uint32Array(targetCount);
+  const centers = new Float32Array(targetCount * 3);
+  const scales = new Float32Array(targetCount * 3);
+  const quaternions = new Float32Array(targetCount * 4);
+  const opacities = new Float32Array(targetCount);
+  const colors = new Float32Array(targetCount * 3);
+  const shape = new Float32Array(targetCount * 4);
+  let cursor = 0;
+
+  mesh.forEachSplat((index, splatCenter, splatScale, splatQuaternion, opacity, splatColor) => {
+    if (index % stride !== 0 || cursor >= targetCount) return;
+    const i3 = cursor * 3;
+    const i4 = cursor * 4;
+    const nx = THREE.MathUtils.clamp((splatCenter.x - center.x) / (safeSize.x * 0.5), -1, 1);
+    const ny = THREE.MathUtils.clamp((splatCenter.y - center.y) / (safeSize.y * 0.5), -1, 1);
+    const nz = THREE.MathUtils.clamp((splatCenter.z - center.z) / (safeSize.z * 0.5), -1, 1);
+    const radial = THREE.MathUtils.clamp(Math.sqrt(nx * nx + nz * nz), 0, 1.45);
+    const edge = THREE.MathUtils.clamp((Math.abs(nx) + Math.abs(ny) + Math.abs(nz)) / 2.15, 0, 1.25);
+    const limbMask = characteristicFeatureMask(features, nx, ny, nz, radial, edge);
+    if (limbMask <= 0.32) return;
+
+    indices[cursor] = index;
+    centers[i3] = splatCenter.x;
+    centers[i3 + 1] = splatCenter.y;
+    centers[i3 + 2] = splatCenter.z;
+    scales[i3] = splatScale.x;
+    scales[i3 + 1] = splatScale.y;
+    scales[i3 + 2] = splatScale.z;
+    quaternions[i4] = splatQuaternion.x;
+    quaternions[i4 + 1] = splatQuaternion.y;
+    quaternions[i4 + 2] = splatQuaternion.z;
+    quaternions[i4 + 3] = splatQuaternion.w;
+    opacities[cursor] = opacity;
+    colors[i3] = splatColor.r;
+    colors[i3 + 1] = splatColor.g;
+    colors[i3 + 2] = splatColor.b;
+    shape[i4] = nx;
+    shape[i4 + 1] = ny;
+    shape[i4 + 2] = nz;
+    shape[i4 + 3] = limbMask;
+    cursor += 1;
+  });
+
+  if (cursor === 0) return null;
+
+  return {
+    indices: indices.slice(0, cursor),
+    centers: centers.slice(0, cursor * 3),
+    scales: scales.slice(0, cursor * 3),
+    quaternions: quaternions.slice(0, cursor * 4),
+    opacities: opacities.slice(0, cursor),
+    colors: colors.slice(0, cursor * 3),
+    shape: shape.slice(0, cursor * 4),
+    maxDimension,
+    lastUpdate: -100,
+    cursor: 0,
+    restoreCursor: 0,
+    isDeformed: false,
+    center: new THREE.Vector3(),
+    scale: new THREE.Vector3(),
+    quaternion: new THREE.Quaternion(),
+    color: new THREE.Color()
+  };
+}
+
+function writeOriginalSplat(mesh: SparkSplatMesh, deformer: SplatCpuDeformer, entry: number) {
+  const packedSplats = mesh.packedSplats;
+  if (!packedSplats?.setSplat) return;
+  const i3 = entry * 3;
+  const i4 = entry * 4;
+  deformer.center.set(deformer.centers[i3], deformer.centers[i3 + 1], deformer.centers[i3 + 2]);
+  deformer.scale.set(deformer.scales[i3], deformer.scales[i3 + 1], deformer.scales[i3 + 2]);
+  deformer.quaternion.set(
+    deformer.quaternions[i4],
+    deformer.quaternions[i4 + 1],
+    deformer.quaternions[i4 + 2],
+    deformer.quaternions[i4 + 3]
+  );
+  deformer.color.setRGB(deformer.colors[i3], deformer.colors[i3 + 1], deformer.colors[i3 + 2]);
+  packedSplats.setSplat(
+    deformer.indices[entry],
+    deformer.center,
+    deformer.scale,
+    deformer.quaternion,
+    deformer.opacities[entry],
+    deformer.color
+  );
+}
+
+function restoreSplatCpuDeformation(mesh: SparkSplatMesh, deformer: SplatCpuDeformer) {
+  const packedSplats = mesh.packedSplats;
+  if (!packedSplats?.setSplat) return;
+  const writes = deformer.indices.length;
+  for (let i = 0; i < writes; i += 1) {
+    writeOriginalSplat(mesh, deformer, deformer.restoreCursor);
+    deformer.restoreCursor += 1;
+    if (deformer.restoreCursor >= deformer.indices.length) break;
+  }
+  packedSplats.needsUpdate = true;
+  deformer.isDeformed = deformer.restoreCursor < deformer.indices.length;
+  if (!deformer.isDeformed) {
+    deformer.cursor = 0;
+    deformer.restoreCursor = 0;
+  }
+}
+
+function updateSplatCpuDeformation(
+  mesh: SparkSplatMesh,
+  deformer: SplatCpuDeformer,
+  time: number,
+  energy: number
+) {
+  const packedSplats = mesh.packedSplats;
+  if (!packedSplats?.setSplat || deformer.indices.length === 0) return;
+  if (time - deformer.lastUpdate < 1 / CPU_DEFORM_HZ) return;
+
+  const writes = deformer.indices.length;
+  if (writes <= 0) return;
+
+  deformer.lastUpdate = time;
+  const strength = THREE.MathUtils.clamp(energy, 0, 1.1);
+  const count = deformer.indices.length;
+
+  for (let write = 0; write < writes; write += 1) {
+    const entry = deformer.cursor;
+    deformer.cursor = (deformer.cursor + 1) % count;
+    const i3 = entry * 3;
+    const i4 = entry * 4;
+    const x = deformer.shape[i4];
+    const y = deformer.shape[i4 + 1];
+    const z = deformer.shape[i4 + 2];
+    const mask = deformer.shape[i4 + 3];
+    const phase = (x >= 0 ? 0.0 : Math.PI) + (y > 0.35 ? 0.35 : 0.0) + (y < -0.35 ? -0.35 : 0.0);
+    const side = THREE.MathUtils.smoothstep(Math.abs(x), 0.24, 0.98);
+    const topBottom = THREE.MathUtils.smoothstep(Math.abs(y), 0.24, 0.96);
+    const radial = THREE.MathUtils.clamp(Math.sqrt(x * x + z * z), 0, 1.45);
+    const tail = THREE.MathUtils.smoothstep(radial, 0.5, 1.18);
+    const signX = x >= 0 ? 1 : -1;
+    const bodyWave = Math.sin(time * 2.7 + x * 1.35 + phase);
+    const tailWave = Math.sin(time * 3.8 + x * 2.2 + phase) * tail;
+    const limbSwing = Math.sin(time * 3.2 + phase) * side;
+    const verticalNod = Math.cos(time * 2.4 + phase) * topBottom;
+    const breathe = Math.sin(time * 1.15);
+    const amp = deformer.maxDimension * 0.115 * strength * (0.35 + mask * 0.65);
+    const radialLen = Math.max(0.001, Math.sqrt(x * x + y * y * 0.62 + z * z));
+
+    deformer.center.set(
+      deformer.centers[i3]
+        + (x / radialLen) * breathe * amp * 0.18
+        + signX * limbSwing * amp * 0.64,
+      deformer.centers[i3 + 1]
+        + verticalNod * amp * 0.42,
+      deformer.centers[i3 + 2]
+        + bodyWave * amp * 0.35
+        + tailWave * amp * 1.35
+        + limbSwing * amp * 0.24
+    );
+    deformer.scale.set(
+      deformer.scales[i3],
+      deformer.scales[i3 + 1],
+      deformer.scales[i3 + 2]
+    );
+    deformer.quaternion.set(
+      deformer.quaternions[i4],
+      deformer.quaternions[i4 + 1],
+      deformer.quaternions[i4 + 2],
+      deformer.quaternions[i4 + 3]
+    );
+    deformer.color.setRGB(deformer.colors[i3], deformer.colors[i3 + 1], deformer.colors[i3 + 2]);
+    packedSplats.setSplat(
+      deformer.indices[entry],
+      deformer.center,
+      deformer.scale,
+      deformer.quaternion,
+      deformer.opacities[entry],
+      deformer.color
+    );
+  }
+
+  deformer.isDeformed = true;
+  deformer.restoreCursor = 0;
+  packedSplats.needsUpdate = true;
 }
 
 function createSplatParticleProxy(mesh: SparkSplatMesh, seed: number): SplatParticleProxy {
@@ -242,7 +602,7 @@ function createSplatParticleProxy(mesh: SparkSplatMesh, seed: number): SplatPart
   box.getCenter(center);
   const total = Math.max(1, mesh.packedSplats?.numSplats ?? mesh.numSplats ?? 1);
   // ── Trail-style burst: many small glowing particles that diffuse outward ──
-  const maxParticles = 420;
+  const maxParticles = 760;
   const stride = Math.max(1, Math.ceil(total / maxParticles));
   const sampleCount = Math.ceil(total / stride);
   const positions = new Float32Array(sampleCount * 3);
@@ -296,8 +656,8 @@ function createSplatParticleProxy(mesh: SparkSplatMesh, seed: number): SplatPart
     coreColors[i3 + 2] = tempColor.b;
 
     phases[cursor] = phase;
-    // Larger base sizes for more dramatic visibility
-    sizes[cursor] = seededNoise(seed, index, 5) * 18 + 14;
+    // Layered particle sizes keep the burst dense without becoming a flat flash.
+    sizes[cursor] = seededNoise(seed, index, 5) * 14 + 10;
     // Spark controls per-particle stagger & speed variation
     sparks[cursor] = seededNoise(seed, index, 6);
     // No camera bias — pure outward explosion
@@ -317,6 +677,10 @@ function createSplatParticleProxy(mesh: SparkSplatMesh, seed: number): SplatPart
   geometry.setAttribute('spark', new THREE.BufferAttribute(sparks.slice(0, cursor), 1));
   geometry.setAttribute('cameraRush', new THREE.BufferAttribute(cameraRush.slice(0, cursor), 1));
   geometry.setAttribute('trailDepth', new THREE.BufferAttribute(depths.slice(0, cursor), 1));
+  geometry.computeBoundingSphere();
+  if (geometry.boundingSphere) {
+    geometry.boundingSphere.radius *= 4.5;
+  }
 
   const material = new THREE.ShaderMaterial({
     transparent: true,
@@ -356,23 +720,24 @@ function createSplatParticleProxy(mesh: SparkSplatMesh, seed: number): SplatPart
         float localProgress = clamp((progress - spark * 0.08) / 0.92, 0.0, 1.0);
 
         // Life curve
-        float life = smoothstep(0.0, 0.03, localProgress) * (1.0 - smoothstep(0.45, 1.0, localProgress));
+        float life = smoothstep(0.0, 0.025, localProgress) * (1.0 - smoothstep(0.62, 1.0, localProgress));
 
         // Speed — explosive outward burst
-        float speed = mix(0.3, 1.2, spark);
+        float speed = mix(0.68, 2.65, spark);
+        float travel = localProgress * (0.72 + localProgress * 0.48);
 
         // Minimal wobble — particles fly straight outward
-        float wobbleScale = 0.012;
+        float wobbleScale = 0.026;
         vec3 wobble = vec3(
           sin(uTime * 2.8 + phase) * wobbleScale,
           cos(uTime * 2.2 + phase + 0.7) * wobbleScale,
           sin(uTime * 2.5 + phase + 1.3) * wobbleScale
         ) * life;
 
-        float gravity = localProgress * localProgress * 0.01;
+        float gravity = localProgress * localProgress * 0.035;
 
         vec3 exploded = position
-          + direction * speed * localProgress
+          + direction * speed * travel
           + wobble
           + vec3(0.0, -gravity, 0.0);
 
@@ -390,13 +755,13 @@ function createSplatParticleProxy(mesh: SparkSplatMesh, seed: number): SplatPart
 
         // ── Sprite sized for the meteor streak ──
         float shrink = max(0.3, 1.0 - localProgress * 0.35);
-        float streakMul = 2.8;
+        float streakMul = 2.65;
         float pixelSize = size * shrink * streakMul * (0.7 + trailDepth * 0.3);
         gl_PointSize = pixelSize * uPixelRatio;
 
         vGlowColor = glowColor;
         vCoreColor = coreColor;
-        vAlpha = uOpacity * life * (0.55 + trailDepth * 0.25);
+        vAlpha = uOpacity * life * (0.68 + trailDepth * 0.3);
         vDepth = trailDepth;
       }
     `,
@@ -485,6 +850,6 @@ function normalizeSplatMesh(mesh: SparkSplatMesh, scale: number) {
   }
 
   mesh.quaternion.identity();
-  mesh.frustumCulled = false;
+  mesh.frustumCulled = true;
   return normalizedScale;
 }

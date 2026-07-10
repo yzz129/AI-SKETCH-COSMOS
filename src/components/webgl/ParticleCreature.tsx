@@ -11,7 +11,8 @@ type ParticleCreatureProps = {
   breathAmount?: number;
   behaviorSignature?: CreatureBehaviorSignature;
   interactionPulseRef?: MutableRefObject<number>;
-  burstRef?: MutableRefObject<number>;
+  burstPhaseRef?: MutableRefObject<number>;
+  reappearRef?: MutableRefObject<number>;
   spotlightFocusRef?: MutableRefObject<number>;
   spotlightEnabled?: boolean;
 };
@@ -242,7 +243,8 @@ export function ParticleCreature({
   breathAmount = 0.035,
   behaviorSignature,
   interactionPulseRef,
-  burstRef,
+  burstPhaseRef,
+  reappearRef,
   spotlightFocusRef,
   spotlightEnabled = false
 }: ParticleCreatureProps) {
@@ -293,6 +295,13 @@ export function ParticleCreature({
 
   useFrame(({ clock }) => {
     const spotlightFocus = spotlightFocusRef?.current ?? 0;
+    const burstPhase = burstPhaseRef?.current ?? 1;
+    const burstActive = burstPhase < 0.999;
+    const burstProgress = burstActive ? THREE.MathUtils.smoothstep(burstPhase, 0, 1) : 0;
+    const burstVisibility = burstActive
+      ? 1 - THREE.MathUtils.smoothstep(burstPhase, 0.58, 0.96)
+      : 0;
+    const modelVisibility = Math.max(reappearRef?.current ?? 1, burstVisibility);
 
     if (bodyMaterialRef.current) {
       bodyMaterialRef.current.uniforms.uTime.value = clock.elapsedTime;
@@ -300,13 +309,13 @@ export function ParticleCreature({
       bodyMaterialRef.current.uniforms.uFlowAmount.value = flowAmount;
       bodyMaterialRef.current.uniforms.uBreathAmount.value = breathAmount;
       bodyMaterialRef.current.uniforms.uInteractionPulse.value = interactionPulseRef?.current ?? 0;
-      bodyMaterialRef.current.uniforms.uBurstProgress.value = burstRef?.current ?? 0;
+      bodyMaterialRef.current.uniforms.uBurstProgress.value = burstProgress;
       bodyMaterialRef.current.uniforms.uGlow.value = 0.06;
       bodyMaterialRef.current.uniforms.uEdgeGlow.value = 0.07;
       bodyMaterialRef.current.uniforms.uParticleSpread.value = Math.max(0.44, behaviorSignature?.particleSpread ?? 0.5);
       bodyMaterialRef.current.uniforms.uDepthAmount.value = 1.35 + (behaviorSignature?.depth ?? 0.78) * 0.72;
       bodyMaterialRef.current.uniforms.uPointSizeBoost.value = 1 - spotlightFocus * 0.18;
-      bodyMaterialRef.current.uniforms.uAlphaMultiplier.value = 1 - spotlightFocus * 0.72;
+      bodyMaterialRef.current.uniforms.uAlphaMultiplier.value = (1 - spotlightFocus * 0.72) * modelVisibility;
       bodyMaterialRef.current.uniforms.uFocusAmount.value = spotlightFocus;
     }
     if (outlineMaterialRef.current) {
@@ -315,13 +324,13 @@ export function ParticleCreature({
       outlineMaterialRef.current.uniforms.uFlowAmount.value = flowAmount * 0.18;
       outlineMaterialRef.current.uniforms.uBreathAmount.value = breathAmount * 0.55;
       outlineMaterialRef.current.uniforms.uInteractionPulse.value = (interactionPulseRef?.current ?? 0) * 0.55;
-      outlineMaterialRef.current.uniforms.uBurstProgress.value = (burstRef?.current ?? 0) * 0.82;
+      outlineMaterialRef.current.uniforms.uBurstProgress.value = burstProgress * 0.82;
       outlineMaterialRef.current.uniforms.uGlow.value = 0.05;
       outlineMaterialRef.current.uniforms.uEdgeGlow.value = 0.06;
       outlineMaterialRef.current.uniforms.uParticleSpread.value = Math.max(0.38, behaviorSignature?.particleSpread ?? 0.5);
       outlineMaterialRef.current.uniforms.uDepthAmount.value = 1.05 + (behaviorSignature?.depth ?? 0.78) * 0.55;
       outlineMaterialRef.current.uniforms.uPointSizeBoost.value = 1 + spotlightFocus * 0.1;
-      outlineMaterialRef.current.uniforms.uAlphaMultiplier.value = 1 + spotlightFocus * 0.18;
+      outlineMaterialRef.current.uniforms.uAlphaMultiplier.value = (1 + spotlightFocus * 0.18) * modelVisibility;
       outlineMaterialRef.current.uniforms.uFocusAmount.value = spotlightFocus;
     }
     if (detailMaterialRef.current) {
@@ -332,7 +341,7 @@ export function ParticleCreature({
       detailMaterialRef.current.uniforms.uFlowAmount.value = flowAmount * 0.16;
       detailMaterialRef.current.uniforms.uBreathAmount.value = breathAmount * 0.38;
       detailMaterialRef.current.uniforms.uInteractionPulse.value = (interactionPulseRef?.current ?? 0) * 0.28;
-      detailMaterialRef.current.uniforms.uBurstProgress.value = (burstRef?.current ?? 0) * 0.32;
+      detailMaterialRef.current.uniforms.uBurstProgress.value = burstProgress * 0.32;
       detailMaterialRef.current.uniforms.uGlow.value = 0.035;
       detailMaterialRef.current.uniforms.uEdgeGlow.value = 0.045;
       detailMaterialRef.current.uniforms.uParticleSpread.value = Math.max(0.3, behaviorSignature?.particleSpread ?? 0.5);

@@ -11,10 +11,11 @@ from dotenv import load_dotenv
 from PIL import Image
 
 from .perf_logger import log_perf
+from .seedream_worker import SeedreamPreparation, prepare_seedream_reference, seedream_config_status
 from .storage import asset_url, write_manifest
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(BACKEND_ROOT / ".env")
+load_dotenv(BACKEND_ROOT / ".env", override=True)
 
 REQUIRED_TRIPOSPLAT_PATHS = {
     "TRIPOSPLAT_REPO_ROOT": "directory",
@@ -68,6 +69,13 @@ def _optional_path(name: str) -> str | None:
     return value if value and value.strip() else None
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def triposplat_config_status() -> dict:
     paths = {}
     ready = True
@@ -108,10 +116,13 @@ def triposplat_config_status() -> dict:
     return {
         "ready": ready,
         "device": device,
+        "seedream": seedream_config_status(),
         "settings": {
             "steps": int(os.getenv("TRIPOSPLAT_STEPS", "20")),
             "guidanceScale": float(os.getenv("TRIPOSPLAT_GUIDANCE_SCALE", "1.0")),
             "shift": float(os.getenv("TRIPOSPLAT_SHIFT", "3.0")),
+            "erodeRadius": int(os.getenv("TRIPOSPLAT_ERODE_RADIUS", "1")),
+            "trustSourceAlpha": _env_bool("TRIPOSPLAT_TRUST_SOURCE_ALPHA", False),
             "cpuDtype": os.getenv("TRIPOSPLAT_CPU_DTYPE", "float32"),
             "cpuNumGaussiansCap": int(os.getenv("TRIPOSPLAT_CPU_NUM_GAUSSIANS_CAP", "32768")),
             "cpuSubprocess": os.getenv("TRIPOSPLAT_CPU_SUBPROCESS", "true").lower() == "true",
@@ -217,14 +228,41 @@ def generate_triposplat_assets(
     guidance_scale = float(os.getenv("TRIPOSPLAT_GUIDANCE_SCALE", "1.0"))
     shift = float(os.getenv("TRIPOSPLAT_SHIFT", "3.0"))
     seed = int(os.getenv("TRIPOSPLAT_SEED", "42"))
+    erode_radius = int(os.getenv("TRIPOSPLAT_ERODE_RADIUS", "1"))
+    trust_source_alpha = _env_bool("TRIPOSPLAT_TRUST_SOURCE_ALPHA", False)
     _log_perf(
         artwork_id,
         "generate:start",
         (
             f"source={source_path.name} requested_gaussians={num_gaussians} "
-            f"format={export_format} steps={steps} guidanceScale={guidance_scale} shift={shift} seed={seed}"
+            f"format={export_format} steps={steps} guidanceScale={guidance_scale} "
+            f"shift={shift} seed={seed} erodeRadius={erode_radius} "
+            f"trustSourceAlpha={trust_source_alpha}"
         ),
     )
+
+    if os.getenv("TRIPOSPLAT_IN_SUBPROCESS"):
+        seedream_preparation = SeedreamPreparation(
+            input_path=source_path,
+            enabled=_env_bool("SEEDREAM_ENABLED", True),
+            used=source_path.name == "seedream_reference.png",
+            model=os.getenv("SEEDREAM_MODEL", "doubao-seedream-4-5-251128"),
+            reference_filename=source_path.name if source_path.name == "seedream_reference.png" else None,
+        )
+    else:
+        with _timed_stage(artwork_id, "seedream_reference", timings):
+            seedream_preparation = prepare_seedream_reference(source_path, artwork_dir)
+    triposplat_source_path = seedream_preparation.input_path
+    _log_perf(
+        artwork_id,
+        "seedream_reference:result",
+        (
+            f"enabled={seedream_preparation.enabled} used={seedream_preparation.used} "
+            f"model={seedream_preparation.model} input={triposplat_source_path.name} "
+            f"fallback={seedream_preparation.fallback_reason or 'none'}"
+        ),
+    )
+
     if os.getenv("TRIPOSPLAT_DEVICE", "cuda").startswith("cpu"):
         cpu_cap = int(os.getenv("TRIPOSPLAT_CPU_NUM_GAUSSIANS_CAP", "32768"))
         effective_num_gaussians = min(num_gaussians, cpu_cap)
@@ -233,7 +271,7 @@ def generate_triposplat_assets(
                 return _generate_with_subprocess(
                     artwork_id=artwork_id,
                     artwork_dir=artwork_dir,
-                    source_path=source_path,
+                    source_path=triposplat_source_path,
                     num_gaussians=effective_num_gaussians,
                     export_format=export_format,
                 )
@@ -248,17 +286,21 @@ def generate_triposplat_assets(
         gaussians=effective_num_gaussians,
         steps=steps,
         guidanceScale=guidance_scale,
+        erodeRadius=erode_radius,
+        trustSourceAlpha=trust_source_alpha,
         format=export_format,
     ):
         gaussian, prepared = pipeline.run(
-            str(source_path),
+            str(triposplat_source_path),
             seed=seed,
             steps=steps,
             guidance_scale=guidance_scale,
             shift=shift,
             num_gaussians=effective_num_gaussians,
+            erode_radius=erode_radius,
+            trust_source_alpha=trust_source_alpha,
             show_progress=True,
-    )
+        )
 
     preview_path = artwork_dir / "preprocessed_image.webp"
     with _timed_stage(artwork_id, "save_preview", timings):
@@ -287,6 +329,11 @@ def generate_triposplat_assets(
             "splat": asset_url(artwork_id, "model.splat") if write_splat else None,
             "ply": asset_url(artwork_id, "model.ply") if write_ply else None,
             "preview": asset_url(artwork_id, "preprocessed_image.webp"),
+            "seedreamReference": (
+                asset_url(artwork_id, seedream_preparation.reference_filename)
+                if seedream_preparation.reference_filename
+                else None
+            ),
         },
         "transform": {
             "scale": 1,
@@ -298,9 +345,12 @@ def generate_triposplat_assets(
             "guidanceScale": guidance_scale,
             "shift": shift,
             "seed": seed,
+            "erodeRadius": erode_radius,
+            "trustSourceAlpha": trust_source_alpha,
             "requestedGaussianCount": num_gaussians,
             "effectiveGaussianCount": effective_num_gaussians,
             "format": export_format,
+            "seedream": seedream_preparation.manifest_payload(),
             "timingsSeconds": {key: round(value, 3) for key, value in timings.items()},
         },
     }

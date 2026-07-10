@@ -75,7 +75,7 @@ def get_artwork_by_id(artwork_id: str):
 @app.post("/api/artworks", response_model=JobResponse)
 async def create_artwork_job(
     image: UploadFile = File(...),
-    numGaussians: int = Form(131_072),
+    numGaussians: int = Form(65_536),
     format: str = Form("splat"),
 ):
     request_start = perf_counter()

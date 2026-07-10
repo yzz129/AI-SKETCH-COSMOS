@@ -1,0 +1,28 @@
+[mcp_servers]
+
+[mcp_servers.node_repl]
+type = "stdio"
+command = 'C:\Users\Administrator\AppData\Local\OpenAI\Codex\runtimes\cua_node\1b23c930bdf84ed6\bin\node_repl.exe'
+startup_timeout_sec = 120
+
+[mcp_servers.node_repl.env]
+BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
+BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
+BROWSER_USE_CODEX_APP_VERSION = "26.623.101652"
+CODEX_CLI_PATH = 'C:\Users\Administrator\AppData\Local\OpenAI\Codex\bin\ea1c60319a1dcb19\codex.exe'
+CODEX_HOME = 'C:\Users\Administrator\.codex'
+NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
+NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
+NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
+NODE_REPL_NODE_MODULE_DIRS = 'C:\Users\Administrator\AppData\Local\OpenAI\Codex\runtimes\cua_node\1b23c930bdf84ed6\bin\node_modules'
+NODE_REPL_NODE_PATH = 'C:\Users\Administrator\AppData\Local\OpenAI\Codex\runtimes\cua_node\1b23c930bdf84ed6\bin\node.exe'
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "566be6ef352eb3de899adc56a9cd7b5e46c8f65b00e56b5630dd7a580e10cbea,60e4902788f207f88fd09344dfeafe07769488bdb2924bbb12b322c3b9d2b999"
+NODE_REPL_TRUSTED_CODE_PATHS = 'C:\Users\Administrator\.codex'
+SKY_CUA_NATIVE_PIPE = "1"
+SKY_CUA_NATIVE_PIPE_DIRECTORY = '\\.\pipe\codex-computer-use-ddc4549e-1d0c-4255-a882-37ad9fb57da3'
+
+[windows]
+sandbox = "elevated"
+
+[projects.'d:\ai-sketch-cosmos-main']
+trust_level = "trusted"

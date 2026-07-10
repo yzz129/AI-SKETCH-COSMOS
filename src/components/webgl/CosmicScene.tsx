@@ -1,5 +1,6 @@
 import { useThree } from '@react-three/fiber';
 import { useCallback, useEffect, useState } from 'react';
+import { AutoCosmicInteractions } from './AutoCosmicInteractions';
 import { CameraRig } from './CameraRig';
 import { DeepSpaceBackground } from './DeepSpaceBackground';
 import { Lighting } from './Lighting';
@@ -50,6 +51,7 @@ export function CosmicScene() {
       <fogExp2 attach="fog" args={['#120b2f', 0.025]} />
       <CameraRig />
       <DeepSpaceBackground />
+      <AutoCosmicInteractions />
       <PointerInteractionField />
       <StarFood />
       <MeteorLayer />

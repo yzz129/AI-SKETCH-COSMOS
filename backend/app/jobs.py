@@ -37,7 +37,7 @@ class JobRegistry:
         self._jobs: dict[str, GenerationJob] = {}
         self._lock = Lock()
         self._condition = Condition(self._lock)
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="triposplat")
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="triposplat")
 
     def create(
         self,
@@ -116,7 +116,12 @@ class JobRegistry:
             queue_elapsed = start - job.created_at_perf if job.created_at_perf else 0
             job.processing_started_at_perf = start
             _log_perf(job.job_id, job.artwork_id, "processing:start", f"queue_elapsed={queue_elapsed:.3f}s")
-            self._update(job_id, status=JobStatus.processing, progress=0.08, message="processing")
+            self._update(
+                job_id,
+                status=JobStatus.processing,
+                progress=0.08,
+                message="preparing Seedream 3D reference and generating TripoSplat",
+            )
             generate_start = perf_counter()
             assets = generate_triposplat_assets(
                 artwork_id=job.artwork_id,
