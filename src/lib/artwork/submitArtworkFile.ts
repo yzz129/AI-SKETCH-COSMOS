@@ -123,8 +123,10 @@ export async function submitArtworkFile(file: File) {
       logStage('local artwork processed');
       return artwork;
     });
+    let recognizedFeatures: ArtworkFeatureResult | null = null;
     const featuresPromise = analyzeArtworkFeatures(file)
       .then((features) => {
+        recognizedFeatures = features;
         logStage(`ai features ready / ${features.motionPreset}`);
         return features;
       })
@@ -134,9 +136,13 @@ export async function submitArtworkFile(file: File) {
       });
     const artwork = await artworkPromise;
     logStage('original triposplat input prepared');
+    const fallbackFeatures = quickFallbackFeatures(artwork);
+    // Start reconstruction immediately. The refined feature request already
+    // runs in parallel and can update motion after the intact Splat appears.
     const gaussianModel = await generateGaussianArtworkModel({
       file,
       format: 'splat',
+      features: fallbackFeatures,
       onProgress: (result) => {
         useSketchStore.setState({
           status: 'processing',
@@ -146,28 +152,30 @@ export async function submitArtworkFile(file: File) {
     });
     logStage('triposplat ready');
 
-    const fallbackFeatures = quickFallbackFeatures(artwork);
-    const displayedArtwork = useArtworkStore.getState().addArtwork(artwork, fallbackFeatures, undefined, gaussianModel);
+    const displayedFeatures = recognizedFeatures ?? fallbackFeatures;
+    const displayedArtwork = useArtworkStore.getState().addArtwork(artwork, displayedFeatures, undefined, gaussianModel);
     logStage('artwork added to scene');
     useSketchStore.setState({
       status: 'ready',
-      message: `${artwork.name} 已进入星河：TripoSplat .splat / AI 动作识别中...`
+      message: `${artwork.name} 已进入星河：基础 .splat 已显示，GPU 骨骼将在后台热加载...`
     });
 
-    void featuresPromise.then((features) => {
-      if (!features) {
-        void updateBackendArtworkMetadata(artwork, fallbackFeatures, gaussianModel);
-        return;
-      }
+    useArtworkStore.getState().updateArtworkFeatures(displayedArtwork.id, displayedFeatures);
+    void updateBackendArtworkMetadata(artwork, displayedFeatures, gaussianModel);
+    useSketchStore.setState({
+      status: 'ready',
+      message: splatReadyMessage(artwork, displayedFeatures)
+    });
+    logStage(`scene motion updated / ${displayedFeatures.motionPreset}`);
 
-      useArtworkStore.getState().updateArtworkFeatures(displayedArtwork.id, features);
-      void updateBackendArtworkMetadata(artwork, features, gaussianModel);
-      useSketchStore.setState({
-        status: 'ready',
-        message: splatReadyMessage(artwork, features)
+    if (!recognizedFeatures) {
+      void featuresPromise.then((lateFeatures) => {
+        if (!lateFeatures) return;
+        useArtworkStore.getState().updateArtworkFeatures(displayedArtwork.id, lateFeatures);
+        void updateBackendArtworkMetadata(artwork, lateFeatures, gaussianModel);
+        logStage(`late scene motion updated / ${lateFeatures.motionPreset}`);
       });
-      logStage(`scene motion updated / ${features.motionPreset}`);
-    });
+    }
   } catch (error) {
     console.warn('[triposplat] backend-first generation failed; falling back to local particles:', error);
     useSketchStore.getState().setProcessing('TripoSplat 后端不可用或生成失败，正在回退到本地粒子生命...');

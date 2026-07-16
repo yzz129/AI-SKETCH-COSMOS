@@ -1,7 +1,7 @@
 import { useFrame, useThree } from '@react-three/fiber';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { CREATURE_ORBIT_CENTER } from './cosmicAnchors';
+import { DADAKIDO_WORLD_POSITION } from './cosmicAnchors';
 import { hasCreaturePriorityHit } from './pointerPriority';
 import { useAutoCosmicInteractionStore } from './autoCosmicInteractionStore';
 
@@ -35,20 +35,18 @@ function useDensityMul() {
   return mul;
 }
 
-const DADAKIDO = CREATURE_ORBIT_CENTER;
-
-type PlanetSpec = {
-  orbitRadius: number;       // distance from dadakido centre
-  orbitSpeed: number;        // angular speed (Kepler: faster when closer)
-  inclination: number;       // orbital inclination radians
-  phaseOffset: number;       // starting angle
+export type PlanetSpec = {
+  orbitRadiusX: number;
+  orbitRadiusY: number;
+  orbitDepth: number;
+  orbitSpeed: number;
+  orbitTilt: number;
   planetRadius: number;      // visual sphere radius
   color: string;
   accent: string;
   ring?: boolean;
   moon?: boolean;
   spinSpeed: number;
-  floatAmount: number;
   phase: number;
 };
 
@@ -57,16 +55,85 @@ type ParticleLayer = {
   material: THREE.ShaderMaterial;
 };
 
-/*
-   Kepler-friendly orbital speeds: ω ∝ r^(−3/2).
-   Wide orbits spread across the full screen, slow majestic pace.
-*/
-const PLANETS: PlanetSpec[] = [
-  { orbitRadius: 3.5, orbitSpeed: 0.35, inclination: 0.18, phaseOffset: 0.4, planetRadius: 0.60, color: '#5ce8ff', accent: '#8b5cff', ring: true, moon: true, spinSpeed: 0.42, floatAmount: 0.18, phase: 0.4 },
-  { orbitRadius: 6.2, orbitSpeed: 0.15, inclination: -0.24, phaseOffset: 1.7, planetRadius: 0.75, color: '#ffa04a', accent: '#fff0cc', ring: true, spinSpeed: 0.30, floatAmount: 0.14, phase: 1.7 },
-  { orbitRadius: 8.8, orbitSpeed: 0.09, inclination: 0.32, phaseOffset: 3.1, planetRadius: 0.46, color: '#e87bff', accent: '#7ae8ff', moon: true, spinSpeed: 0.55, floatAmount: 0.11, phase: 3.1 },
-  { orbitRadius: 11.5, orbitSpeed: 0.06, inclination: -0.16, phaseOffset: 4.4, planetRadius: 0.52, color: '#8b5cff', accent: '#fbb8ff', spinSpeed: 0.36, floatAmount: 0.09, phase: 4.4 }
+const REFERENCE_ASPECT = 16 / 10;
+const REFERENCE_VIEW_HEIGHT = 22;
+const OUTER_ORBIT_FILL = 0.45;
+const BASE_OUTER_ORBIT_X = 8.25;
+const BASE_OUTER_ORBIT_Y = 3.75;
+const PLANET_REVOLUTION_SPEED = 0.27;
+const PLANET_SELF_ROTATION_SPEED = 0.68;
+const PLANET_RING_VIEW_TILT = new THREE.Quaternion().setFromEuler(
+  new THREE.Euler(THREE.MathUtils.degToRad(5), 0, 0)
+);
+
+let orbitViewportCache = {
+  width: 0,
+  height: 0,
+  scaleX: 1,
+  scaleY: 1
+};
+
+function getResponsiveOrbitScale() {
+  const width = typeof window === 'undefined' ? 1600 : Math.max(window.innerWidth, 1);
+  const height = typeof window === 'undefined' ? 1000 : Math.max(window.innerHeight, 1);
+  if (orbitViewportCache.width === width && orbitViewportCache.height === height) {
+    return orbitViewportCache;
+  }
+
+  const aspect = THREE.MathUtils.clamp(width / height, 0.35, 4);
+  const referenceWidth = REFERENCE_VIEW_HEIGHT * REFERENCE_ASPECT;
+  const viewWidth = aspect >= REFERENCE_ASPECT
+    ? REFERENCE_VIEW_HEIGHT * aspect
+    : referenceWidth;
+  const viewHeight = aspect >= REFERENCE_ASPECT
+    ? REFERENCE_VIEW_HEIGHT
+    : referenceWidth / aspect;
+
+  orbitViewportCache = {
+    width,
+    height,
+    scaleX: (viewWidth * OUTER_ORBIT_FILL) / BASE_OUTER_ORBIT_X,
+    scaleY: (viewHeight * OUTER_ORBIT_FILL) / BASE_OUTER_ORBIT_Y
+  };
+  return orbitViewportCache;
+}
+
+// Three elliptical orbit bands make dadakido read as the visual sun. Four
+// planets are phase-spaced on each band, with slower movement farther out.
+export const PLANETS: PlanetSpec[] = [
+  { orbitRadiusX: 4.9, orbitRadiusY: 1.55, orbitDepth: 0.46, orbitSpeed: 0.11, orbitTilt: 0.035, planetRadius: 0.40, color: '#5ce8ff', accent: '#8b5cff', ring: true, moon: true, spinSpeed: 0.42, phase: 0.15 },
+  { orbitRadiusX: 4.9, orbitRadiusY: 1.55, orbitDepth: 0.46, orbitSpeed: 0.11, orbitTilt: 0.035, planetRadius: 0.30, color: '#63f5b5', accent: '#fff08a', moon: true, spinSpeed: 0.62, phase: 1.72 },
+  { orbitRadiusX: 4.9, orbitRadiusY: 1.55, orbitDepth: 0.46, orbitSpeed: 0.11, orbitTilt: 0.035, planetRadius: 0.43, color: '#ffa04a', accent: '#fff0cc', ring: true, spinSpeed: 0.30, phase: 3.29 },
+  { orbitRadiusX: 4.9, orbitRadiusY: 1.55, orbitDepth: 0.46, orbitSpeed: 0.11, orbitTilt: 0.035, planetRadius: 0.32, color: '#ff6fae', accent: '#84f2ff', ring: true, spinSpeed: 0.48, phase: 4.86 },
+  { orbitRadiusX: 6.6, orbitRadiusY: 2.55, orbitDepth: 0.72, orbitSpeed: -0.075, orbitTilt: -0.055, planetRadius: 0.38, color: '#e87bff', accent: '#7ae8ff', moon: true, spinSpeed: 0.55, phase: 0.72 },
+  { orbitRadiusX: 6.6, orbitRadiusY: 2.55, orbitDepth: 0.72, orbitSpeed: -0.075, orbitTilt: -0.055, planetRadius: 0.29, color: '#ffe15c', accent: '#ff7e67', moon: true, spinSpeed: 0.68, phase: 2.29 },
+  { orbitRadiusX: 6.6, orbitRadiusY: 2.55, orbitDepth: 0.72, orbitSpeed: -0.075, orbitTilt: -0.055, planetRadius: 0.39, color: '#8b5cff', accent: '#fbb8ff', spinSpeed: 0.36, phase: 3.86 },
+  { orbitRadiusX: 6.6, orbitRadiusY: 2.55, orbitDepth: 0.72, orbitSpeed: -0.075, orbitTilt: -0.055, planetRadius: 0.34, color: '#58a8ff', accent: '#d6f4ff', ring: true, spinSpeed: 0.4, phase: 5.43 },
+  { orbitRadiusX: 8.25, orbitRadiusY: 3.75, orbitDepth: 1.02, orbitSpeed: 0.052, orbitTilt: 0.045, planetRadius: 0.31, color: '#ff7d6e', accent: '#ffd56a', moon: true, spinSpeed: 0.58, phase: 0.38 },
+  { orbitRadiusX: 8.25, orbitRadiusY: 3.75, orbitDepth: 1.02, orbitSpeed: 0.052, orbitTilt: 0.045, planetRadius: 0.38, color: '#65d7ff', accent: '#bc7cff', ring: true, spinSpeed: 0.34, phase: 1.95 },
+  { orbitRadiusX: 8.25, orbitRadiusY: 3.75, orbitDepth: 1.02, orbitSpeed: 0.052, orbitTilt: 0.045, planetRadius: 0.27, color: '#8df58a', accent: '#fff39a', spinSpeed: 0.72, phase: 3.52 },
+  { orbitRadiusX: 8.25, orbitRadiusY: 3.75, orbitDepth: 1.02, orbitSpeed: 0.052, orbitTilt: 0.045, planetRadius: 0.34, color: '#ff8ed8', accent: '#76e8ff', ring: true, moon: true, spinSpeed: 0.46, phase: 5.09 }
 ];
+
+export function getPlanetLocalPosition(index: number, time: number, target = new THREE.Vector3()) {
+  const spec = PLANETS[THREE.MathUtils.euclideanModulo(index, PLANETS.length)];
+  const responsiveScale = getResponsiveOrbitScale();
+  const angle = spec.phase + time * spec.orbitSpeed * PLANET_REVOLUTION_SPEED;
+  const ellipseX = Math.cos(angle) * spec.orbitRadiusX * responsiveScale.scaleX;
+  const ellipseY = Math.sin(angle) * spec.orbitRadiusY * responsiveScale.scaleY;
+  const cosTilt = Math.cos(spec.orbitTilt);
+  const sinTilt = Math.sin(spec.orbitTilt);
+
+  return target.set(
+    DADAKIDO_WORLD_POSITION[0] + ellipseX * cosTilt - ellipseY * sinTilt,
+    DADAKIDO_WORLD_POSITION[1] + ellipseX * sinTilt + ellipseY * cosTilt,
+    DADAKIDO_WORLD_POSITION[2] + Math.sin(angle) * spec.orbitDepth
+  );
+}
+
+export function getPlanetWorldPosition(index: number, time: number, target = new THREE.Vector3()) {
+  return getPlanetLocalPosition(index, time, target);
+}
 
 /* ------------------------------------------------------------------ */
 /*  seeded PRNG                                                        */
@@ -242,7 +309,7 @@ function createPlanetParticles(spec: PlanetSpec, seed: number, densityMul: numbe
 }
 
 /* ------------------------------------------------------------------ */
-/*  ring (flat elliptical disc — billboarded at runtime)               */
+/*  ring (screen-stable, shallow Saturn-like ellipse)                  */
 /* ------------------------------------------------------------------ */
 
 function createRingParticles(spec: PlanetSpec, seed: number, densityMul: number): ParticleLayer {
@@ -261,7 +328,7 @@ function createRingParticles(spec: PlanetSpec, seed: number, densityMul: number)
     const angle = random() * Math.PI * 2;
     const radius = spec.planetRadius * THREE.MathUtils.lerp(1.28, 2.65, random());
     const band = THREE.MathUtils.randFloatSpread(spec.planetRadius * 0.08);
-    // flat disc in XZ plane (billboard will orient it toward camera)
+    // Flat disc in XZ; the parent keeps it almost edge-on to the viewer.
     const position = new THREE.Vector3(Math.cos(angle) * radius, band, Math.sin(angle) * radius);
     const color = base.clone().lerp(highlight, random() * 0.26);
 
@@ -345,7 +412,9 @@ function ParticlePlanet({ spec, index }: { spec: PlanetSpec; index: number }) {
   const lastAutoPulseRef = useRef(0);
   const { camera } = useThree();
   const densityMul = useDensityMul();
-  const planetPulseId = useAutoCosmicInteractionStore((state) => state.planetPulseId);
+  const planetPulse = useAutoCosmicInteractionStore((state) => state.planetPulse);
+  const ringParentQuaternion = useMemo(() => new THREE.Quaternion(), []);
+  const orbitPosition = useMemo(() => new THREE.Vector3(), []);
 
   const hitMaterial = useMemo(() => new THREE.MeshBasicMaterial({
     transparent: true,
@@ -359,6 +428,7 @@ function ParticlePlanet({ spec, index }: { spec: PlanetSpec; index: number }) {
     ring: spec.ring ? createRingParticles(spec, 12000 + index * 157, densityMul) : undefined,
     moon: spec.moon ? createMoonParticles(spec, 15000 + index * 191, densityMul) : undefined
   }), [index, spec, densityMul]);
+  const initialPosition = useMemo(() => getPlanetLocalPosition(index, 0), [index]);
 
   useEffect(() => {
     return () => {
@@ -370,19 +440,24 @@ function ParticlePlanet({ spec, index }: { spec: PlanetSpec; index: number }) {
   }, [hitMaterial, layers]);
 
   useEffect(() => {
-    if (planetPulseId === 0 || planetPulseId === lastAutoPulseRef.current) return;
-    if ((planetPulseId + index) % PLANETS.length !== 0) return;
-    lastAutoPulseRef.current = planetPulseId;
+    if (planetPulse.id === 0 || planetPulse.id === lastAutoPulseRef.current) return;
+    if (planetPulse.planetIndex !== index) return;
+    lastAutoPulseRef.current = planetPulse.id;
     burstStartedAtRef.current = performance.now() * 0.001;
-  }, [index, planetPulseId]);
+  }, [index, planetPulse]);
 
   useFrame(({ clock }) => {
     const time = clock.elapsedTime;
 
+    /* ---- revolution around dadakido ---- */
+    getPlanetLocalPosition(index, time, orbitPosition);
+    orbitRef.current?.position.copy(orbitPosition);
+    ringGroupRef.current?.position.copy(orbitPosition);
+
     /* ---- burst progress (click feedback) ---- */
     const burstAge = performance.now() * 0.001 - burstStartedAtRef.current;
-    const burstProgress = burstAge < 1.25
-      ? Math.sin(THREE.MathUtils.clamp(burstAge / 1.25, 0, 1) * Math.PI)
+    const burstProgress = burstAge < 1.45
+      ? Math.sin(THREE.MathUtils.clamp(burstAge / 1.45, 0, 1) * Math.PI)
       : 0;
 
     layers.body.material.uniforms.uTime.value = time;
@@ -396,52 +471,31 @@ function ParticlePlanet({ spec, index }: { spec: PlanetSpec; index: number }) {
       layers.moon.material.uniforms.uBurstProgress.value = burstProgress * 0.78;
     }
 
-    /* ---- Kepler orbit around dadakido ---- */
-    const angle = time * spec.orbitSpeed + spec.phaseOffset;
-    const cosA = Math.cos(angle);
-    const sinA = Math.sin(angle);
-
-    // inclination tilts the orbit plane
-    const cosInc = Math.cos(spec.inclination);
-    const sinInc = Math.sin(spec.inclination);
-
-    const orbitX = cosInc * cosA * spec.orbitRadius;
-    const orbitY = sinInc * cosA * spec.orbitRadius
-      + Math.cos(time * 0.62 + spec.phase) * spec.floatAmount;
-    const orbitZ = cosInc * sinA * spec.orbitRadius;
-
-    if (orbitRef.current) {
-      orbitRef.current.position.set(
-        DADAKIDO.x + orbitX,
-        DADAKIDO.y + orbitY,
-        DADAKIDO.z + orbitZ
-      );
-    }
-
-    /* ---- ring: billboard toward camera so it always looks centred ---- */
-    if (ringGroupRef.current && orbitRef.current) {
-      const worldPos = new THREE.Vector3();
-      orbitRef.current.getWorldPosition(worldPos);
-      ringGroupRef.current.position.copy(worldPos);
-      ringGroupRef.current.quaternion.copy(camera.quaternion);
+    /* ---- keep the ring as a thin horizontal ellipse for the viewer ---- */
+    if (ringGroupRef.current) {
+      ringGroupRef.current.parent?.getWorldQuaternion(ringParentQuaternion);
+      ringGroupRef.current.quaternion
+        .copy(ringParentQuaternion)
+        .invert()
+        .multiply(camera.quaternion)
+        .multiply(PLANET_RING_VIEW_TILT);
     }
 
     /* ---- body spin ---- */
     if (bodyRef.current) {
-      bodyRef.current.rotation.y = time * spec.spinSpeed;
-      bodyRef.current.rotation.x = Math.sin(time * 0.34 + spec.phase) * 0.16;
-      const breathe = 1 + Math.sin(time * 0.88 + spec.phase) * 0.035;
-      bodyRef.current.scale.setScalar(breathe);
+      bodyRef.current.rotation.y = time * spec.spinSpeed * PLANET_SELF_ROTATION_SPEED;
+      bodyRef.current.rotation.x = Math.sin(spec.phase) * 0.16;
+      bodyRef.current.scale.setScalar(1);
     }
 
-    /* ---- ring self-spin (visual only, on top of billboard) ---- */
+    /* ---- ring self-spin around the fixed plane's local normal ---- */
     if (ringRef.current) {
-      ringRef.current.rotation.z = time * spec.spinSpeed * 0.45;
+      ringRef.current.rotation.y = time * spec.spinSpeed * 0.22;
     }
 
     /* ---- moon orbit ---- */
     if (moonOrbitRef.current) {
-      moonOrbitRef.current.rotation.y = time * (spec.spinSpeed * 1.35 + 0.28);
+      moonOrbitRef.current.rotation.y = time * (spec.spinSpeed * 0.78 + 0.1);
       moonOrbitRef.current.rotation.z = Math.sin(time * 0.3 + spec.phase) * 0.18;
     }
   });
@@ -449,8 +503,10 @@ function ParticlePlanet({ spec, index }: { spec: PlanetSpec; index: number }) {
   return (
     <>
       {/* planet body + hit-area + moon — positioned by orbitRef */}
-      <group ref={orbitRef} renderOrder={3}>
-        <points ref={bodyRef} geometry={layers.body.geometry} material={layers.body.material} renderOrder={3} frustumCulled={false} raycast={() => null} />
+      <group ref={orbitRef} position={initialPosition} renderOrder={14}>
+        {/* Render the front shell after creatures so a captured model reads as
+            being inside the planet instead of pasted over its surface. */}
+        <points ref={bodyRef} geometry={layers.body.geometry} material={layers.body.material} renderOrder={14} frustumCulled={false} raycast={() => null} />
         <mesh
           material={hitMaterial}
           onPointerDown={(event) => {
@@ -477,7 +533,11 @@ function ParticlePlanet({ spec, index }: { spec: PlanetSpec; index: number }) {
 
       {/* ring — separate group, billboarded */}
       {layers.ring && (
-        <group ref={ringGroupRef} renderOrder={3}>
+        <group
+          ref={ringGroupRef}
+          position={initialPosition}
+          renderOrder={3}
+        >
           <points
             ref={ringRef}
             geometry={layers.ring.geometry}

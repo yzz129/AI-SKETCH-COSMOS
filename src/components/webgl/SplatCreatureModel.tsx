@@ -3,9 +3,20 @@ import { type MutableRefObject, type RefObject, useEffect, useMemo, useRef, useS
 import * as THREE from 'three';
 import type { SplatMesh as SparkSplatMesh } from '@sparkjsdev/spark';
 import type { ArtworkFeatureResult } from '../../types/artwork';
+import type { CreaturePartActionPose } from './creaturePartActions';
+import { DADAKIDO_RENDER_ORDER } from './dadakidoOcclusion';
+import {
+  disposeCpuSplatPartMotion,
+  installCpuSplatPartMotion,
+  isCpuSplatPartRig,
+  updateCpuSplatPartMotion,
+  type CpuSplatPartMotionRuntime,
+  type CpuSplatPartRig
+} from './CpuSplatPartMotion';
 
 type SplatCreatureModelProps = {
   url: string;
+  rigUrl?: string;
   colors: string[];
   features: ArtworkFeatureResult;
   scale?: number;
@@ -13,139 +24,139 @@ type SplatCreatureModelProps = {
   burstRef?: MutableRefObject<number>;
   burstPhaseRef?: MutableRefObject<number>;
   reappearRef?: MutableRefObject<number>;
+  renderOrderRef?: MutableRefObject<number>;
+  partActionRef?: MutableRefObject<CreaturePartActionPose>;
   flightWorldPositionRef?: MutableRefObject<THREE.Vector3>;
   flightOpacityRef?: MutableRefObject<number>;
   onReady?: () => void;
   onError?: (error: unknown) => void;
 };
 
+// TripoSplat exports use -Y as up and keep the authored front along the
+// horizontal +X axis. Apply the same two-stage canonical transform as the
+// reference viewer: first turn +X toward +Z, then flip the exported up axis.
+// Keeping this correction on the mesh lets the parent visual group own only
+// the live camera-facing yaw.
+const SPLAT_CANONICAL_ROTATION = new THREE.Quaternion()
+  .setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI)
+  .multiply(new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0),
+    Math.PI / 2
+  ));
+
 type SplatParticleProxy = {
   geometry: THREE.BufferGeometry;
   material: THREE.ShaderMaterial;
 };
 
-type SplatCpuDeformer = {
-  indices: Uint32Array;
-  centers: Float32Array;
-  scales: Float32Array;
-  quaternions: Float32Array;
-  opacities: Float32Array;
-  colors: Float32Array;
-  shape: Float32Array;
-  maxDimension: number;
-  lastUpdate: number;
-  cursor: number;
-  restoreCursor: number;
-  isDeformed: boolean;
-  center: THREE.Vector3;
-  scale: THREE.Vector3;
-  quaternion: THREE.Quaternion;
-  color: THREE.Color;
-  anchor: THREE.Vector3;
-  local: THREE.Vector3;
-  rotated: THREE.Vector3;
-  motionParts: number[];
-  activePart: number;
-  actionStartedAt: number;
-  actionDuration: number;
-  nextActionAt: number;
-  randomSeed: number;
-};
+const RIG_POLL_FAST_INTERVAL_MS = 900;
+const RIG_POLL_SLOW_INTERVAL_MS = 1_800;
+const RIG_POLL_TIMEOUT_MS = 8 * 60_000;
 
-const CPU_DEFORM_HZ = 18;
-const CPU_DEFORM_NEAR_DISTANCE = 11;
-const CPU_DEFORM_FOCUS_DISTANCE = 15;
-const CPU_DEFORM_FRAME_BUDGET = Number.POSITIVE_INFINITY;
-const CPU_DEFORM_ACTIVE_SECONDS = 10;
-const CPU_DEFORM_REST_SECONDS = 3;
-const CPU_DEFORM_MAX_ACTIVE_MODELS = 10;
-let cpuDeformBudgetFrame = -1;
-let cpuDeformBudgetUsed = 0;
-const cpuDeformActiveSlots = new Map<string, number>();
-const cpuDeformRestUntil = new Map<string, number>();
-
-const SPLAT_PART_HEAD = 1;
-const SPLAT_PART_LEFT_ARM = 2;
-const SPLAT_PART_RIGHT_ARM = 3;
-const SPLAT_PART_LEFT_LEG = 4;
-const SPLAT_PART_RIGHT_LEG = 5;
-const SPLAT_PART_TAIL = 6;
-
-function motionPartIdsFromFeatures(features: ArtworkFeatureResult) {
-  const ids = new Set<number>();
-  const addArms = () => {
-    ids.add(SPLAT_PART_LEFT_ARM);
-    ids.add(SPLAT_PART_RIGHT_ARM);
-  };
-  const addLegs = () => {
-    ids.add(SPLAT_PART_LEFT_LEG);
-    ids.add(SPLAT_PART_RIGHT_LEG);
-  };
-
-  for (const part of features.motionParts ?? []) {
-    if (part === 'head' || part === 'ears') ids.add(SPLAT_PART_HEAD);
-    else if (part === 'leftArm') ids.add(SPLAT_PART_LEFT_ARM);
-    else if (part === 'rightArm') ids.add(SPLAT_PART_RIGHT_ARM);
-    else if (part === 'arms' || part === 'wings') addArms();
-    else if (part === 'leftLeg') ids.add(SPLAT_PART_LEFT_LEG);
-    else if (part === 'rightLeg') ids.add(SPLAT_PART_RIGHT_LEG);
-    else if (part === 'legs') addLegs();
-    else if (part === 'tail' || part === 'fins') ids.add(SPLAT_PART_TAIL);
-    else if (part === 'body') {
-      if (features.morphology.hasHead) ids.add(SPLAT_PART_HEAD);
-      if (features.morphology.hasArms || features.morphology.hasWings) addArms();
-      if (features.morphology.hasLegs) addLegs();
-      if (features.morphology.hasTail || features.morphology.hasFins) ids.add(SPLAT_PART_TAIL);
-    }
-  }
-
-  if (!ids.size) {
-    if (features.morphology.hasHead) ids.add(SPLAT_PART_HEAD);
-    if (features.morphology.hasArms || features.morphology.hasWings) addArms();
-    if (features.morphology.hasLegs) addLegs();
-    if (features.morphology.hasTail || features.morphology.hasFins) ids.add(SPLAT_PART_TAIL);
-  }
-
-  return ids;
+function isPendingPartMap(value: unknown) {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as { strategy?: unknown; status?: unknown };
+  return ['cpu-rigid-parts', 'gpu-splat-skinning', 'cpu-splat-bone-mapping'].includes(String(candidate.strategy))
+    && candidate.status === 'processing';
 }
 
-export function SplatCreatureModel({
+function isOutdatedPartMap(value: unknown) {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as { strategy?: unknown; version?: unknown };
+  return ['cpu-rigid-parts', 'gpu-splat-skinning', 'cpu-splat-bone-mapping'].includes(String(candidate.strategy))
+    && Number(candidate.version ?? 0) < 14;
+}
+
+export function SplatCreatureModel(props: SplatCreatureModelProps) {
+  const { rigUrl } = props;
+  const [rig, setRig] = useState<CpuSplatPartRig | null>(null);
+
+  useEffect(() => {
+    if (!rigUrl) {
+      setRig(null);
+      return;
+    }
+    const controller = new AbortController();
+    const startedAt = performance.now();
+    let retryTimer: number | undefined;
+    let disposed = false;
+    setRig(null);
+
+    const scheduleRetry = () => {
+      if (disposed || performance.now() - startedAt >= RIG_POLL_TIMEOUT_MS) return false;
+      const elapsed = performance.now() - startedAt;
+      const delay = elapsed < 90_000 ? RIG_POLL_FAST_INTERVAL_MS : RIG_POLL_SLOW_INTERVAL_MS;
+      retryTimer = window.setTimeout(pollRig, delay);
+      return true;
+    };
+
+    const pollRig = async () => {
+      try {
+        const response = await fetch(rigUrl, { signal: controller.signal, cache: 'no-store' });
+        if (!response.ok) {
+          if (response.status === 404 && scheduleRetry()) return;
+          throw new Error(`Splat rig request failed with ${response.status}.`);
+        }
+        const payload = await response.json() as unknown;
+        if (disposed) return;
+        if (isCpuSplatPartRig(payload)) {
+          setRig(payload);
+          return;
+        }
+        if ((isPendingPartMap(payload) || isOutdatedPartMap(payload)) && scheduleRetry()) return;
+        console.warn('[splat-part-motion] Background analysis finished without a usable part map:', payload);
+      } catch (error) {
+        if (controller.signal.aborted || disposed) return;
+        if (scheduleRetry()) return;
+        console.warn('[splat-part-motion] Intact model will remain static:', error);
+      }
+    };
+
+    void pollRig();
+    return () => {
+      disposed = true;
+      controller.abort();
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [rigUrl]);
+
+  // The intact Splat starts loading immediately. CPU part motion is installed later
+  // when its tiny manifest and part map are ready, so analysis never blocks
+  // first display and never starts duplicate part-model requests.
+  return <StaticSplatCreatureModel {...props} rig={rig} />;
+}
+
+function StaticSplatCreatureModel({
   url,
-  colors,
+  rigUrl,
+  rig,
   features,
   scale = 0.58,
   spotlightFocusRef,
   burstRef,
   burstPhaseRef,
   reappearRef,
+  renderOrderRef,
+  partActionRef,
   flightWorldPositionRef,
   flightOpacityRef,
   onReady,
   onError
-}: SplatCreatureModelProps) {
+}: SplatCreatureModelProps & { rig: CpuSplatPartRig | null }) {
   const meshRef = useRef<SparkSplatMesh | null>(null);
   const particleProxyGroupRef = useRef<THREE.Group>(null);
   const particleProxyRef = useRef<THREE.Points>(null);
-  const cpuDeformerRef = useRef<SplatCpuDeformer | null>(null);
+  const cpuPartMotionRef = useRef<CpuSplatPartMotionRuntime | null>(null);
   const baseScaleRef = useRef(scale);
   const basePositionRef = useRef(new THREE.Vector3());
   const flightLocalPositionRef = useRef(new THREE.Vector3());
   const cameraDistancePositionRef = useRef(new THREE.Vector3());
-  const showcaseSpinRef = useRef(0);
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
-  const cpuScheduleId = useMemo(() => `splat-${Math.abs(hashString(url))}`, [url]);
+  const whiteColorRef = useRef(new THREE.Color('#ffffff'));
   const [failed, setFailed] = useState(false);
   const [splat, setSplat] = useState<SparkSplatMesh | null>(null);
   const [particleProxy, setParticleProxy] = useState<SplatParticleProxy | null>(null);
-  const rainbowGlow = useMemo(() => [
-    new THREE.Color('#ff4d4d'),
-    new THREE.Color('#ff9a2f'),
-    new THREE.Color('#fff04a'),
-    new THREE.Color('#52ff89'),
-    new THREE.Color('#55a7ff'),
-    new THREE.Color('#c86bff')
-  ], []);
   const motionPhase = useMemo(() => {
     let hash = 0;
     hash = hashString(url);
@@ -168,43 +179,32 @@ export function SplatCreatureModel({
       return null;
     });
     meshRef.current = null;
-    cpuDeformerRef.current = null;
+    disposeCpuSplatPartMotion(cpuPartMotionRef.current);
+    cpuPartMotionRef.current = null;
 
     import('@sparkjsdev/spark')
       .then(({ SplatMesh }) => {
         if (disposed) return;
-        const mesh = new SplatMesh({
-          url,
-          onLoad: (loaded) => {
-            if (disposed || meshRef.current !== loaded) return;
-            baseScaleRef.current = normalizeSplatMesh(loaded, scale);
-            basePositionRef.current.copy(loaded.position);
-            cpuDeformerRef.current = createSplatCpuDeformer(loaded, features);
-            setParticleProxy((proxy) => {
-              proxy?.geometry.dispose();
-              proxy?.material.dispose();
-              return createSplatParticleProxy(loaded, motionPhase);
-            });
-            onReadyRef.current?.();
-          }
-        });
+        const mesh = new SplatMesh({ url });
 
         loadedMesh = mesh;
         meshRef.current = mesh;
         mesh.visible = true;
-        setSplat(mesh);
 
         mesh.initialized
           .then((initializedMesh) => {
             if (disposed || meshRef.current !== initializedMesh) return;
             baseScaleRef.current = normalizeSplatMesh(initializedMesh, scale);
             basePositionRef.current.copy(initializedMesh.position);
-            cpuDeformerRef.current = createSplatCpuDeformer(initializedMesh, features);
+            // White is Spark's neutral recolor multiplier, so the authored
+            // Gaussian colors remain unchanged throughout the animation.
+            initializedMesh.recolor.copy(whiteColorRef.current);
             setParticleProxy((proxy) => {
               proxy?.geometry.dispose();
               proxy?.material.dispose();
               return createSplatParticleProxy(initializedMesh, motionPhase);
             });
+            setSplat(initializedMesh);
             onReadyRef.current?.();
           })
           .catch((error) => {
@@ -221,8 +221,9 @@ export function SplatCreatureModel({
 
     return () => {
       disposed = true;
+      disposeCpuSplatPartMotion(cpuPartMotionRef.current);
+      cpuPartMotionRef.current = null;
       meshRef.current = null;
-      cpuDeformerRef.current = null;
       loadedMesh?.dispose();
       setParticleProxy((proxy) => {
         proxy?.geometry.dispose();
@@ -230,16 +231,47 @@ export function SplatCreatureModel({
         return null;
       });
     };
-  }, [colors, features, motionPhase, scale, url]);
+  }, [motionPhase, scale, url]);
 
-  useFrame(({ clock, camera }, delta) => {
+  useEffect(() => {
+    const mesh = splat;
+    disposeCpuSplatPartMotion(cpuPartMotionRef.current);
+    cpuPartMotionRef.current = null;
+    if (!mesh || !rig || !isCpuSplatPartRig(rig) || !rigUrl || failed) return;
+    const controller = new AbortController();
+    // Mapping tens of thousands of splats is intentionally staggered across
+    // models. The intact model is already visible while this work hot-loads.
+    const installTimer = window.setTimeout(() => {
+      installCpuSplatPartMotion({ mesh, rig, rigUrl, signal: controller.signal })
+        .then((runtime) => {
+          if (controller.signal.aborted || meshRef.current !== mesh) {
+            disposeCpuSplatPartMotion(runtime);
+            return;
+          }
+          cpuPartMotionRef.current = runtime;
+        })
+        .catch((error) => {
+          if (error instanceof DOMException && error.name === 'AbortError') return;
+          console.warn('[splat-part-motion] CPU part map was rejected; keeping the intact model:', error);
+        });
+    }, 80 + Math.abs(hashString(url)) % 620);
+    return () => {
+      window.clearTimeout(installTimer);
+      controller.abort();
+      if (cpuPartMotionRef.current?.mesh === mesh) {
+        disposeCpuSplatPartMotion(cpuPartMotionRef.current);
+        cpuPartMotionRef.current = null;
+      }
+    };
+  }, [failed, rig, rigUrl, splat]);
+
+  useFrame(({ clock, camera }) => {
     const mesh = meshRef.current;
     if (!mesh || failed) return;
 
     const t = clock.elapsedTime;
     const breath = 1 + Math.sin(t * 0.52) * 0.018;
     const focus = spotlightFocusRef?.current ?? 0;
-    const freeMotion = 1 - focus;
     const burst = burstRef?.current ?? 0;
     const burstPhase = burstPhaseRef?.current ?? (burst > 0 ? 0.5 : 1);
     const reappear = reappearRef?.current ?? 1;
@@ -248,42 +280,23 @@ export function SplatCreatureModel({
     const burstShock = THREE.MathUtils.smoothstep(burst, 0, 1);
     const isBursting = burstPhase < 0.995;
     const showFlightModel = flightOpacity > 0.01;
-    const burstShake = Math.sin(t * 28 + motionPhase) * burstShock;
-    showcaseSpinRef.current += delta * THREE.MathUtils.lerp(0.42, 0.1, focus);
-    const freeYaw = (
-      Math.sin(t * 0.34 + motionPhase) * 0.16 +
-      Math.sin(t * 0.11 + motionPhase * 0.7) * 0.07
-    ) * freeMotion;
-    const freePitch = Math.sin(t * 0.26 + motionPhase * 1.3) * 0.038 * freeMotion;
-    const freeRoll = Math.sin(t * 0.43 + motionPhase * 0.9) * 0.052 * freeMotion;
-    const twist = Math.sin(t * 0.58 + motionPhase) * freeMotion;
-    const tailSwing = Math.sin(t * 1.18 + motionPhase * 1.7) * freeMotion;
     const baseScale = baseScaleRef.current * breath;
-    const glowPhase = (t * 0.42 + motionPhase) % rainbowGlow.length;
-    const glowIndex = Math.floor(glowPhase);
-    const nextGlowIndex = (glowIndex + 1) % rainbowGlow.length;
-    const surfaceGlowColor = rainbowGlow[glowIndex].clone().lerp(
-      rainbowGlow[nextGlowIndex],
-      glowPhase - glowIndex
-    );
-
+    mesh.renderOrder = renderOrderRef?.current ?? 0;
     const burstScale = 1 + burstShock * 0.055;
-    mesh.scale.set(
-      baseScale * burstScale * (1 + twist * 0.026 + Math.max(0, tailSwing) * 0.018 + burstShake * 0.015),
-      baseScale * burstScale * (1 - twist * 0.016 + Math.sin(t * 23 + motionPhase) * burstShock * 0.012),
-      baseScale * burstScale * (1 + Math.sin(t * 0.37 + motionPhase) * 0.018 * freeMotion - tailSwing * 0.012)
-    );
-    mesh.rotation.set(
-      freePitch + burstShake * 0.075,
-      showcaseSpinRef.current + freeYaw + Math.sin(t * 19 + motionPhase * 0.6) * burstShock * 0.13,
-      Math.PI + freeRoll + Math.sin(t * 25 + motionPhase * 1.4) * burstShock * 0.1
-    );
+    mesh.scale.setScalar(baseScale * burstScale);
+    const locomotion = features.behaviorTraits.locomotionType;
+    const swimming = locomotion === 'swimming';
+    const flying = locomotion === 'flying';
+    const freeBodyMotion = 1 - focus;
+    // Canonical orientation is applied once during normalization. Runtime pose
+    // belongs to the parent visual group, avoiding Euler accumulation here.
     const glowPulse = (Math.sin(t * 1.1 + motionPhase) + 1) * 0.5;
-    mesh.recolor.copy(surfaceGlowColor).lerp(
-      new THREE.Color('#ffffff'),
-      THREE.MathUtils.clamp(0.38 + glowPulse * 0.18 - burstShock * 0.3, 0.1, 0.62)
-    );
+    mesh.recolor.copy(whiteColorRef.current);
     mesh.position.copy(basePositionRef.current);
+    if (swimming || flying) {
+      mesh.position.y += Math.sin(t * (swimming ? 1.35 : 1.7) + motionPhase)
+        * baseScale * 0.03 * freeBodyMotion;
+    }
     if (flightWorldPosition && flightOpacity > 0.001) {
       flightLocalPositionRef.current.copy(flightWorldPosition);
       mesh.parent?.worldToLocal(flightLocalPositionRef.current);
@@ -291,29 +304,33 @@ export function SplatCreatureModel({
     }
     const distanceToCamera = mesh.getWorldPosition(cameraDistancePositionRef.current).distanceTo(camera.position);
     const distanceCulled = distanceToCamera > 28 && !showFlightModel && !isBursting;
-    mesh.opacity = THREE.MathUtils.lerp(0.86, 0.97, glowPulse) * Math.max(reappear, flightOpacity);
-    mesh.visible = (!isBursting || showFlightModel) && !distanceCulled;
+    const burstModelOpacity = isBursting
+      ? 1 - THREE.MathUtils.smootherstep(burstPhase, 0.015, 0.2)
+      : 0;
+    const isInFrontOfDadakido = (renderOrderRef?.current ?? 0) > DADAKIDO_RENDER_ORDER;
+    const baseModelOpacity = THREE.MathUtils.lerp(0.86, 0.97, glowPulse);
+    const modelOpacity = isInFrontOfDadakido
+      ? Math.min(1, baseModelOpacity + 0.045)
+      : baseModelOpacity;
+    mesh.opacity = modelOpacity * Math.max(reappear, flightOpacity, burstModelOpacity);
+    mesh.visible = (!isBursting || burstModelOpacity > 0.01 || showFlightModel) && !distanceCulled;
 
-    const deformer = cpuDeformerRef.current;
-    if (deformer) {
-      const canUseCpuSlot = reserveCpuDeformModelSlot(cpuScheduleId, t);
-      const deformDistance = THREE.MathUtils.lerp(CPU_DEFORM_NEAR_DISTANCE, CPU_DEFORM_FOCUS_DISTANCE, focus);
-      const cpuDeformActive = mesh.visible
-        && !isBursting
-        && canUseCpuSlot
-        && distanceToCamera < deformDistance
-        && Math.max(reappear, flightOpacity) > 0.2;
-      if (cpuDeformActive) {
-        const deformEnergy = (0.62 + freeMotion * 0.38 + focus * 0.18) * (1 - burstShock);
-        updateSplatCpuDeformation(mesh, deformer, t, deformEnergy);
-      } else if (deformer.isDeformed) {
-        restoreSplatCpuDeformation(mesh, deformer);
-      }
+    const cpuPartMotion = cpuPartMotionRef.current;
+    if (cpuPartMotion && mesh.visible && Math.max(reappear, flightOpacity) > 0.2) {
+      const motionEnergy = 0.58 * (1 - focus * 0.82) * (1 - burstShock);
+      updateCpuSplatPartMotion(
+        cpuPartMotion,
+        t,
+        motionEnergy,
+        locomotion,
+        partActionRef?.current
+      );
     }
 
     const proxyGroup = particleProxyGroupRef.current;
     const proxyPoints = particleProxyRef.current;
     if (proxyGroup && proxyPoints) {
+      proxyPoints.renderOrder = (renderOrderRef?.current ?? 10) + 3;
       proxyGroup.position.copy(basePositionRef.current);
       proxyGroup.rotation.copy(mesh.rotation);
       proxyGroup.scale.copy(mesh.scale).multiplyScalar(0.9);
@@ -355,477 +372,6 @@ function hashString(value: string) {
     hash = (hash * 31 + value.charCodeAt(i)) | 0;
   }
   return hash;
-}
-
-function reserveCpuDeformModelSlot(id: string, time: number) {
-  for (const [activeId, activeUntil] of cpuDeformActiveSlots) {
-    if (activeUntil <= time) {
-      cpuDeformActiveSlots.delete(activeId);
-      cpuDeformRestUntil.set(activeId, time + CPU_DEFORM_REST_SECONDS);
-    }
-  }
-
-  const activeUntil = cpuDeformActiveSlots.get(id);
-  if (activeUntil && activeUntil > time) {
-    return true;
-  }
-
-  const restUntil = cpuDeformRestUntil.get(id);
-  if (restUntil && restUntil > time) return false;
-  if (restUntil && restUntil <= time) cpuDeformRestUntil.delete(id);
-
-  if (cpuDeformActiveSlots.size >= CPU_DEFORM_MAX_ACTIVE_MODELS) return false;
-
-  cpuDeformActiveSlots.set(id, time + CPU_DEFORM_ACTIVE_SECONDS);
-  return true;
-}
-
-function resetCpuDeformBudget(time: number) {
-  const frame = Math.floor(time * 60);
-  if (frame !== cpuDeformBudgetFrame) {
-    cpuDeformBudgetFrame = frame;
-    cpuDeformBudgetUsed = 0;
-  }
-}
-
-function reserveCpuDeformWrites(time: number, requested: number) {
-  resetCpuDeformBudget(time);
-  const remaining = Math.max(0, CPU_DEFORM_FRAME_BUDGET - cpuDeformBudgetUsed);
-  const granted = Math.min(requested, remaining);
-  cpuDeformBudgetUsed += granted;
-  return granted;
-}
-
-function characteristicFeatureMask(
-  features: ArtworkFeatureResult,
-  nx: number,
-  ny: number,
-  _nz: number,
-  radial: number,
-  edge: number
-) {
-  const { morphology, behaviorTraits, motionPreset, subjectCategory } = features;
-  const absX = Math.abs(nx);
-  const absY = Math.abs(ny);
-  const side = THREE.MathUtils.smoothstep(absX, 0.42, 0.98);
-  const top = THREE.MathUtils.smoothstep(ny, 0.28, 0.96);
-  const bottom = THREE.MathUtils.smoothstep(-ny, 0.2, 0.92);
-  const outer = Math.max(THREE.MathUtils.smoothstep(radial, 0.58, 1.22), edge * 0.72);
-
-  if (morphology.hasWings || motionPreset.includes('Fly') || motionPreset.includes('bird') || motionPreset.includes('Flutter')) {
-    return side * (0.45 + top * 0.55);
-  }
-
-  if (
-    morphology.hasTail ||
-    morphology.hasFins ||
-    behaviorTraits.locomotionType === 'swimming' ||
-    motionPreset.includes('fish') ||
-    motionPreset.includes('eel') ||
-    motionPreset.includes('dolphin') ||
-    motionPreset.includes('squid')
-  ) {
-    return Math.max(side, outer) * (0.55 + THREE.MathUtils.smoothstep(absY, 0.05, 0.72) * 0.25);
-  }
-
-  if (morphology.hasLegs || behaviorTraits.locomotionType === 'walking' || behaviorTraits.locomotionType === 'running') {
-    return bottom * (0.35 + side * 0.65);
-  }
-
-  if (morphology.hasArms) {
-    return side * (1 - THREE.MathUtils.smoothstep(absY, 0.88, 1.18));
-  }
-
-  if (subjectCategory === 'plant' || behaviorTraits.locomotionType === 'growing' || behaviorTraits.locomotionType === 'swaying') {
-    return Math.max(top, outer * 0.72);
-  }
-
-  if (morphology.hasHead || subjectCategory === 'character') {
-    return top * (0.55 + outer * 0.45);
-  }
-
-  return outer;
-}
-
-function classifySplatMotionPart(
-  features: ArtworkFeatureResult,
-  nx: number,
-  ny: number,
-  nz: number,
-  radial: number,
-  mask: number
-) {
-  const absX = Math.abs(nx);
-  const absY = Math.abs(ny);
-  const side = THREE.MathUtils.smoothstep(absX, 0.34, 0.92);
-  const top = THREE.MathUtils.smoothstep(ny, 0.38, 0.94);
-  const bottom = THREE.MathUtils.smoothstep(-ny, 0.36, 0.94);
-  const outer = THREE.MathUtils.smoothstep(radial, 0.64, 1.16);
-  const sideSign = nx >= 0 ? 1 : -1;
-  const { morphology, behaviorTraits, motionPreset } = features;
-  const isSwimmer = morphology.hasTail
-    || morphology.hasFins
-    || behaviorTraits.locomotionType === 'swimming'
-    || motionPreset.includes('fish')
-    || motionPreset.includes('eel')
-    || motionPreset.includes('dolphin')
-    || motionPreset.includes('squid');
-
-  if (morphology.hasLegs && bottom > 0.18 && absX > 0.12) {
-    return {
-      part: sideSign < 0 ? SPLAT_PART_LEFT_LEG : SPLAT_PART_RIGHT_LEG,
-      weight: THREE.MathUtils.clamp(bottom * (0.55 + side * 0.45) * mask, 0, 1),
-    };
-  }
-
-  if (morphology.hasArms && side > 0.2 && ny > -0.36 && ny < 0.62) {
-    return {
-      part: sideSign < 0 ? SPLAT_PART_LEFT_ARM : SPLAT_PART_RIGHT_ARM,
-      weight: THREE.MathUtils.clamp(side * (1 - bottom * 0.45) * mask, 0, 1),
-    };
-  }
-
-  if (isSwimmer && outer > 0.22 && (Math.abs(nz) > 0.18 || absX > 0.42)) {
-    return {
-      part: SPLAT_PART_TAIL,
-      weight: THREE.MathUtils.clamp(outer * (0.6 + absY * 0.25) * mask, 0, 1),
-    };
-  }
-
-  if (top > 0.22) {
-    return {
-      part: SPLAT_PART_HEAD,
-      weight: THREE.MathUtils.clamp(top * (0.6 + outer * 0.3) * mask, 0, 1),
-    };
-  }
-
-  if (outer > 0.48 && (morphology.hasTail || morphology.hasFins)) {
-    return {
-      part: SPLAT_PART_TAIL,
-      weight: THREE.MathUtils.clamp(outer * mask * 0.85, 0, 1),
-    };
-  }
-
-  return { part: 0, weight: 0 };
-}
-
-function createSplatCpuDeformer(mesh: SparkSplatMesh, features: ArtworkFeatureResult): SplatCpuDeformer | null {
-  if (!mesh.packedSplats?.setSplat) return null;
-
-  const total = Math.max(1, mesh.packedSplats?.numSplats ?? mesh.numSplats ?? 0);
-  if (!total) return null;
-
-  const box = mesh.getBoundingBox(true);
-  const center = new THREE.Vector3();
-  const size = new THREE.Vector3();
-  box.getCenter(center);
-  box.getSize(size);
-  const safeSize = new THREE.Vector3(
-    Math.max(size.x, 0.0001),
-    Math.max(size.y, 0.0001),
-    Math.max(size.z, 0.0001)
-  );
-  const maxDimension = Math.max(safeSize.x, safeSize.y, safeSize.z, 0.0001);
-  const stride = 1;
-  const targetCount = total;
-  const indices = new Uint32Array(targetCount);
-  const centers = new Float32Array(targetCount * 3);
-  const scales = new Float32Array(targetCount * 3);
-  const quaternions = new Float32Array(targetCount * 4);
-  const opacities = new Float32Array(targetCount);
-  const colors = new Float32Array(targetCount * 3);
-  const shape = new Float32Array(targetCount * 5);
-  const enabledParts = motionPartIdsFromFeatures(features);
-  const motionParts = new Set<number>();
-  let cursor = 0;
-
-  mesh.forEachSplat((index, splatCenter, splatScale, splatQuaternion, opacity, splatColor) => {
-    if (index % stride !== 0 || cursor >= targetCount) return;
-    const i3 = cursor * 3;
-    const i4 = cursor * 4;
-    const i5 = cursor * 5;
-    const nx = THREE.MathUtils.clamp((splatCenter.x - center.x) / (safeSize.x * 0.5), -1, 1);
-    const ny = THREE.MathUtils.clamp((splatCenter.y - center.y) / (safeSize.y * 0.5), -1, 1);
-    const nz = THREE.MathUtils.clamp((splatCenter.z - center.z) / (safeSize.z * 0.5), -1, 1);
-    const radial = THREE.MathUtils.clamp(Math.sqrt(nx * nx + nz * nz), 0, 1.45);
-    const edge = THREE.MathUtils.clamp((Math.abs(nx) + Math.abs(ny) + Math.abs(nz)) / 2.15, 0, 1.25);
-    const limbMask = characteristicFeatureMask(features, nx, ny, nz, radial, edge);
-    if (limbMask <= 0.32) return;
-    const motionPart = classifySplatMotionPart(features, nx, ny, nz, radial, limbMask);
-    if (motionPart.part === 0 || motionPart.weight <= 0.12) return;
-    if (enabledParts.size > 0 && !enabledParts.has(motionPart.part)) return;
-
-    indices[cursor] = index;
-    centers[i3] = splatCenter.x;
-    centers[i3 + 1] = splatCenter.y;
-    centers[i3 + 2] = splatCenter.z;
-    scales[i3] = splatScale.x;
-    scales[i3 + 1] = splatScale.y;
-    scales[i3 + 2] = splatScale.z;
-    quaternions[i4] = splatQuaternion.x;
-    quaternions[i4 + 1] = splatQuaternion.y;
-    quaternions[i4 + 2] = splatQuaternion.z;
-    quaternions[i4 + 3] = splatQuaternion.w;
-    opacities[cursor] = opacity;
-    colors[i3] = splatColor.r;
-    colors[i3 + 1] = splatColor.g;
-    colors[i3 + 2] = splatColor.b;
-    shape[i5] = nx;
-    shape[i5 + 1] = ny;
-    shape[i5 + 2] = nz;
-    shape[i5 + 3] = motionPart.part;
-    shape[i5 + 4] = motionPart.weight;
-    motionParts.add(motionPart.part);
-    cursor += 1;
-  });
-
-  if (cursor === 0) return null;
-
-  return {
-    indices: indices.slice(0, cursor),
-    centers: centers.slice(0, cursor * 3),
-    scales: scales.slice(0, cursor * 3),
-    quaternions: quaternions.slice(0, cursor * 4),
-    opacities: opacities.slice(0, cursor),
-    colors: colors.slice(0, cursor * 3),
-    shape: shape.slice(0, cursor * 5),
-    maxDimension,
-    lastUpdate: -100,
-    cursor: 0,
-    restoreCursor: 0,
-    isDeformed: false,
-    center: new THREE.Vector3(),
-    scale: new THREE.Vector3(),
-    quaternion: new THREE.Quaternion(),
-    color: new THREE.Color(),
-    anchor: new THREE.Vector3(),
-    local: new THREE.Vector3(),
-    rotated: new THREE.Vector3(),
-    motionParts: Array.from(motionParts),
-    activePart: 0,
-    actionStartedAt: -100,
-    actionDuration: 1,
-    nextActionAt: 0,
-    randomSeed: Math.abs(Math.sin(maxDimension * 97.13 + cursor * 13.71) * 10000)
-  };
-}
-
-function writeOriginalSplat(mesh: SparkSplatMesh, deformer: SplatCpuDeformer, entry: number) {
-  const packedSplats = mesh.packedSplats;
-  if (!packedSplats?.setSplat) return;
-  const i3 = entry * 3;
-  const i4 = entry * 4;
-  deformer.center.set(deformer.centers[i3], deformer.centers[i3 + 1], deformer.centers[i3 + 2]);
-  deformer.scale.set(deformer.scales[i3], deformer.scales[i3 + 1], deformer.scales[i3 + 2]);
-  deformer.quaternion.set(
-    deformer.quaternions[i4],
-    deformer.quaternions[i4 + 1],
-    deformer.quaternions[i4 + 2],
-    deformer.quaternions[i4 + 3]
-  );
-  deformer.color.setRGB(deformer.colors[i3], deformer.colors[i3 + 1], deformer.colors[i3 + 2]);
-  packedSplats.setSplat(
-    deformer.indices[entry],
-    deformer.center,
-    deformer.scale,
-    deformer.quaternion,
-    deformer.opacities[entry],
-    deformer.color
-  );
-}
-
-function restoreSplatCpuDeformation(mesh: SparkSplatMesh, deformer: SplatCpuDeformer) {
-  const packedSplats = mesh.packedSplats;
-  if (!packedSplats?.setSplat) return;
-  const writes = deformer.indices.length;
-  for (let i = 0; i < writes; i += 1) {
-    writeOriginalSplat(mesh, deformer, deformer.restoreCursor);
-    deformer.restoreCursor += 1;
-    if (deformer.restoreCursor >= deformer.indices.length) break;
-  }
-  packedSplats.needsUpdate = true;
-  deformer.isDeformed = deformer.restoreCursor < deformer.indices.length;
-  if (!deformer.isDeformed) {
-    deformer.cursor = 0;
-    deformer.restoreCursor = 0;
-  }
-}
-
-function seededUnit(seed: number) {
-  const value = Math.sin(seed * 12.9898) * 43758.5453;
-  return value - Math.floor(value);
-}
-
-function updateActiveSplatPart(deformer: SplatCpuDeformer, time: number) {
-  if (!deformer.motionParts.length) return;
-  if (time < deformer.nextActionAt) return;
-
-  const pickSeed = deformer.randomSeed + time * 0.37 + deformer.motionParts.length * 3.1;
-  let nextIndex = Math.floor(seededUnit(pickSeed) * deformer.motionParts.length) % deformer.motionParts.length;
-  let nextPart = deformer.motionParts[nextIndex];
-
-  if (deformer.motionParts.length > 1 && nextPart === deformer.activePart) {
-    nextIndex = (nextIndex + 1) % deformer.motionParts.length;
-    nextPart = deformer.motionParts[nextIndex];
-  }
-
-  deformer.activePart = nextPart;
-  deformer.actionStartedAt = time;
-  deformer.actionDuration = 1.35 + seededUnit(pickSeed + 7.7) * 1.1;
-  deformer.nextActionAt = time + deformer.actionDuration + 0.35 + seededUnit(pickSeed + 13.3) * 0.95;
-  deformer.randomSeed += 1.618;
-}
-
-function splatPartActionEnvelope(deformer: SplatCpuDeformer, time: number) {
-  const progress = THREE.MathUtils.clamp((time - deformer.actionStartedAt) / Math.max(0.001, deformer.actionDuration), 0, 1);
-  const fadeIn = THREE.MathUtils.smoothstep(progress, 0, 0.22);
-  const fadeOut = 1 - THREE.MathUtils.smoothstep(progress, 0.72, 1);
-  return fadeIn * fadeOut;
-}
-
-function companionPartInfluence(activePart: number, part: number) {
-  if (part === activePart) return 1;
-  if (
-    (activePart === SPLAT_PART_LEFT_ARM && part === SPLAT_PART_RIGHT_ARM)
-    || (activePart === SPLAT_PART_RIGHT_ARM && part === SPLAT_PART_LEFT_ARM)
-    || (activePart === SPLAT_PART_LEFT_LEG && part === SPLAT_PART_RIGHT_LEG)
-    || (activePart === SPLAT_PART_RIGHT_LEG && part === SPLAT_PART_LEFT_LEG)
-  ) {
-    return 0.28;
-  }
-  if (activePart === SPLAT_PART_HEAD && (part === SPLAT_PART_LEFT_ARM || part === SPLAT_PART_RIGHT_ARM)) return 0.14;
-  if (activePart === SPLAT_PART_TAIL && (part === SPLAT_PART_LEFT_LEG || part === SPLAT_PART_RIGHT_LEG)) return 0.16;
-  return 0.06;
-}
-
-function updateSplatCpuDeformation(
-  mesh: SparkSplatMesh,
-  deformer: SplatCpuDeformer,
-  time: number,
-  energy: number
-) {
-  const packedSplats = mesh.packedSplats;
-  if (!packedSplats?.setSplat || deformer.indices.length === 0) return;
-  if (time - deformer.lastUpdate < 1 / CPU_DEFORM_HZ) return;
-
-  const writes = deformer.indices.length;
-  if (writes <= 0) return;
-
-  deformer.lastUpdate = time;
-  const strength = THREE.MathUtils.clamp(energy, 0, 1.1);
-  const count = deformer.indices.length;
-  const breathe = Math.sin(time * 1.15) * deformer.maxDimension * 0.01 * strength;
-  updateActiveSplatPart(deformer, time);
-  const actionEnvelope = splatPartActionEnvelope(deformer, time);
-
-  for (let write = 0; write < writes; write += 1) {
-    const entry = deformer.cursor;
-    deformer.cursor = (deformer.cursor + 1) % count;
-    const i3 = entry * 3;
-    const i4 = entry * 4;
-    const i5 = entry * 5;
-    const x = deformer.shape[i5];
-    const y = deformer.shape[i5 + 1];
-    const z = deformer.shape[i5 + 2];
-    const part = deformer.shape[i5 + 3];
-    const partWeight = deformer.shape[i5 + 4];
-    const signX = x >= 0 ? 1 : -1;
-    const phase = signX < 0 ? Math.PI : 0;
-    const partInfluence = companionPartInfluence(deformer.activePart, part);
-    const softActivation = 0.08 + actionEnvelope * partInfluence;
-    const weight = THREE.MathUtils.clamp(partWeight * strength * softActivation, 0, 1);
-    let angleX = 0;
-    let angleY = 0;
-    let angleZ = 0;
-    let offsetY = 0;
-    let offsetZ = 0;
-
-    if (part === SPLAT_PART_LEFT_ARM || part === SPLAT_PART_RIGHT_ARM) {
-      deformer.anchor.set(signX * 0.34, 0.05, 0);
-      angleX = Math.sin(time * 2.0 + phase) * 0.16 + Math.sin(time * 0.72 + phase) * 0.04;
-      angleZ = Math.sin(time * 1.82 + phase + 0.8) * signX * 0.14;
-      offsetY = Math.cos(time * 2.0 + phase) * 0.01;
-    } else if (part === SPLAT_PART_LEFT_LEG || part === SPLAT_PART_RIGHT_LEG) {
-      deformer.anchor.set(signX * 0.18, -0.42, 0);
-      angleX = Math.sin(time * 1.76 + phase + 0.4) * 0.13;
-      angleZ = Math.sin(time * 1.38 + phase) * signX * 0.06;
-      offsetY = Math.max(0, Math.sin(time * 1.76 + phase)) * 0.016;
-    } else if (part === SPLAT_PART_TAIL) {
-      deformer.anchor.set(0, -0.08, z >= 0 ? 0.42 : -0.42);
-      angleY = Math.sin(time * 1.95 + phase + z * 0.22) * 0.2;
-      angleX = Math.cos(time * 1.42 + phase) * 0.07;
-      offsetZ = Math.sin(time * 1.95 + phase) * 0.016;
-    } else {
-      deformer.anchor.set(0, 0.28, 0);
-      angleY = Math.sin(time * 0.76 + phase) * 0.04;
-      angleZ = Math.sin(time * 1.02 + phase) * 0.032;
-      offsetY = Math.sin(time * 1.25 + phase) * 0.01;
-    }
-
-    deformer.local.set(x - deformer.anchor.x, y - deformer.anchor.y, z - deformer.anchor.z);
-    deformer.rotated.copy(deformer.local);
-
-    if (angleX !== 0) {
-      const cos = Math.cos(angleX);
-      const sin = Math.sin(angleX);
-      const ry = deformer.rotated.y * cos - deformer.rotated.z * sin;
-      const rz = deformer.rotated.y * sin + deformer.rotated.z * cos;
-      deformer.rotated.y = ry;
-      deformer.rotated.z = rz;
-    }
-    if (angleY !== 0) {
-      const cos = Math.cos(angleY);
-      const sin = Math.sin(angleY);
-      const rx = deformer.rotated.x * cos + deformer.rotated.z * sin;
-      const rz = -deformer.rotated.x * sin + deformer.rotated.z * cos;
-      deformer.rotated.x = rx;
-      deformer.rotated.z = rz;
-    }
-    if (angleZ !== 0) {
-      const cos = Math.cos(angleZ);
-      const sin = Math.sin(angleZ);
-      const rx = deformer.rotated.x * cos - deformer.rotated.y * sin;
-      const ry = deformer.rotated.x * sin + deformer.rotated.y * cos;
-      deformer.rotated.x = rx;
-      deformer.rotated.y = ry;
-    }
-
-    deformer.center.set(
-      deformer.centers[i3]
-        + (deformer.rotated.x - deformer.local.x) * deformer.maxDimension * weight
-        + x * breathe * weight,
-      deformer.centers[i3 + 1]
-        + (deformer.rotated.y - deformer.local.y) * deformer.maxDimension * weight
-        + offsetY * deformer.maxDimension * weight,
-      deformer.centers[i3 + 2]
-        + (deformer.rotated.z - deformer.local.z) * deformer.maxDimension * weight
-        + offsetZ * deformer.maxDimension * weight
-    );
-    deformer.scale.set(
-      deformer.scales[i3],
-      deformer.scales[i3 + 1],
-      deformer.scales[i3 + 2]
-    );
-    deformer.quaternion.set(
-      deformer.quaternions[i4],
-      deformer.quaternions[i4 + 1],
-      deformer.quaternions[i4 + 2],
-      deformer.quaternions[i4 + 3]
-    );
-    deformer.color.setRGB(deformer.colors[i3], deformer.colors[i3 + 1], deformer.colors[i3 + 2]);
-    packedSplats.setSplat(
-      deformer.indices[entry],
-      deformer.center,
-      deformer.scale,
-      deformer.quaternion,
-      deformer.opacities[entry],
-      deformer.color
-    );
-  }
-
-  deformer.isDeformed = true;
-  deformer.restoreCursor = 0;
-  packedSplats.needsUpdate = true;
 }
 
 function createSplatParticleProxy(mesh: SparkSplatMesh, seed: number): SplatParticleProxy {
@@ -1081,7 +627,7 @@ function normalizeSplatMesh(mesh: SparkSplatMesh, scale: number) {
     mesh.scale.setScalar(scale);
   }
 
-  mesh.quaternion.identity();
+  mesh.quaternion.copy(SPLAT_CANONICAL_ROTATION);
   mesh.frustumCulled = true;
   return normalizedScale;
 }

@@ -1,7 +1,9 @@
 import { useThree } from '@react-three/fiber';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect } from 'react';
+import * as THREE from 'three';
 import { AutoCosmicInteractions } from './AutoCosmicInteractions';
 import { CameraRig } from './CameraRig';
+import { SpotlightEntryFireworks } from './CreatureEventParticles';
 import { DeepSpaceBackground } from './DeepSpaceBackground';
 import { Lighting } from './Lighting';
 import { MeteorLayer } from './MeteorLayer';
@@ -11,35 +13,24 @@ import { SpotlightDirector } from './SpotlightDirector';
 import { StarFood } from './StarFood';
 
 /**
- * Adjusts the camera FOV so the 3D scene scales proportionally
- * with the viewport.  Smaller FOV → objects appear larger.
- * Reference: FOV 50 at 1440 px → FOV 35 at 2560 px.
+ * Uses a contain-style FOV: wide screens keep the reference framing, while
+ * narrow screens widen the vertical field enough to preserve horizontal
+ * scene coverage. R3F already tracks the canvas size, so no window listener
+ * or per-frame React update is needed.
  */
 function ResponsiveCamera() {
-  const { camera } = useThree();
-  const baseFov = 50;
-  const baseWidth = 1440;
-
-  const computeFov = useCallback(() => {
-    const w = window.innerWidth;
-    // tan(halfFov) ∝ 1/scale  →  scale = w / baseWidth
-    const scale = Math.min(1.55, Math.max(0.78, w / baseWidth));
-    const halfRad = Math.atan(Math.tan((baseFov * Math.PI) / 360) / scale);
-    return (halfRad * 360) / Math.PI;
-  }, []);
-
-  const [fov, setFov] = useState(computeFov);
+  const { camera, size } = useThree();
 
   useEffect(() => {
-    const update = () => setFov(computeFov());
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, [computeFov]);
-
-  useEffect(() => {
+    const baseFov = 60;
+    const baseAspect = 16 / 10;
+    const aspect = Math.max(0.35, size.width / Math.max(size.height, 1));
+    const containScale = Math.max(1, baseAspect / aspect);
+    const halfRad = Math.atan(Math.tan((baseFov * Math.PI) / 360) * containScale);
+    const fov = THREE.MathUtils.clamp((halfRad * 360) / Math.PI, baseFov, 115);
     camera.fov = fov;
     camera.updateProjectionMatrix();
-  }, [camera, fov]);
+  }, [camera, size.height, size.width]);
 
   return null;
 }
@@ -57,6 +48,7 @@ export function CosmicScene() {
       <MeteorLayer />
       <Lighting />
       <SpotlightDirector />
+      <SpotlightEntryFireworks />
       <OrbitArtwork />
     </>
   );

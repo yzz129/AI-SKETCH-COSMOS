@@ -3,9 +3,20 @@ import react from '@vitejs/plugin-react';
 
 const ARK_RESPONSES_URL = 'https://ark.cn-beijing.volces.com/api/v3/responses';
 const ARK_CONTENT_TASKS_URL = 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks';
-const ARK_MODEL = 'doubao-seed-2-0-lite-260428';
+const ARK_MODEL = 'doubao-seed-2-0-mini-260428';
 const ARK_3D_MODEL = 'hyper3d-gen2-260112';
 const ARK_3D_MAX_SEED = 65535;
+const DEFAULT_TRIPOSPLAT_API_TARGET = 'http://127.0.0.1:8000';
+
+function createTripoSplatProxy(target: string) {
+  return {
+    '/triposplat': {
+      target,
+      changeOrigin: true,
+      rewrite: (path: string) => path.replace(/^\/triposplat/, '')
+    }
+  };
+}
 
 function readRequestBody(request: import('node:http').IncomingMessage) {
   return new Promise<string>((resolve, reject) => {
@@ -552,11 +563,21 @@ function arkHyper3DPlugin(apiKey?: string): Plugin {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
+  const triposplatApiTarget = env.TRIPOSPLAT_API_TARGET?.trim()
+    || DEFAULT_TRIPOSPLAT_API_TARGET;
 
   return {
     plugins: [
       react(),
       arkRecognitionPlugin(env.ARK_API_KEY)
-    ]
+    ],
+    server: {
+      allowedHosts: ['.trycloudflare.com', '.yzzwnw.asia'],
+      proxy: createTripoSplatProxy(triposplatApiTarget)
+    },
+    preview: {
+      allowedHosts: ['.trycloudflare.com', '.yzzwnw.asia'],
+      proxy: createTripoSplatProxy(triposplatApiTarget)
+    }
   };
 });

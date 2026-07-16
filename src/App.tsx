@@ -1,5 +1,9 @@
 import { useEffect } from 'react';
 import { ArtworkAdminPage } from './components/admin/ArtworkAdminPage';
+import {
+  hydrateCreatureEvolution,
+  startCreatureEvolutionPersistence
+} from './components/webgl/creatureEvolutionPersistence';
 import { WebGLCanvas } from './components/webgl/WebGLCanvas';
 import { fetchAllBackendArtworks } from './lib/artwork/backendArtworkLibrary';
 import { useArtworkStore } from './stores/artworkStore';
@@ -11,6 +15,7 @@ async function syncBackendArtworkLibrary() {
   try {
     const records = await fetchAllBackendArtworks();
     useArtworkStore.getState().hydrateBackendArtworks(records);
+    hydrateCreatureEvolution(records);
   } catch (error) {
     console.warn('[artwork-library] failed to hydrate backend artworks:', error);
   }
@@ -26,6 +31,7 @@ export default function App() {
   useEffect(() => {
     if (isAdminRoute) return;
     let cancelled = false;
+    let stopEvolutionPersistence: (() => void) | null = null;
     const channel = 'BroadcastChannel' in window
       ? new BroadcastChannel(ARTWORK_LIBRARY_CHANGED_EVENT)
       : null;
@@ -40,13 +46,16 @@ export default function App() {
     channel?.addEventListener('message', sync);
     window.addEventListener('storage', handleStorage);
 
-    sync();
+    void syncBackendArtworkLibrary().finally(() => {
+      if (!cancelled) stopEvolutionPersistence = startCreatureEvolutionPersistence();
+    });
 
     return () => {
       cancelled = true;
       channel?.removeEventListener('message', sync);
       channel?.close();
       window.removeEventListener('storage', handleStorage);
+      stopEvolutionPersistence?.();
     };
   }, [isAdminRoute]);
 

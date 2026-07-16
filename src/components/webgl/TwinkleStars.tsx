@@ -1,5 +1,4 @@
-import { useFrame } from '@react-three/fiber';
-import { useMemo, useRef } from 'react';
+import { useMemo } from 'react';
 import * as THREE from 'three';
 
 const TWINKLE_COUNT = 1200;
@@ -9,7 +8,6 @@ const BOUNDS_Z_MIN = -12;
 const BOUNDS_Z_MAX = -3;
 
 export function TwinkleStars() {
-  const pointsRef = useRef<THREE.Points>(null);
   const { geometry, material } = useMemo(() => {
     const geometry = new THREE.BufferGeometry();
     const positions = new Float32Array(TWINKLE_COUNT * 3);
@@ -145,16 +143,8 @@ export function TwinkleStars() {
     return { geometry, material };
   }, []);
 
-  useFrame(({ clock }) => {
-    material.uniforms.uTime.value = clock.elapsedTime;
-    if (pointsRef.current) {
-      pointsRef.current.rotation.z = Math.sin(clock.elapsedTime * 0.012) * 0.004;
-    }
-  });
-
   return (
     <points
-      ref={pointsRef}
       geometry={geometry}
       material={material}
       raycast={() => null}

@@ -8,6 +8,7 @@ type ParticleCreatureTrailProps = {
   seed: number;
   intensity: number;
   spotlightFocusRef?: MutableRefObject<number>;
+  renderOrderRef?: MutableRefObject<number>;
 };
 
 function useDensityMul() {
@@ -28,7 +29,13 @@ function useDensityMul() {
   return mul;
 }
 
-export function ParticleCreatureTrail({ particles, seed, intensity, spotlightFocusRef }: ParticleCreatureTrailProps) {
+export function ParticleCreatureTrail({
+  particles,
+  seed,
+  intensity,
+  spotlightFocusRef,
+  renderOrderRef
+}: ParticleCreatureTrailProps) {
   const pointsRef = useRef<THREE.Points>(null);
   const densityMul = useDensityMul();
   const geometry = useMemo(() => {
@@ -117,6 +124,7 @@ export function ParticleCreatureTrail({ particles, seed, intensity, spotlightFoc
     material.uniforms.uFocusAmount.value = spotlightFocusRef?.current ?? 0;
     material.visible = (spotlightFocusRef?.current ?? 0) < 0.98;
     if (!pointsRef.current) return;
+    pointsRef.current.renderOrder = (renderOrderRef?.current ?? 10) - 1;
     pointsRef.current.rotation.z = Math.sin(clock.elapsedTime * 0.6 + seed) * 0.04;
   });
 

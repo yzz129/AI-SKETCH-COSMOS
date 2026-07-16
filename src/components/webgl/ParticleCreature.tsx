@@ -3,6 +3,7 @@ import { MutableRefObject, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import type { ArtworkParticle } from '../../utils/artworkImage';
 import type { CreatureBehaviorSignature } from '../../utils/creatureMotion';
+import type { CreaturePartActionPose } from './creaturePartActions';
 import { createParticleCreatureMaterial } from './ParticleCreatureMaterial';
 
 type ParticleCreatureProps = {
@@ -14,10 +15,37 @@ type ParticleCreatureProps = {
   burstPhaseRef?: MutableRefObject<number>;
   reappearRef?: MutableRefObject<number>;
   spotlightFocusRef?: MutableRefObject<number>;
+  renderOrderRef?: MutableRefObject<number>;
+  partActionRef?: MutableRefObject<CreaturePartActionPose>;
   spotlightEnabled?: boolean;
 };
 
 type ParticleGeometryMode = 'body' | 'outline' | 'detail' | 'focus';
+
+function updatePartActionUniforms(
+  material: THREE.ShaderMaterial,
+  partAction: CreaturePartActionPose | undefined
+) {
+  material.uniforms.uPartAction.value.set(
+    partAction?.punch ?? 0,
+    partAction?.bite ?? 0,
+    partAction?.hit ?? 0,
+    partAction?.struggle ?? 0
+  );
+  material.uniforms.uPartActionMeta.value.set(
+    partAction?.targetSide ?? 0,
+    partAction?.phase ?? 0,
+    partAction?.punchSide ?? 0,
+    partAction?.compression ?? 0
+  );
+  material.uniforms.uPartActionSecondary.value.set(
+    partAction?.kick ?? 0,
+    partAction?.guard ?? 0,
+    partAction?.windup ?? 0,
+    partAction?.curl ?? 0
+  );
+  material.uniforms.uKickSide.value = partAction?.kickSide ?? 0;
+}
 
 const GEOMETRY_SOURCE_BUDGET: Record<ParticleGeometryMode, number> = {
   body: 9000,
@@ -246,8 +274,14 @@ export function ParticleCreature({
   burstPhaseRef,
   reappearRef,
   spotlightFocusRef,
+  renderOrderRef,
+  partActionRef,
   spotlightEnabled = false
 }: ParticleCreatureProps) {
+  const bodyPointsRef = useRef<THREE.Points>(null);
+  const outlinePointsRef = useRef<THREE.Points>(null);
+  const detailPointsRef = useRef<THREE.Points>(null);
+  const focusPointsRef = useRef<THREE.Points>(null);
   const bodyMaterialRef = useRef<THREE.ShaderMaterial | null>(null);
   const outlineMaterialRef = useRef<THREE.ShaderMaterial | null>(null);
   const detailMaterialRef = useRef<THREE.ShaderMaterial | null>(null);
@@ -294,6 +328,11 @@ export function ParticleCreature({
   }, []);
 
   useFrame(({ clock }) => {
+    const renderOrderBase = renderOrderRef?.current ?? 10;
+    if (bodyPointsRef.current) bodyPointsRef.current.renderOrder = renderOrderBase;
+    if (outlinePointsRef.current) outlinePointsRef.current.renderOrder = renderOrderBase + 1;
+    if (detailPointsRef.current) detailPointsRef.current.renderOrder = renderOrderBase + 2;
+    if (focusPointsRef.current) focusPointsRef.current.renderOrder = renderOrderBase + 4;
     const spotlightFocus = spotlightFocusRef?.current ?? 0;
     const burstPhase = burstPhaseRef?.current ?? 1;
     const burstActive = burstPhase < 0.999;
@@ -302,8 +341,10 @@ export function ParticleCreature({
       ? 1 - THREE.MathUtils.smoothstep(burstPhase, 0.58, 0.96)
       : 0;
     const modelVisibility = Math.max(reappearRef?.current ?? 1, burstVisibility);
+    const partAction = partActionRef?.current;
 
     if (bodyMaterialRef.current) {
+      updatePartActionUniforms(bodyMaterialRef.current, partAction);
       bodyMaterialRef.current.uniforms.uTime.value = clock.elapsedTime;
       bodyMaterialRef.current.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio, 2);
       bodyMaterialRef.current.uniforms.uFlowAmount.value = flowAmount;
@@ -319,6 +360,7 @@ export function ParticleCreature({
       bodyMaterialRef.current.uniforms.uFocusAmount.value = spotlightFocus;
     }
     if (outlineMaterialRef.current) {
+      updatePartActionUniforms(outlineMaterialRef.current, partAction);
       outlineMaterialRef.current.uniforms.uTime.value = clock.elapsedTime;
       outlineMaterialRef.current.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio, 2);
       outlineMaterialRef.current.uniforms.uFlowAmount.value = flowAmount * 0.18;
@@ -334,6 +376,7 @@ export function ParticleCreature({
       outlineMaterialRef.current.uniforms.uFocusAmount.value = spotlightFocus;
     }
     if (detailMaterialRef.current) {
+      updatePartActionUniforms(detailMaterialRef.current, partAction);
       const detailAlpha = THREE.MathUtils.smoothstep(spotlightFocus, 0.08, 0.82) * 0.62;
       detailMaterialRef.current.visible = spotlightEnabled && spotlightFocus > 0.01;
       detailMaterialRef.current.uniforms.uTime.value = clock.elapsedTime;
@@ -359,10 +402,10 @@ export function ParticleCreature({
 
   return (
     <>
-      <points geometry={bodyGeometry} material={bodyMaterial} renderOrder={10} frustumCulled={false} />
-      <points geometry={outlineGeometry} material={outlineMaterial} renderOrder={11} frustumCulled={false} />
-      {detailGeometry ? <points geometry={detailGeometry} material={detailMaterial} renderOrder={12} frustumCulled={false} /> : null}
-      {focusGeometry ? <points geometry={focusGeometry} material={focusMaterial} renderOrder={14} frustumCulled={false} /> : null}
+      <points ref={bodyPointsRef} geometry={bodyGeometry} material={bodyMaterial} renderOrder={10} frustumCulled={false} />
+      <points ref={outlinePointsRef} geometry={outlineGeometry} material={outlineMaterial} renderOrder={11} frustumCulled={false} />
+      {detailGeometry ? <points ref={detailPointsRef} geometry={detailGeometry} material={detailMaterial} renderOrder={12} frustumCulled={false} /> : null}
+      {focusGeometry ? <points ref={focusPointsRef} geometry={focusGeometry} material={focusMaterial} renderOrder={14} frustumCulled={false} /> : null}
     </>
   );
 }

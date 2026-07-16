@@ -1,4 +1,6 @@
+import json
 import uuid
+from pathlib import Path
 from time import perf_counter
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
@@ -13,16 +15,31 @@ from .artwork_db import (
     list_artworks,
     restore_artwork,
     soft_delete_artwork,
+    update_artwork_evolution,
     update_artwork_metadata,
 )
 from .jobs import job_to_response, jobs
 from .perf_logger import log_perf
-from .schemas import ArtworkMetadataUpdate, JobResponse, JobStatus, PersistedArtwork
-from .storage import create_artwork_dir, ensure_output_root, save_upload
+from .schemas import (
+    ArtworkEvolutionBatchUpdate,
+    ArtworkMetadataUpdate,
+    JobResponse,
+    JobStatus,
+    PersistedArtwork,
+)
+from .storage import create_artwork_dir, ensure_output_root, output_roots, save_upload
 from .triposplat_worker import triposplat_config_status
 
 
 app = FastAPI(title="AI Sketch Cosmos TripoSplat Backend")
+
+
+class MultiRootStaticFiles(StaticFiles):
+    """Serve the canonical asset directory plus any legacy cwd-relative directory."""
+
+    def __init__(self, directories: tuple[Path, ...]) -> None:
+        super().__init__(directory=str(directories[0]))
+        self.all_directories = [str(directory) for directory in directories]
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,7 +50,8 @@ app.add_middleware(
     expose_headers=["X-Total-Count"],
 )
 
-app.mount("/assets", StaticFiles(directory=str(ensure_output_root())), name="assets")
+ensure_output_root()
+app.mount("/assets", MultiRootStaticFiles(output_roots()), name="assets")
 
 
 @app.on_event("startup")
@@ -77,6 +95,7 @@ async def create_artwork_job(
     image: UploadFile = File(...),
     numGaussians: int = Form(65_536),
     format: str = Form("splat"),
+    features: str | None = Form(None),
 ):
     request_start = perf_counter()
     triposplat_status = triposplat_config_status()
@@ -104,6 +123,15 @@ async def create_artwork_job(
             f"filename={image.filename or 'source.png'} bytes={source_path.stat().st_size}"
         ),
     )
+    parsed_features = None
+    if features:
+        try:
+            parsed_features = json.loads(features)
+            if not isinstance(parsed_features, dict):
+                raise ValueError("features must decode to an object")
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"invalid features JSON: {exc}") from exc
+
     job = jobs.create(
         job_id=f"job_{uuid.uuid4().hex}",
         artwork_id=artwork_id,
@@ -111,6 +139,7 @@ async def create_artwork_job(
         source_path=source_path,
         num_gaussians=numGaussians,
         export_format=export_format,
+        features=parsed_features,
     )
     log_perf(
         artwork_id,
@@ -137,6 +166,13 @@ def patch_artwork_metadata(artwork_id: str, payload: ArtworkMetadataUpdate):
     if not updated:
         raise HTTPException(status_code=404, detail="artwork not found")
     return {"ok": True}
+
+
+@app.patch("/api/artworks/evolution")
+def patch_artwork_evolution(payload: ArtworkEvolutionBatchUpdate):
+    records = [record.model_dump() for record in payload.records]
+    updated = update_artwork_evolution(records)
+    return {"ok": True, "updated": updated}
 
 
 @app.delete("/api/artworks/{artwork_id}")

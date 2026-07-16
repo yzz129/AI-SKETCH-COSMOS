@@ -139,6 +139,7 @@ export type ArtworkGaussianModelResult = {
   plyUrl?: string;
   previewUrl?: string;
   manifestUrl?: string;
+  rigUrl?: string;
   gaussianCount: number;
   progress?: number;
   message?: string;

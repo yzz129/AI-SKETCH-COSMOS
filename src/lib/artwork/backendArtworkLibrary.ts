@@ -1,33 +1,29 @@
 import type { BackendArtworkRecord } from '../../stores/artworkStore';
 import type { ArtworkFeatureResult, ArtworkGaussianModelResult } from '../../types/artwork';
 import type { ProcessedArtworkImage } from '../../utils/artworkImage';
+import { normalizeGaussianAssetUrlsForBackend, toClientAssetUrl } from './triposplatAssetUrl';
 
 function apiBase() {
   return (import.meta.env.VITE_TRIPOSPLAT_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '';
 }
 
-function absoluteAssetUrl(baseUrl: string, url?: string | null) {
-  if (!url) return undefined;
-  if (/^https?:\/\//i.test(url) || url.startsWith('blob:') || url.startsWith('data:')) return url;
-  return `${baseUrl}${url.startsWith('/') ? '' : '/'}${url}`;
-}
-
 function normalizeRecord(baseUrl: string, record: BackendArtworkRecord): BackendArtworkRecord {
   const gaussianModel = record.gaussianModel ? {
     ...record.gaussianModel,
-    splatUrl: absoluteAssetUrl(baseUrl, record.gaussianModel.splatUrl),
-    plyUrl: absoluteAssetUrl(baseUrl, record.gaussianModel.plyUrl),
-    previewUrl: absoluteAssetUrl(baseUrl, record.gaussianModel.previewUrl),
-    manifestUrl: absoluteAssetUrl(baseUrl, record.gaussianModel.manifestUrl)
+    splatUrl: toClientAssetUrl(baseUrl, record.gaussianModel.splatUrl),
+    plyUrl: toClientAssetUrl(baseUrl, record.gaussianModel.plyUrl),
+    previewUrl: toClientAssetUrl(baseUrl, record.gaussianModel.previewUrl),
+    manifestUrl: toClientAssetUrl(baseUrl, record.gaussianModel.manifestUrl),
+    rigUrl: toClientAssetUrl(baseUrl, record.gaussianModel.rigUrl)
   } : record.gaussianModel;
 
   return {
     ...record,
-    sourceUrl: absoluteAssetUrl(baseUrl, record.sourceUrl),
-    previewUrl: absoluteAssetUrl(baseUrl, record.previewUrl),
-    splatUrl: absoluteAssetUrl(baseUrl, record.splatUrl),
-    plyUrl: absoluteAssetUrl(baseUrl, record.plyUrl),
-    manifestUrl: absoluteAssetUrl(baseUrl, record.manifestUrl),
+    sourceUrl: toClientAssetUrl(baseUrl, record.sourceUrl),
+    previewUrl: toClientAssetUrl(baseUrl, record.previewUrl),
+    splatUrl: toClientAssetUrl(baseUrl, record.splatUrl),
+    plyUrl: toClientAssetUrl(baseUrl, record.plyUrl),
+    manifestUrl: toClientAssetUrl(baseUrl, record.manifestUrl),
     gaussianModel
   };
 }
@@ -97,7 +93,7 @@ export async function updateBackendArtworkMetadata(
       height: artwork.height,
       aspect: artwork.aspect,
       features,
-      gaussianModel
+      gaussianModel: normalizeGaussianAssetUrlsForBackend(baseUrl, gaussianModel)
     })
   }).catch((error) => {
     console.warn('[artwork-library] failed to persist artwork metadata:', error);
@@ -121,10 +117,42 @@ export async function patchBackendArtworkRecord(
   const response = await fetch(`${baseUrl}/api/artworks/${encodeURIComponent(artworkId)}/metadata`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({
+      ...payload,
+      gaussianModel: normalizeGaussianAssetUrlsForBackend(baseUrl, payload.gaussianModel)
+    })
   });
   if (!response.ok) {
     throw new Error(`Failed to update artwork: ${response.status}`);
+  }
+}
+
+export type BackendArtworkEvolutionUpdate = {
+  artworkId: string;
+  level: number;
+  experience: number;
+  victories: number;
+  defeats: number;
+  planetTraps: number;
+  revision: number;
+};
+
+export async function patchBackendArtworkEvolution(
+  records: BackendArtworkEvolutionUpdate[],
+  options: { keepalive?: boolean } = {}
+) {
+  if (records.length === 0) return;
+  const baseUrl = apiBase();
+  if (!baseUrl) throw new Error('VITE_TRIPOSPLAT_API_BASE is not configured.');
+
+  const response = await fetch(`${baseUrl}/api/artworks/evolution`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ records }),
+    keepalive: options.keepalive
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to persist artwork evolution: ${response.status}`);
   }
 }
 

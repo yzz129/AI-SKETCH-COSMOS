@@ -59,6 +59,15 @@ export type BackendArtworkRecord = {
   aspect?: number | null;
   features?: ArtworkFeatureResult | null;
   gaussianModel?: Partial<ArtworkGaussianModelResult> | null;
+  evolution?: {
+    level: number;
+    experience: number;
+    victories: number;
+    defeats: number;
+    planetTraps: number;
+    revision: number;
+    updatedAt?: string | null;
+  } | null;
   isDeleted?: boolean;
   deletedAt?: string | null;
   createdAt?: string | null;
@@ -351,6 +360,7 @@ function artworkFromBackendRecord(record: BackendArtworkRecord): StoredArtwork {
     plyUrl: record.gaussianModel?.plyUrl ?? record.plyUrl ?? undefined,
     previewUrl: record.gaussianModel?.previewUrl ?? record.previewUrl ?? undefined,
     manifestUrl: record.gaussianModel?.manifestUrl ?? record.manifestUrl ?? undefined,
+    rigUrl: record.gaussianModel?.rigUrl ?? undefined,
     gaussianCount: record.gaussianModel?.gaussianCount ?? record.gaussianCount ?? 0,
     progress: 1,
     message: 'loaded from local library',
@@ -389,6 +399,7 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
     const artworks = state.artworks.map((artwork) => {
       if (artwork.id !== id) return artwork;
       const updated = artworkFromFeatures(artwork, features, artwork.model3d, artwork.gaussianModel, artwork.aiAnalysis);
+      updated.createdAt = artwork.createdAt;
       if (state.latestArtwork?.id === id) updatedLatest = updated;
       return updated;
     });
@@ -427,12 +438,16 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
     };
   }),
   removeArtwork: (id) => set((state) => {
-    const artworks = state.artworks.filter((artwork) => artwork.id !== id && artwork.gaussianModel?.sourceArtworkId !== id);
-    const latestArtwork = state.latestArtwork?.id === id || state.latestArtwork?.gaussianModel?.sourceArtworkId === id
+    const removedArtworks = state.artworks.filter(
+      (artwork) => artwork.id === id || artwork.gaussianModel?.sourceArtworkId === id
+    );
+    const removedIds = new Set(removedArtworks.map((artwork) => artwork.id));
+    const artworks = state.artworks.filter((artwork) => !removedIds.has(artwork.id));
+    const latestArtwork = state.latestArtwork && removedIds.has(state.latestArtwork.id)
       ? artworks[0] ?? null
       : state.latestArtwork;
-    if (state.latestArtwork?.id === id || state.latestArtwork?.gaussianModel?.sourceArtworkId === id) {
-      useSketchStore.getState().endSpotlight();
+    for (const removedId of removedIds) {
+      useSketchStore.getState().cancelSpotlight(removedId);
     }
 
     return {
@@ -482,6 +497,12 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
     }
     const artworks = Array.from(mergedById.values())
       .sort((a, b) => b.createdAt - a.createdAt);
+    const retainedIds = new Set(artworks.map((artwork) => artwork.id));
+    for (const previousArtwork of state.artworks) {
+      if (!retainedIds.has(previousArtwork.id)) {
+        useSketchStore.getState().cancelSpotlight(previousArtwork.id);
+      }
+    }
 
     return {
       artworks,
@@ -491,11 +512,17 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
     };
   }),
   clearArtworks: () => {
-    useSketchStore.getState().endSpotlight();
+    const spotlight = useSketchStore.getState().spotlight;
+    for (const creatureId of [
+      spotlight.creatureId,
+      spotlight.requestedCreatureId,
+      spotlight.pendingCreatureId
+    ]) {
+      if (creatureId) useSketchStore.getState().cancelSpotlight(creatureId);
+    }
     set({
       artworks: [],
       latestArtwork: null
     });
   }
 }));
-

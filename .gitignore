@@ -7,6 +7,15 @@ backend/.env
 backend/.venv/
 backend/ckpts/
 backend/outputs/
+backend/data/*.db
+backend/data/*.db-*
+backend/data/*.backup-*
+outputs/
+artifacts/
+.runtime/
+.claude/
+.codex/
+scripts/verify-galaxy-runtime.cjs
 __pycache__/
 *.pyc
 *.egg-info/

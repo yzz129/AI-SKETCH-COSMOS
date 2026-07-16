@@ -1,10 +1,18 @@
 import { useFrame, useThree } from '@react-three/fiber';
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 import * as THREE from 'three';
 import { GalaxySpiral } from './GalaxySpiral';
+import { ReferenceNebula } from './ReferenceNebula';
+import { removeGalaxyPortal, updateGalaxyPortal } from './galaxyPortalRegistry';
 
 type SpiralEntry = {
-  position: [number, number, number]; // base position, scaled at render time
+  id: string;
+  orbitRadiusX: number;
+  orbitRadiusY: number;
+  orbitPhase: number;
+  orbitSpeed: number;
+  depth: number;
+  spinSpeed: number;
   scale: number;
   rotation: [number, number, number];
   count: number;
@@ -15,55 +23,74 @@ type SpiralEntry = {
   spiralTightness: number;
   colorMode: 'hero' | 'bottom' | 'violet' | 'warm';
   opacity: number;
-  rotSpeed: number;
-  rotAxis: [number, number, number];
 };
 
-// Base spirals — pushed to perimeter, positions scaled responsively
+const OUTER_ORBIT_RADIUS_X = 10.75;
+const OUTER_ORBIT_RADIUS_Y = 5.05;
+const OUTER_ORBIT_SPEED = 0.009;
+const REFERENCE_ASPECT = 1016 / 585;
+
+// One shared outer orbit split into six 60-degree sectors. Identical orbital
+// speed preserves the spacing forever, so no two spirals can enter the same
+// region or bunch together. Their local self-spin still varies independently.
 const SPIRALS: SpiralEntry[] = [
   // Top-left
-  { position: [-6.5, 3.0, -10.5], scale: 3.0, rotation: [0.08, -0.12, -0.35], count: 20000, mistCount: 3200, radius: 1.58, coreRadius: 0.24, arms: 5, spiralTightness: 3.65, colorMode: 'hero', opacity: 0.95, rotSpeed: 0.08, rotAxis: [0.01, 0, 0.99] },
+  { id: 'portal-0', orbitRadiusX: OUTER_ORBIT_RADIUS_X, orbitRadiusY: OUTER_ORBIT_RADIUS_Y, orbitPhase: Math.PI * 2 / 3, orbitSpeed: OUTER_ORBIT_SPEED, depth: -10.5, spinSpeed: 0.042, scale: 2.0, rotation: [0.19, -0.15, -0.35], count: 19000, mistCount: 1900, radius: 1.46, coreRadius: 0.24, arms: 12, spiralTightness: 4.15, colorMode: 'hero', opacity: 0.92 },
   // Top-right
-  { position: [6.5, 3.0, -10.0], scale: 2.5, rotation: [0.05, 0.1, 0.45], count: 15000, mistCount: 2400, radius: 1.38, coreRadius: 0.21, arms: 4, spiralTightness: 3.3, colorMode: 'bottom', opacity: 0.78, rotSpeed: -0.1, rotAxis: [-0.02, 0.01, 0.97] },
+  { id: 'portal-1', orbitRadiusX: OUTER_ORBIT_RADIUS_X, orbitRadiusY: OUTER_ORBIT_RADIUS_Y, orbitPhase: Math.PI / 3, orbitSpeed: OUTER_ORBIT_SPEED, depth: -10.0, spinSpeed: -0.036, scale: 1.65, rotation: [0.17, 0.14, 0.45], count: 17000, mistCount: 1300, radius: 1.32, coreRadius: 0.21, arms: 12, spiralTightness: 3.9, colorMode: 'bottom', opacity: 0.84 },
   // Bottom-left
-  { position: [-6.5, -2.8, -11.5], scale: 0.85, rotation: [0.58, -0.2, -0.1], count: 1400, mistCount: 200, radius: 1.08, coreRadius: 0.15, arms: 4, spiralTightness: 3, colorMode: 'violet', opacity: 0.68, rotSpeed: 0.12, rotAxis: [0.03, 0.02, 0.95] },
+  { id: 'portal-2', orbitRadiusX: OUTER_ORBIT_RADIUS_X, orbitRadiusY: OUTER_ORBIT_RADIUS_Y, orbitPhase: Math.PI * 4 / 3, orbitSpeed: OUTER_ORBIT_SPEED, depth: -11.5, spinSpeed: 0.034, scale: 1.25, rotation: [0.32, -0.2, -0.1], count: 15000, mistCount: 260, radius: 1.08, coreRadius: 0.15, arms: 12, spiralTightness: 3.72, colorMode: 'violet', opacity: 0.7 },
   // Bottom-right
-  { position: [6.5, -2.8, -10.0], scale: 0.65, rotation: [0.5, 0.08, -0.72], count: 1100, mistCount: 170, radius: 1, coreRadius: 0.14, arms: 3, spiralTightness: 3.2, colorMode: 'warm', opacity: 0.6, rotSpeed: -0.09, rotAxis: [-0.04, 0.01, 0.93] },
+  { id: 'portal-3', orbitRadiusX: OUTER_ORBIT_RADIUS_X, orbitRadiusY: OUTER_ORBIT_RADIUS_Y, orbitPhase: Math.PI * 5 / 3, orbitSpeed: OUTER_ORBIT_SPEED, depth: -10.0, spinSpeed: -0.04, scale: 1.2, rotation: [0.3, 0.08, -0.72], count: 14500, mistCount: 240, radius: 1, coreRadius: 0.14, arms: 12, spiralTightness: 3.84, colorMode: 'warm', opacity: 0.68 },
   // Left-middle
-  { position: [-7.0, 0.2, -10.0], scale: 0.55, rotation: [0.42, -0.18, 0.46], count: 900, mistCount: 140, radius: 0.92, coreRadius: 0.13, arms: 3, spiralTightness: 3.05, colorMode: 'violet', opacity: 0.55, rotSpeed: 0.15, rotAxis: [0, -0.04, 0.94] },
+  { id: 'portal-4', orbitRadiusX: OUTER_ORBIT_RADIUS_X, orbitRadiusY: OUTER_ORBIT_RADIUS_Y, orbitPhase: Math.PI, orbitSpeed: OUTER_ORBIT_SPEED, depth: -10.0, spinSpeed: 0.048, scale: 1.0, rotation: [0.28, -0.18, 0.46], count: 14000, mistCount: 180, radius: 0.92, coreRadius: 0.13, arms: 12, spiralTightness: 3.62, colorMode: 'violet', opacity: 0.6 },
   // Right-middle
-  { position: [7.0, -0.3, -10.5], scale: 0.7, rotation: [0.44, 0.12, 0.18], count: 1100, mistCount: 170, radius: 0.88, coreRadius: 0.12, arms: 3, spiralTightness: 3.28, colorMode: 'violet', opacity: 0.48, rotSpeed: -0.13, rotAxis: [-0.03, -0.04, 0.92] },
+  { id: 'portal-5', orbitRadiusX: OUTER_ORBIT_RADIUS_X, orbitRadiusY: OUTER_ORBIT_RADIUS_Y, orbitPhase: 0, orbitSpeed: OUTER_ORBIT_SPEED, depth: -10.5, spinSpeed: -0.045, scale: 1.05, rotation: [0.28, 0.12, 0.18], count: 14000, mistCount: 190, radius: 0.88, coreRadius: 0.12, arms: 12, spiralTightness: 3.7, colorMode: 'violet', opacity: 0.58 },
 ];
 
 function SpiralWrapper({ entry, xScale, yScale }: { entry: SpiralEntry; xScale: number; yScale: number }) {
   const groupRef = useRef<THREE.Group>(null);
-  const basePosition = useRef(new THREE.Vector3(entry.position[0] * xScale, entry.position[1] * yScale, entry.position[2]));
+  const portalPositionRef = useRef(new THREE.Vector3());
+  const portalVelocityRef = useRef(new THREE.Vector3());
+  const portalNormalRef = useRef(new THREE.Vector3(0, 0, 1));
+  const initialX = Math.cos(entry.orbitPhase) * entry.orbitRadiusX * xScale;
+  const initialY = Math.sin(entry.orbitPhase) * entry.orbitRadiusY * yScale;
+  const previousPortalPositionRef = useRef(new THREE.Vector3(initialX, initialY, entry.depth));
 
-  useFrame(({ clock }) => {
-    if (groupRef.current) {
-      const t = clock.elapsedTime;
-      const [ax, ay, az] = entry.rotAxis;
-      const motion = Math.abs(entry.rotSpeed);
-      groupRef.current.rotation.set(
-        entry.rotation[0] * 0.28 + ax * t * entry.rotSpeed * 2.4 + Math.sin(t * 0.22 + entry.scale) * 0.035,
-        entry.rotation[1] * 0.28 + ay * t * entry.rotSpeed * 2.2 + Math.cos(t * 0.18 + entry.radius) * 0.04,
-        entry.rotation[2] * 0.2 + az * t * entry.rotSpeed * 2.8
-      );
-      groupRef.current.position.set(
-        basePosition.current.x + Math.sin(t * (0.11 + motion) + entry.radius) * 0.16,
-        basePosition.current.y + Math.cos(t * (0.09 + motion) + entry.scale) * 0.12,
-        basePosition.current.z + Math.sin(t * (0.07 + motion * 0.5) + entry.opacity) * 0.24
-      );
-      const breathe = 1 + Math.sin(t * 0.24 + entry.scale) * 0.055;
-      groupRef.current.scale.setScalar(breathe);
-    }
+  useFrame(({ clock, camera }, delta) => {
+    if (!groupRef.current) return;
+    const angle = entry.orbitPhase + clock.elapsedTime * entry.orbitSpeed;
+    groupRef.current.position.set(
+      Math.cos(angle) * entry.orbitRadiusX * xScale,
+      Math.sin(angle) * entry.orbitRadiusY * yScale,
+      entry.depth
+    );
+    groupRef.current.updateWorldMatrix(true, false);
+    groupRef.current.getWorldPosition(portalPositionRef.current);
+    portalVelocityRef.current
+      .subVectors(portalPositionRef.current, previousPortalPositionRef.current)
+      .multiplyScalar(1 / Math.max(delta, 0.001));
+    previousPortalPositionRef.current.copy(portalPositionRef.current);
+    portalNormalRef.current
+      .subVectors(camera.position, portalPositionRef.current)
+      .normalize();
+    const visualRadius = entry.radius * entry.scale;
+    const apertureRadius = Math.max(0.72, visualRadius * 0.32);
+    updateGalaxyPortal(
+      entry.id,
+      portalPositionRef.current,
+      portalNormalRef.current,
+      portalVelocityRef.current,
+      Math.max(0.12, apertureRadius - 0.1),
+      apertureRadius,
+      visualRadius
+    );
   });
 
-  const px = entry.position[0] * xScale;
-  const py = entry.position[1] * yScale;
+  useEffect(() => () => removeGalaxyPortal(entry.id), [entry.id]);
 
   return (
-    <group ref={groupRef} position={[px, py, entry.position[2]]}>
+    <group ref={groupRef} position={[initialX, initialY, entry.depth]}>
       <GalaxySpiral
         position={[0, 0, 0]}
         scale={entry.scale}
@@ -76,22 +103,70 @@ function SpiralWrapper({ entry, xScale, yScale }: { entry: SpiralEntry; xScale: 
         spiralTightness={entry.spiralTightness}
         colorMode={entry.colorMode}
         opacity={entry.opacity}
+        spinSpeed={entry.spinSpeed}
+      />
+    </group>
+  );
+}
+
+function ReferenceNebulaPreview({ animated }: { animated: boolean }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const viewDirection = useRef(new THREE.Vector3()).current;
+  const camera = useThree((state) => state.camera);
+
+  useFrame(() => {
+    if (!groupRef.current || !(camera instanceof THREE.PerspectiveCamera)) return;
+
+    const distance = 0.5;
+    const height = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5) * distance;
+    camera.getWorldDirection(viewDirection);
+    groupRef.current.position.copy(camera.position).addScaledVector(viewDirection, distance);
+    groupRef.current.quaternion.copy(camera.quaternion);
+    groupRef.current.scale.setScalar(height);
+  });
+
+  return (
+    <group ref={groupRef}>
+      <ReferenceNebula
+        radius={REFERENCE_ASPECT * 0.5}
+        opacity={1}
+        brightness={1}
+        contrast={1}
+        saturation={1}
+        flowStrength={animated ? 0.0066 : 0}
+        flowSpeed={animated ? 1 / 24 : 0}
+        edgeFade={animated ? 0.075 : 0}
+        depthTest={false}
+        opaqueReference={!animated}
+        renderOrder={10000}
       />
     </group>
   );
 }
 
 export function GalaxyBand() {
-  const { width, height } = useThree((s) => s.size);
+  const { width, height } = useThree((state) => state.size);
   const aspect = width / Math.max(height, 1);
-  const xScale = Math.max(0.75, Math.min(1.4, aspect / 1.78));
-  const yScale = Math.max(0.8, Math.min(1.3, 1.78 / aspect));
+  const xScale = THREE.MathUtils.clamp(aspect / (16 / 10), 0.9, 1.38);
+  const yScale = THREE.MathUtils.clamp((16 / 10) / aspect, 0.92, 1.25);
+  const previewMode = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('nebulaPreview')
+    : null;
+
+  if (previewMode === '1' || previewMode === 'flow') {
+    return <ReferenceNebulaPreview animated={previewMode === 'flow'} />;
+  }
 
   return (
-    <>
-      {SPIRALS.map((entry, i) => (
-        <SpiralWrapper key={i} entry={entry} xScale={xScale} yScale={yScale} />
+    <group>
+      {SPIRALS.map((entry) => (
+        <SpiralWrapper
+          key={entry.id}
+          entry={entry}
+          xScale={xScale}
+          yScale={yScale}
+        />
       ))}
-    </>
+    </group>
   );
 }

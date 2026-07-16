@@ -23,6 +23,7 @@ class GenerationJob:
     source_path: Path
     num_gaussians: int
     export_format: str
+    features: dict | None = None
     status: JobStatus = JobStatus.queued
     progress: float | None = 0
     message: str | None = "queued"
@@ -48,6 +49,7 @@ class JobRegistry:
         source_path: Path,
         num_gaussians: int,
         export_format: str,
+        features: dict | None = None,
     ) -> GenerationJob:
         job = GenerationJob(
             job_id=job_id,
@@ -56,6 +58,7 @@ class JobRegistry:
             source_path=source_path,
             num_gaussians=num_gaussians,
             export_format=export_format,
+            features=features,
             created_at_perf=perf_counter(),
         )
         with self._condition:
@@ -138,8 +141,10 @@ class JobRegistry:
                 source_path=job.source_path,
                 num_gaussians=job.num_gaussians,
                 export_format=job.export_format,
+                features=job.features,
                 progress_callback=report_progress,
             )
+            generated_features = assets.pop("features", None) or job.features
             _log_perf(
                 job.job_id,
                 job.artwork_id,
@@ -156,6 +161,9 @@ class JobRegistry:
                 ply_url=assets.get("plyUrl"),
                 manifest_url=assets.get("manifestUrl"),
                 gaussian_count=assets["gaussianCount"],
+                features=generated_features,
+                rig_url=assets.get("rigUrl"),
+                job_id=job.job_id,
             )
             _log_perf(job.job_id, job.artwork_id, "db_upsert:end", f"elapsed={perf_counter() - db_start:.3f}s")
             self._update(

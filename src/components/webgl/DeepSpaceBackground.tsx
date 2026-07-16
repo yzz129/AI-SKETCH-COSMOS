@@ -1,6 +1,3 @@
-import { useFrame } from '@react-three/fiber';
-import { useRef } from 'react';
-import * as THREE from 'three';
 import { DeferredMount } from './DeferredMount';
 import { DeepStarField } from './DeepStarField';
 import { ForegroundBokehDust } from './ForegroundBokehDust';
@@ -13,19 +10,9 @@ import { OrbitalPlanets } from './OrbitalPlanets';
 import { TwinkleStars } from './TwinkleStars';
 
 export function DeepSpaceBackground() {
-  const starfieldRef = useRef<THREE.Group>(null);
-
-  useFrame(({ clock }) => {
-    if (!starfieldRef.current) return;
-    const time = clock.elapsedTime;
-    starfieldRef.current.rotation.y = time * 0.0028;
-    starfieldRef.current.rotation.x = Math.sin(time * 0.022) * 0.012;
-    starfieldRef.current.rotation.z = time * 0.0016;
-  });
-
   return (
     <>
-      <group ref={starfieldRef}>
+      <group>
       {/* Phase 0 — instant: gradient sky + lightweight foreground dust */}
       <GradientSky />
 
@@ -52,16 +39,17 @@ export function DeepSpaceBackground() {
       </DeferredMount>
 
       <ForegroundDust />
-      </group>
 
-      {/* Phase 4 — idle or 2500ms: dadakido + planets */}
-      <DeferredMount timeout={2500}>
-        <NebulaRibbons />
-      </DeferredMount>
+      {/* Phase 4 — idle or 2800ms: orbiting planets */}
       <DeferredMount timeout={2800}>
         <OrbitalPlanets />
       </DeferredMount>
+      </group>
 
+      {/* Dadakido stays independent and always faces front. */}
+      <DeferredMount timeout={2500}>
+        <NebulaRibbons />
+      </DeferredMount>
     </>
   );
 }

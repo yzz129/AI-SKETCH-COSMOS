@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class JobStatus(str, Enum):
@@ -16,6 +16,7 @@ class ArtworkAssets(BaseModel):
     previewUrl: str | None = None
     manifestUrl: str | None = None
     gaussianCount: int
+    rigUrl: str | None = None
 
 
 class JobResponse(BaseModel):
@@ -37,6 +38,30 @@ class ArtworkMetadataUpdate(BaseModel):
     gaussianModel: dict[str, Any] | None = None
 
 
+class ArtworkEvolutionState(BaseModel):
+    level: int = Field(0, ge=0)
+    experience: float = Field(0, ge=0)
+    victories: int = Field(0, ge=0)
+    defeats: int = Field(0, ge=0)
+    planetTraps: int = Field(0, ge=0)
+    revision: int = Field(0, ge=0)
+    updatedAt: str | None = None
+
+
+class ArtworkEvolutionUpdate(BaseModel):
+    artworkId: str = Field(min_length=1)
+    level: int = Field(0, ge=0)
+    experience: float = Field(0, ge=0)
+    victories: int = Field(0, ge=0)
+    defeats: int = Field(0, ge=0)
+    planetTraps: int = Field(0, ge=0)
+    revision: int = Field(0, ge=0)
+
+
+class ArtworkEvolutionBatchUpdate(BaseModel):
+    records: list[ArtworkEvolutionUpdate]
+
+
 class PersistedArtwork(BaseModel):
     id: str
     name: str | None = None
@@ -51,6 +76,7 @@ class PersistedArtwork(BaseModel):
     aspect: float | None = None
     features: dict[str, Any] | None = None
     gaussianModel: dict[str, Any] | None = None
+    evolution: ArtworkEvolutionState
     isDeleted: bool = False
     deletedAt: str | None = None
     createdAt: str

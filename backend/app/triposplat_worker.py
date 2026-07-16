@@ -1,21 +1,25 @@
 import os
+import json
 import subprocess
 import sys
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 
 from dotenv import load_dotenv
 from PIL import Image
 
 from .perf_logger import log_perf
 from .seedream_worker import SeedreamPreparation, prepare_seedream_reference, seedream_config_status
-from .storage import asset_url, write_manifest
+from .splat_multiview import build_multiview_splat_rig
+from .storage import asset_url, write_json_atomic, write_manifest
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(BACKEND_ROOT / ".env", override=True)
+_RIG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="splat-rig")
 
 REQUIRED_TRIPOSPLAT_PATHS = {
     "TRIPOSPLAT_REPO_ROOT": "directory",
@@ -127,6 +131,8 @@ def triposplat_config_status() -> dict:
             "cpuNumGaussiansCap": int(os.getenv("TRIPOSPLAT_CPU_NUM_GAUSSIANS_CAP", "32768")),
             "cpuSubprocess": os.getenv("TRIPOSPLAT_CPU_SUBPROCESS", "true").lower() == "true",
             "cpuTimeoutSeconds": int(os.getenv("TRIPOSPLAT_CPU_TIMEOUT_SECONDS", "900")),
+            "gpuSplatSkinning": _env_bool("SPLAT_GPU_SKINNING_ENABLED", True),
+            "articulationModel": os.getenv("ARK_ARTICULATION_MODEL", "doubao-seed-2-0-mini-260428"),
         },
         "runtime": runtime,
         "paths": paths,
@@ -140,6 +146,7 @@ def _generate_with_subprocess(
     source_path: Path,
     num_gaussians: int,
     export_format: str,
+    features: dict | None,
 ) -> dict:
     env = os.environ.copy()
     env["TRIPOSPLAT_IN_SUBPROCESS"] = "1"
@@ -158,6 +165,8 @@ def _generate_with_subprocess(
         str(num_gaussians),
         "--format",
         export_format,
+        "--features-json",
+        json.dumps(features or {}, ensure_ascii=False, separators=(",", ":")),
     ]
 
     try:
@@ -179,6 +188,10 @@ def _generate_with_subprocess(
     manifest_path = artwork_dir / "manifest.json"
     if not manifest_path.is_file():
         raise RuntimeError("TripoSplat subprocess finished without writing manifest.json.")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"TripoSplat subprocess wrote an invalid manifest: {exc}") from exc
 
     return {
         "splatUrl": asset_url(artwork_id, "model.splat") if (artwork_dir / "model.splat").is_file() else None,
@@ -186,7 +199,119 @@ def _generate_with_subprocess(
         "previewUrl": asset_url(artwork_id, "preprocessed_image.webp") if (artwork_dir / "preprocessed_image.webp").is_file() else None,
         "manifestUrl": asset_url(artwork_id, "manifest.json"),
         "gaussianCount": num_gaussians,
+        "rigUrl": asset_url(artwork_id, "rig.json") if (artwork_dir / "rig.json").is_file() else None,
+        "features": manifest.get("features") or features,
     }
+
+
+def _pending_rig(gaussian_count: int) -> dict[str, Any]:
+    return {
+        "version": 14,
+        "revision": time.time_ns(),
+        "enabled": False,
+        "status": "processing",
+        "strategy": "cpu-splat-bone-mapping",
+        "sourceGaussianCount": gaussian_count,
+        "reason": "background-multiview-processing",
+    }
+
+
+def _failed_rig(reason: str, detail: str | None = None) -> dict[str, Any]:
+    return {
+        "version": 14,
+        "revision": time.time_ns(),
+        "enabled": False,
+        "status": "failed",
+        "strategy": "cpu-splat-bone-mapping",
+        "reason": reason,
+        **({"detail": detail[:800]} if detail else {}),
+    }
+
+
+def _finalize_gpu_splat_skinning(
+    *,
+    artwork_id: str,
+    artwork_dir: Path,
+    splat_path: Path,
+    articulation_future: Future[dict[str, Any]] | None,
+    fallback_features: dict[str, Any] | None,
+) -> None:
+    """Finish the optional rig after the monolithic Splat is already public."""
+    total_start = time.perf_counter()
+    rig_features = fallback_features
+    wait_start = time.perf_counter()
+    try:
+        # Build from rendered views of the generated 3D Gaussian model. The
+        # monolithic .splat is already public, so this background job must not
+        # wait for the legacy source-image articulation result.
+        articulation_wait = 0.0
+        build_start = time.perf_counter()
+        rig = build_multiview_splat_rig(
+            splat_path=splat_path,
+            artwork_dir=artwork_dir,
+            artwork_id=artwork_id,
+        )
+        rig_build = time.perf_counter() - build_start
+        if not rig.get("enabled"):
+            rig = {
+                **rig,
+                "revision": time.time_ns(),
+                "status": "failed",
+            }
+        write_json_atomic(artwork_dir / "rig.json", rig)
+        _log_perf(
+            artwork_id,
+            "background_rig_build:end",
+            f"elapsed={rig_build:.3f}s enabled={bool(rig.get('enabled'))}",
+        )
+    except Exception as exc:
+        articulation_wait = 0.0
+        rig_build = 0.0
+        rig = _failed_rig("background-rig-build-failed", f"{type(exc).__name__}: {exc}")
+        write_json_atomic(artwork_dir / "rig.json", rig)
+        _log_perf(artwork_id, "background_rig:failed", rig["detail"])
+
+    manifest_path = artwork_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    manifest["rig"] = rig
+    if rig_features:
+        manifest["features"] = rig_features
+    performance = manifest.setdefault("performance", {})
+    timings = performance.setdefault("timingsSeconds", {})
+    timings["background_articulation_wait"] = round(articulation_wait, 3)
+    timings["background_rig_build"] = round(rig_build, 3)
+    performance["rigPublishedAfterBaseSeconds"] = round(time.perf_counter() - total_start, 3)
+    write_manifest(artwork_dir, manifest)
+    _log_perf(
+        artwork_id,
+        "background_rig:published",
+        (
+            f"elapsed={time.perf_counter() - total_start:.3f}s "
+            f"enabled={bool(rig.get('enabled'))} status={rig.get('status')}"
+        ),
+    )
+
+
+def _schedule_gpu_splat_skinning(
+    *,
+    artwork_id: str,
+    artwork_dir: Path,
+    splat_path: Path,
+    articulation_future: Future[dict[str, Any]] | None,
+    fallback_features: dict[str, Any] | None,
+) -> None:
+    _log_perf(artwork_id, "background_rig:scheduled")
+    _RIG_EXECUTOR.submit(
+        _finalize_gpu_splat_skinning,
+        artwork_id=artwork_id,
+        artwork_dir=artwork_dir,
+        splat_path=splat_path,
+        articulation_future=articulation_future,
+        fallback_features=fallback_features,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -220,6 +345,7 @@ def generate_triposplat_assets(
     source_path: Path,
     num_gaussians: int,
     export_format: str,
+    features: dict | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict:
     total_start = time.perf_counter()
@@ -273,18 +399,33 @@ def generate_triposplat_assets(
             else "正在使用原图加载 TripoSplat 管线",
         )
 
+    # Part analysis now runs against views rendered from the completed 3D
+    # Gaussian model. Do not spend an Ark request on the source image here.
+    running_in_subprocess = bool(os.getenv("TRIPOSPLAT_IN_SUBPROCESS"))
+    articulation_future: Future[dict[str, Any]] | None = None
+
     if os.getenv("TRIPOSPLAT_DEVICE", "cuda").startswith("cpu"):
         cpu_cap = int(os.getenv("TRIPOSPLAT_CPU_NUM_GAUSSIANS_CAP", "32768"))
         effective_num_gaussians = min(num_gaussians, cpu_cap)
         if os.getenv("TRIPOSPLAT_CPU_SUBPROCESS", "true").lower() == "true" and not os.getenv("TRIPOSPLAT_IN_SUBPROCESS"):
             with _timed_stage(artwork_id, "cpu_subprocess", timings, gaussians=effective_num_gaussians):
-                return _generate_with_subprocess(
+                assets = _generate_with_subprocess(
                     artwork_id=artwork_id,
                     artwork_dir=artwork_dir,
                     source_path=triposplat_source_path,
                     num_gaussians=effective_num_gaussians,
                     export_format=export_format,
+                    features=features,
                 )
+            if assets.get("rigUrl"):
+                _schedule_gpu_splat_skinning(
+                    artwork_id=artwork_id,
+                    artwork_dir=artwork_dir,
+                    splat_path=artwork_dir / "model.splat",
+                    articulation_future=articulation_future,
+                    fallback_features=features,
+                )
+            return assets
 
     with _timed_stage(artwork_id, "load_pipeline", timings):
         pipeline = load_pipeline()
@@ -336,8 +477,22 @@ def generate_triposplat_assets(
     if write_ply:
         with _timed_stage(artwork_id, "save_ply", timings, path=ply_path.name):
             gaussian.save_ply(ply_path)
+    rig_requested = (
+        write_splat
+        and _env_bool("SPLAT_GPU_SKINNING_ENABLED", True)
+    )
+    rig = _pending_rig(effective_num_gaussians) if rig_requested else {
+        "version": 14,
+        "revision": time.time_ns(),
+        "enabled": False,
+        "status": "unavailable",
+        "strategy": "cpu-splat-bone-mapping",
+        "reason": "splat-export-required",
+    }
+    if rig_requested:
+        write_json_atomic(artwork_dir / "rig.json", rig)
     if progress_callback:
-        progress_callback(0.97, "模型已导出，正在写入清单")
+        progress_callback(0.97, "基础 .splat 已生成，正在立即发布；骨骼将在后台加载")
 
     manifest = {
         "id": artwork_id,
@@ -358,6 +513,8 @@ def generate_triposplat_assets(
             "rotation": [1, 0, 0, 0],
             "center": [0, 0, 0],
         },
+        "rig": rig,
+        "features": features,
         "performance": {
             "steps": steps,
             "guidanceScale": guidance_scale,
@@ -375,6 +532,15 @@ def generate_triposplat_assets(
     with _timed_stage(artwork_id, "write_manifest", timings):
         write_manifest(artwork_dir, manifest)
 
+    if rig_requested and not running_in_subprocess:
+        _schedule_gpu_splat_skinning(
+            artwork_id=artwork_id,
+            artwork_dir=artwork_dir,
+            splat_path=splat_path,
+            articulation_future=articulation_future,
+            fallback_features=features,
+        )
+
     total_elapsed = time.perf_counter() - total_start
     _log_perf(
         artwork_id,
@@ -388,4 +554,6 @@ def generate_triposplat_assets(
         "previewUrl": manifest["assets"]["preview"],
         "manifestUrl": asset_url(artwork_id, "manifest.json"),
         "gaussianCount": effective_num_gaussians,
+        "rigUrl": asset_url(artwork_id, "rig.json") if rig_requested else None,
+        "features": features,
     }

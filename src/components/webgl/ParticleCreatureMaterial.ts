@@ -21,7 +21,11 @@ export function createParticleCreatureMaterial({ outline = false }: { outline?: 
       uParticleSpread: { value: 0.5 },
       uPointSizeBoost: { value: 1 },
       uAlphaMultiplier: { value: 1 },
-      uFocusAmount: { value: 0 }
+      uFocusAmount: { value: 0 },
+      uPartAction: { value: new THREE.Vector4() },
+      uPartActionMeta: { value: new THREE.Vector4() },
+      uPartActionSecondary: { value: new THREE.Vector4() },
+      uKickSide: { value: 0 }
     },
     vertexShader: `
       uniform float uTime;
@@ -38,6 +42,10 @@ export function createParticleCreatureMaterial({ outline = false }: { outline?: 
       uniform float uPointSizeBoost;
       uniform float uAlphaMultiplier;
       uniform float uFocusAmount;
+      uniform vec4 uPartAction;
+      uniform vec4 uPartActionMeta;
+      uniform vec4 uPartActionSecondary;
+      uniform float uKickSide;
       attribute vec3 color;
       attribute vec3 aBasePosition;
       attribute float aSize;
@@ -83,6 +91,46 @@ export function createParticleCreatureMaterial({ outline = false }: { outline?: 
           breath + morph * (1.0 - aEdgeFactor),
           breath - morph * 0.55 * (1.0 - aEdgeFactor),
           1.12 + morph * 0.72
+        );
+
+        float particleSide = sign(aBasePosition.x + 0.0001);
+        float lateralRegion = smoothstep(0.08, 0.42, abs(aBasePosition.x));
+        float armRegion = lateralRegion
+          * smoothstep(-0.3, 0.08, aBasePosition.y)
+          * (1.0 - smoothstep(0.28, 0.58, aBasePosition.y));
+        float headRegion = smoothstep(0.12, 0.48, aBasePosition.y)
+          * (1.0 - smoothstep(0.34, 0.68, abs(aBasePosition.x)));
+        float legRegion = 1.0 - smoothstep(-0.46, -0.06, aBasePosition.y);
+        float strikeMatch = mix(
+          0.22,
+          1.0,
+          step(0.0, particleSide * uPartActionMeta.z)
+        );
+        float actionPhase = uPartActionMeta.y;
+        float struggleWave = sin(actionPhase + particleSide * 1.4 + aPhase * 0.08);
+        p.x += uPartActionMeta.x * uPartAction.x * armRegion * strikeMatch * 0.16;
+        p.y += uPartAction.x * armRegion * strikeMatch * 0.045;
+        float kickMatch = mix(
+          0.24,
+          1.0,
+          step(0.0, particleSide * uKickSide)
+        );
+        p.x += uPartActionMeta.x * uPartActionSecondary.x * legRegion * kickMatch * 0.14;
+        p.y += uPartActionSecondary.x * legRegion * kickMatch * 0.065;
+        p.x -= uPartActionMeta.x * uPartActionSecondary.z * armRegion * strikeMatch * 0.065;
+        p.x -= particleSide * uPartActionSecondary.y * armRegion * 0.055;
+        p.y += uPartActionSecondary.y * armRegion * 0.085;
+        p.x += uPartActionMeta.x * uPartAction.y * headRegion * 0.095;
+        p.y -= uPartAction.y * headRegion * 0.038;
+        p.x -= uPartActionMeta.x * uPartAction.z * (0.035 + headRegion * 0.075);
+        p.x += struggleWave * uPartAction.w * (armRegion * 0.075 + headRegion * 0.03);
+        p.y -= struggleWave * uPartAction.w * legRegion * 0.055;
+        vec2 curlDirection = -aBasePosition.xy;
+        p.xy += curlDirection * uPartActionSecondary.w
+          * (armRegion * 0.16 + legRegion * 0.1 + headRegion * 0.08);
+        p.xy *= vec2(
+          1.0 - uPartActionMeta.w * 0.045,
+          1.0 + uPartActionMeta.w * 0.025
         );
 
         p += offset;

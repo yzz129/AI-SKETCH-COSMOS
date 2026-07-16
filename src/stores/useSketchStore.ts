@@ -1,6 +1,17 @@
 import { create } from 'zustand';
 import type { SampledParticleShape, SampledPoint } from '../utils/imageSampling';
 import { loadSketchCreatures, persistSketchCreatures } from '../utils/storage';
+import {
+  cancelSpotlight,
+  completeSpotlight,
+  IDLE_SPOTLIGHT,
+  markSpotlightRenderReady,
+  requestSpotlight,
+  type SpotlightPhase,
+  type SpotlightState
+} from '../components/webgl/spotlightMotion';
+
+export type { SpotlightPhase, SpotlightState } from '../components/webgl/spotlightMotion';
 
 export type Creature = {
   id: string;
@@ -24,14 +35,6 @@ export type CollapseState = {
   holdDuration: number;
 };
 
-export type SpotlightPhase = 'fly-in' | 'showcase' | 'release' | 'idle';
-
-export type SpotlightState = {
-  creatureId: string | null;
-  startedAt: number;
-  phase: SpotlightPhase;
-};
-
 type SketchStore = {
   creatures: Creature[];
   latestCreature: Creature | null;
@@ -47,6 +50,9 @@ type SketchStore = {
   updateCollapseCenter: (center: [number, number]) => void;
   endCollapse: () => void;
   beginSpotlight: (creatureId: string) => void;
+  markSpotlightReady: (creatureId: string) => void;
+  invalidateSpotlightReady: (creatureId: string) => void;
+  cancelSpotlight: (creatureId: string) => void;
   advanceSpotlight: (phase: SpotlightPhase) => void;
   endSpotlight: () => void;
 };
@@ -97,11 +103,7 @@ export const useSketchStore = create<SketchStore>((set, get) => ({
     releasedAt: 0,
     holdDuration: 0
   },
-  spotlight: {
-    creatureId: null,
-    startedAt: 0,
-    phase: 'idle'
-  },
+  spotlight: { ...IDLE_SPOTLIGHT },
   setProcessing: (message) => set({
     status: 'processing',
     message
@@ -116,11 +118,10 @@ export const useSketchStore = create<SketchStore>((set, get) => ({
       latestCreature: creature,
       status: 'ready',
       message: `${shape.name} 已进入星河。`,
-      spotlight: {
-        creatureId: creature.id,
-        startedAt: Date.now(),
-        phase: 'fly-in'
-      }
+      spotlight: markSpotlightRenderReady(
+        requestSpotlight(get().spotlight, creature.id),
+        creature.id
+      )
     });
   },
   setError: (message) => set({
@@ -128,12 +129,18 @@ export const useSketchStore = create<SketchStore>((set, get) => ({
     message
   }),
   clearCreatures: () => {
+    const removedIds = get().creatures.map((creature) => creature.id);
     persistSketchCreatures([]);
-    set({
-      creatures: [],
-      latestCreature: null,
-      status: 'idle',
-      message: '星河已清空，沉浸星空正在待命。'
+    set((state) => {
+      let spotlight = state.spotlight;
+      for (const creatureId of removedIds) spotlight = cancelSpotlight(spotlight, creatureId);
+      return {
+        creatures: [],
+        latestCreature: null,
+        status: 'idle',
+        message: '星河已清空，沉浸星空正在待命。',
+        spotlight
+      };
     });
   },
   beginCollapse: (center) => set({
@@ -164,21 +171,24 @@ export const useSketchStore = create<SketchStore>((set, get) => ({
       }
     };
   }),
-  beginSpotlight: (creatureId) => set({
-    spotlight: {
-      creatureId,
-      startedAt: Date.now(),
-      phase: 'fly-in'
-    }
-  }),
-  advanceSpotlight: (phase) => set((state) => ({
-    spotlight: { ...state.spotlight, phase }
+  beginSpotlight: (creatureId) => set((state) => ({
+    spotlight: requestSpotlight(state.spotlight, creatureId)
   })),
-  endSpotlight: () => set({
-    spotlight: {
-      creatureId: null,
-      startedAt: 0,
-      phase: 'idle'
-    }
-  })
+  markSpotlightReady: (creatureId) => set((state) => ({
+    spotlight: markSpotlightRenderReady(state.spotlight, creatureId)
+  })),
+  invalidateSpotlightReady: (creatureId) => set((state) => {
+    if (state.spotlight.pendingCreatureId !== creatureId || !state.spotlight.pendingReady) return state;
+    return { spotlight: { ...state.spotlight, pendingReady: false } };
+  }),
+  cancelSpotlight: (creatureId) => set((state) => ({
+    spotlight: cancelSpotlight(state.spotlight, creatureId)
+  })),
+  advanceSpotlight: (phase) => set((state) => {
+    if (state.spotlight.phase === 'idle') return state;
+    return { spotlight: { ...state.spotlight, phase } };
+  }),
+  endSpotlight: () => set((state) => ({
+    spotlight: completeSpotlight(state.spotlight)
+  }))
 }));

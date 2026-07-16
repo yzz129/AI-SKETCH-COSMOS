@@ -1,10 +1,12 @@
-import type { ArtworkGaussianModelResult, ArtworkGaussianModelStatus } from '../../types/artwork';
+import type { ArtworkFeatureResult, ArtworkGaussianModelResult, ArtworkGaussianModelStatus } from '../../types/artwork';
+import { toClientAssetUrl } from '../artwork/triposplatAssetUrl';
 
 type TripoSplatModelPayload = {
   splatUrl?: string;
   plyUrl?: string;
   previewUrl?: string;
   manifestUrl?: string;
+  rigUrl?: string;
   gaussianCount?: number;
 };
 
@@ -24,6 +26,7 @@ type GenerateGaussianArtworkModelInput = {
   gaussianCount?: number;
   format?: 'splat' | 'ply' | 'both';
   onProgress?: (result: ArtworkGaussianModelResult) => void;
+  features?: ArtworkFeatureResult;
 };
 
 const DEFAULT_GAUSSIAN_COUNT = 65_536;
@@ -41,12 +44,6 @@ function triposplatApiBase() {
 
 export function isTripoSplatGenerationEnabled() {
   return envBoolean(import.meta.env.VITE_TRIPOSPLAT_ENABLED) && triposplatApiBase().length > 0;
-}
-
-function absoluteAssetUrl(baseUrl: string, url?: string) {
-  if (!url) return undefined;
-  if (/^https?:\/\//i.test(url) || url.startsWith('blob:') || url.startsWith('data:')) return url;
-  return `${baseUrl}${url.startsWith('/') ? '' : '/'}${url}`;
 }
 
 function sleep(ms: number) {
@@ -86,10 +83,11 @@ function toResult({
     source: 'triposplat',
     status: payload.status ?? fallbackStatus,
     format,
-    splatUrl: absoluteAssetUrl(baseUrl, model.splatUrl),
-    plyUrl: absoluteAssetUrl(baseUrl, model.plyUrl),
-    previewUrl: absoluteAssetUrl(baseUrl, model.previewUrl),
-    manifestUrl: absoluteAssetUrl(baseUrl, model.manifestUrl),
+    splatUrl: toClientAssetUrl(baseUrl, model.splatUrl),
+    plyUrl: toClientAssetUrl(baseUrl, model.plyUrl),
+    previewUrl: toClientAssetUrl(baseUrl, model.previewUrl),
+    manifestUrl: toClientAssetUrl(baseUrl, model.manifestUrl),
+    rigUrl: toClientAssetUrl(baseUrl, model.rigUrl),
     gaussianCount: model.gaussianCount ?? gaussianCount,
     progress: payload.progress,
     message: payload.message,
@@ -101,7 +99,8 @@ export async function generateGaussianArtworkModel({
   file,
   gaussianCount = DEFAULT_GAUSSIAN_COUNT,
   format = 'splat',
-  onProgress
+  onProgress,
+  features
 }: GenerateGaussianArtworkModelInput): Promise<ArtworkGaussianModelResult> {
   const baseUrl = triposplatApiBase();
   if (!baseUrl) {
@@ -112,6 +111,7 @@ export async function generateGaussianArtworkModel({
   formData.set('image', file);
   formData.set('numGaussians', String(gaussianCount));
   formData.set('format', format);
+  if (features) formData.set('features', JSON.stringify(features));
 
   const createResponse = await fetch(`${baseUrl}/api/artworks`, {
     method: 'POST',

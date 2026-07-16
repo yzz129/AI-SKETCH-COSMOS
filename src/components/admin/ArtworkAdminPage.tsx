@@ -19,11 +19,92 @@ import {
   patchBackendArtworkRecord,
   restoreBackendArtwork
 } from '../../lib/artwork/backendArtworkLibrary';
+import { resolveRigAssetUrl } from '../webgl/rigAssetUrl';
 import { type BackendArtworkRecord, useArtworkStore } from '../../stores/artworkStore';
+import { experienceRequiredForLevel } from '../webgl/creatureEvolutionMath';
 import './admin.css';
 
 const PAGE_SIZE = 20;
 const ARTWORK_LIBRARY_CHANGED_EVENT = 'artwork-library-changed';
+
+type RigDownloadPart = {
+  id: string;
+  url: string;
+  gaussianCount?: number;
+};
+
+type RigDownloadManifest = {
+  enabled?: boolean;
+  strategy?: string;
+  partMapUrl?: string;
+  weightsUrl?: string;
+  proxyMeshUrl?: string;
+  multiviewUrl?: string;
+  sourceGaussianCount?: number;
+  parts?: RigDownloadPart[];
+};
+
+const rigPartsCache = new Map<string, Promise<RigDownloadPart[]>>();
+
+function partDisplayName(id: string) {
+  const labels: Record<string, string> = {
+    'skinning-weights': 'CPU 部位映射',
+    'part-map': '三维连通部位映射',
+    'proxy-mesh': '三维代理网格',
+    'multiview-analysis': '多视角识别结果',
+    body: '身体',
+    'left-arm': '左手臂',
+    'right-arm': '右手臂',
+    'left-leg': '左腿',
+    'right-leg': '右腿',
+    'left-wing': '左翅膀',
+    'right-wing': '右翅膀',
+    'left-fin': '左鱼鳍',
+    'right-fin': '右鱼鳍',
+    'tail-1': '尾巴根部',
+    'tail-2': '尾巴中段',
+    'tail-3': '尾巴末端'
+  };
+  return labels[id] ?? id;
+}
+
+function loadRigDownloadParts(rigUrl: string) {
+  const cached = rigPartsCache.get(rigUrl);
+  if (cached) return cached;
+  const request = fetch(rigUrl, { cache: 'no-store' })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`Splat 部位映射清单加载失败（${response.status}）`);
+      return response.json() as Promise<RigDownloadManifest>;
+    })
+    .then((manifest) => {
+      if (manifest.enabled
+        && ['cpu-rigid-parts', 'gpu-splat-skinning', 'cpu-splat-bone-mapping'].includes(String(manifest.strategy))
+        && (manifest.partMapUrl || manifest.weightsUrl)) {
+        const generatedAssets: RigDownloadPart[] = [{
+          id: manifest.partMapUrl ? 'part-map' : 'skinning-weights',
+          url: resolveRigAssetUrl(rigUrl, manifest.partMapUrl ?? manifest.weightsUrl!),
+          gaussianCount: manifest.sourceGaussianCount
+        }];
+        if (manifest.proxyMeshUrl) generatedAssets.push({
+          id: 'proxy-mesh',
+          url: resolveRigAssetUrl(rigUrl, manifest.proxyMeshUrl)
+        });
+        if (manifest.multiviewUrl) generatedAssets.push({
+          id: 'multiview-analysis',
+          url: resolveRigAssetUrl(rigUrl, manifest.multiviewUrl)
+        });
+        return generatedAssets;
+      }
+      if (!manifest.enabled || !manifest.parts?.length) return [];
+      return manifest.parts.map((part) => ({
+        ...part,
+        url: resolveRigAssetUrl(rigUrl, part.url)
+      }));
+    });
+  rigPartsCache.set(rigUrl, request);
+  request.catch(() => rigPartsCache.delete(rigUrl));
+  return request;
+}
 
 function notifyArtworkLibraryChanged() {
   if ('BroadcastChannel' in window) {
@@ -74,6 +155,8 @@ export function ArtworkAdminPage() {
   const [draftName, setDraftName] = useState('');
   const [draftFeatures, setDraftFeatures] = useState('{}');
   const [draftGaussian, setDraftGaussian] = useState('{}');
+  const [rigParts, setRigParts] = useState<RigDownloadPart[]>([]);
+  const [rigPartsStatus, setRigPartsStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
 
   const selected = useMemo(
     () => records.find((record) => record.id === selectedId) ?? records[0] ?? null,
@@ -165,6 +248,29 @@ export function ArtworkAdminPage() {
     setDraftFeatures(prettyJson(selected.features));
     setDraftGaussian(prettyJson(selected.gaussianModel));
   }, [selected]);
+
+  useEffect(() => {
+    const rigUrl = selected?.gaussianModel?.rigUrl;
+    let cancelled = false;
+    setRigParts([]);
+    if (!rigUrl) {
+      setRigPartsStatus('idle');
+      return;
+    }
+    setRigPartsStatus('loading');
+    void loadRigDownloadParts(rigUrl)
+      .then((parts) => {
+        if (cancelled) return;
+        setRigParts(parts);
+        setRigPartsStatus('ready');
+      })
+      .catch(() => {
+        if (!cancelled) setRigPartsStatus('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.gaussianModel?.rigUrl]);
 
   const saveSelected = async () => {
     if (!selected) return;
@@ -446,7 +552,9 @@ export function ArtworkAdminPage() {
                 </span>
                 <span className="admin-record__body">
                   <strong>{record.name ?? record.id}</strong>
-                  <em>{record.features?.motionPreset ?? 'spiritFloat'} · {formatMB(record)}</em>
+                  <em>
+                    LV {record.evolution?.level ?? 0} · {record.features?.motionPreset ?? 'spiritFloat'} · {formatMB(record)}
+                  </em>
                 </span>
               </div>
             ))}
@@ -532,6 +640,59 @@ export function ArtworkAdminPage() {
                   <input value={selected.splatUrl ?? selected.plyUrl ?? '-'} readOnly />
                 </label>
               </div>
+
+              <section className="admin-evolution" aria-label="模型成长信息">
+                <div className="admin-evolution__head">
+                  <div>
+                    <span>模型成长</span>
+                    <strong>LV {selected.evolution?.level ?? 0}</strong>
+                  </div>
+                  <small>最近同步：{formatDate(selected.evolution?.updatedAt)}</small>
+                </div>
+                <div className="admin-evolution__progress" aria-label="升级进度">
+                  <span style={{
+                    width: `${Math.min(
+                      100,
+                      ((selected.evolution?.experience ?? 0)
+                        / experienceRequiredForLevel(selected.evolution?.level ?? 0)) * 100
+                    )}%`
+                  }} />
+                </div>
+                <div className="admin-evolution__stats">
+                  <div><span>当前经验</span><strong>{Math.round(selected.evolution?.experience ?? 0)} / {experienceRequiredForLevel(selected.evolution?.level ?? 0)}</strong></div>
+                  <div><span>获胜次数</span><strong>{selected.evolution?.victories ?? 0}</strong></div>
+                  <div><span>失败次数</span><strong>{selected.evolution?.defeats ?? 0}</strong></div>
+                  <div><span>星球困住</span><strong>{selected.evolution?.planetTraps ?? 0}</strong></div>
+                  <div><span>数据版本</span><strong>#{selected.evolution?.revision ?? 0}</strong></div>
+                </div>
+              </section>
+
+              <section className="admin-model-downloads" aria-label="模型文件下载">
+                <div className="admin-model-downloads__head">
+                  <h3>模型文件</h3>
+                  {selected.gaussianModel?.rigUrl ? (
+                    <a href={selected.gaussianModel.rigUrl} target="_blank" rel="noreferrer">rig.json</a>
+                  ) : null}
+                </div>
+                <div className="admin-model-downloads__list">
+                  {(selected.splatUrl ?? selected.gaussianModel?.splatUrl) ? (
+                    <a href={selected.splatUrl ?? selected.gaussianModel?.splatUrl} target="_blank" rel="noreferrer">
+                      <span><ExternalLink size={15} />主模型</span>
+                      <code>model.splat</code>
+                    </a>
+                  ) : null}
+                  {rigParts.map((part) => (
+                    <a key={part.id} href={part.url} target="_blank" rel="noreferrer">
+                      <span><ExternalLink size={15} />{partDisplayName(part.id)}</span>
+                      <code>{part.url.split('/').pop()} · {part.gaussianCount?.toLocaleString() ?? '-'} Gaussians</code>
+                    </a>
+                  ))}
+                  {rigPartsStatus === 'loading' ? <p>正在载入 CPU 部位映射…</p> : null}
+                  {rigPartsStatus === 'ready' && rigParts.length === 0 ? <p>该模型没有可用的部位映射资源</p> : null}
+                  {rigPartsStatus === 'error' ? <p className="is-error">部位映射清单加载失败，完整主模型仍可正常下载</p> : null}
+                  {rigPartsStatus === 'idle' ? <p>该模型尚未生成 CPU 部位映射</p> : null}
+                </div>
+              </section>
 
               <div className="admin-editor-grid">
                 <label className="admin-json-field">

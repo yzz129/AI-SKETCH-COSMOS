@@ -2,6 +2,11 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { DADAKIDO_WORLD_POSITION } from './cosmicAnchors';
+import { DADAKIDO_RENDER_ORDER } from './dadakidoOcclusion';
+import {
+  getDadakidoOccluders,
+  MAX_DADAKIDO_OCCLUDERS
+} from './dadakidoOcclusionRegistry';
 import { hasCreaturePriorityHit } from './pointerPriority';
 import { useAutoCosmicInteractionStore } from './autoCosmicInteractionStore';
 
@@ -24,23 +29,14 @@ const HALO_PARTICLES = 7_600;
 const BRIDGE_PARTICLES = 5_000;
 
 const LETTER_COLORS = [
-  new THREE.Color('#64d9ff'),
-  new THREE.Color('#d76bff'),
-  new THREE.Color('#1e7ce6'),
-  new THREE.Color('#ffe8b8'),
-  new THREE.Color('#f2913c'),
-  new THREE.Color('#64d9ff'),
-  new THREE.Color('#ffe8b8'),
-  new THREE.Color('#d76bff')
-];
-
-const FLOW_PALETTE = [
-  new THREE.Color('#64d9ff'),
-  new THREE.Color('#1e7ce6'),
-  new THREE.Color('#7b4dff'),
-  new THREE.Color('#d76bff'),
-  new THREE.Color('#f3a6ff'),
-  new THREE.Color('#ffe8b8')
+  new THREE.Color('#32945a'), // d — cosmic green
+  new THREE.Color('#c65391'), // a — cosmic pink
+  new THREE.Color('#3b68ae'), // d — cosmic blue
+  new THREE.Color('#d1a22b'), // a — cosmic gold
+  new THREE.Color('#d84b43'), // k — cosmic coral
+  new THREE.Color('#3b68ae'), // i — cosmic blue
+  new THREE.Color('#d1a22b'), // d — cosmic gold
+  new THREE.Color('#32945a')  // o — cosmic green
 ];
 
 const GLYPH_CENTERS = [-5.25, -3.75, -2.25, -0.75, 0.9, 2.2, 3.55, 5.05].map(c => c * LETTER_SPREAD);
@@ -108,7 +104,10 @@ function logoDensity(x: number, y: number) {
     } else if (glyph === 'a') {
       density = Math.max(
         loopDensity(x, y, cx - 0.04),
-        roundedBarDensity(x, y, cx + 0.49, -0.5, 0.2, 0.48, 0.2)
+        // A long, substantial right stem keeps the single-storey "a"
+        // readable at distance instead of collapsing into an "o".
+        roundedBarDensity(x, y, cx + 0.5, -0.38, 0.255, 0.86, 0.24),
+        capsuleDensity(x, y, cx + 0.44, -0.82, cx + 0.7, -1.14, 0.235)
       );
     } else if (glyph === 'k') {
       density = Math.max(
@@ -148,16 +147,8 @@ function sampleLogoPoint(random: () => number): LogoSample {
   return { x: 0, y: 0, density: 1, glyph: 0 };
 }
 
-function colorForSample(sample: LogoSample, random: () => number) {
-  const color = LETTER_COLORS[sample.glyph].clone();
-  const flow = FLOW_PALETTE[Math.min(FLOW_PALETTE.length - 1, Math.floor(((sample.x / WORD_WIDTH) + 0.5) * FLOW_PALETTE.length))];
-  color.lerp(flow, 0.28);
-
-  if (random() > 0.72) {
-    color.lerp(new THREE.Color('#f7f3ff'), random() * 0.18);
-  }
-
-  return color;
+function colorForSample(sample: LogoSample) {
+  return LETTER_COLORS[sample.glyph].clone();
 }
 
 function writeParticle({
@@ -217,13 +208,23 @@ function makeDadakidoNebulaMaterial() {
     depthTest: true,
     vertexColors: true,
     toneMapped: false,
-    blending: THREE.AdditiveBlending,
+    blending: THREE.NormalBlending,
     uniforms: {
       uTime: { value: 0 },
       uReveal: { value: 0 },
       uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
       uBurstGlyph: { value: -1 },
-      uBurstProgress: { value: 0 }
+      uBurstProgress: { value: 0 },
+      uFrontOccluderCount: { value: 0 },
+      uFrontOccluders: {
+        value: Array.from(
+          { length: MAX_DADAKIDO_OCCLUDERS },
+          () => new THREE.Vector4(0, 0, 0.001, 0.001)
+        )
+      },
+      uFrontOccluderStrengths: {
+        value: new Float32Array(MAX_DADAKIDO_OCCLUDERS)
+      }
     },
     vertexShader: `
       uniform float uTime;
@@ -240,18 +241,25 @@ function makeDadakidoNebulaMaterial() {
       varying vec3 vColor;
       varying float vAlpha;
       varying float vDepth;
+      varying vec2 vScreenPosition;
 
       void main() {
         float letterPhase = aGlyph * 1.37 + aPhase * 0.18;
         float depthBreath = sin(uTime * (0.82 + aGlyph * 0.045) + letterPhase);
-        float scaleBreath = 1.0 + depthBreath * (0.06 + aGlyph * 0.005);
+        float danceBeat = sin(uTime * (1.28 + aGlyph * 0.035) + aGlyph * 1.11);
+        float hop = pow(max(danceBeat, 0.0), 2.0);
+        float landing = pow(max(-danceBeat, 0.0), 5.0);
+        float scaleBreath = 1.0 + depthBreath * (0.075 + aGlyph * 0.005);
 
         vec3 local = position - vec3(aLetterCenter, -0.08, 0.0);
-        local.xy *= scaleBreath;
+        local.x *= scaleBreath * (1.0 + hop * 0.09 + landing * 0.08);
+        local.y *= scaleBreath * (1.0 - hop * 0.055 - landing * 0.12);
+        local.z *= 1.0 + hop * 0.06;
 
-        float yaw = sin(uTime * (1.08 + aGlyph * 0.055) + letterPhase) * (0.38 + 0.04 * sin(aGlyph * 2.1));
-        float pitch = cos(uTime * (0.92 + aGlyph * 0.05) + letterPhase * 1.28) * (0.2 + 0.024 * aGlyph);
-        float roll = sin(uTime * (0.68 + aGlyph * 0.04) + letterPhase * 1.66) * 0.075;
+        float yaw = sin(uTime * (1.08 + aGlyph * 0.055) + letterPhase) * (0.42 + 0.035 * sin(aGlyph * 2.1));
+        float pitch = cos(uTime * (0.92 + aGlyph * 0.05) + letterPhase * 1.28) * (0.22 + 0.018 * aGlyph);
+        float roll = sin(uTime * (0.74 + aGlyph * 0.045) + letterPhase * 1.66) * 0.11
+          + danceBeat * 0.055;
 
         float cy = cos(yaw);
         float sy = sin(yaw);
@@ -267,10 +275,17 @@ function makeDadakidoNebulaMaterial() {
         vec3 p = local + vec3(aLetterCenter, -0.08, 0.0);
         float lateralWave = sin(uTime * 0.7 + aPhase + aAnchor.x * 1.12);
         float slowWave = cos(uTime * 0.48 + aPhase * 0.7 + aAnchor.y * 1.8);
-        // per-letter vertical bounce — each letter bounces at a different rhythm
-        p.x += lateralWave * 0.045;
-        p.y += slowWave * 0.038 + sin(uTime * 1.18 + letterPhase) * 0.12;
-        p.z += depthBreath * (0.46 + 0.06 * sin(aGlyph * 1.9)) + sin(uTime * 0.62 + aPhase + aAnchor.x * 0.52) * 0.08;
+        // Each glyph dances on its own beat: hop, squash, sway and lean forward.
+        p.x += lateralWave * 0.055
+          + sin(uTime * (0.86 + aGlyph * 0.025) + aGlyph * 1.43) * 0.16;
+        p.y += slowWave * 0.045
+          + sin(uTime * 1.18 + letterPhase) * 0.14
+          + hop * (0.38 + 0.035 * mod(aGlyph, 3.0))
+          - landing * 0.075;
+        p.z += depthBreath * (0.5 + 0.06 * sin(aGlyph * 1.9))
+          + sin(uTime * 0.62 + aPhase + aAnchor.x * 0.52) * 0.09
+          + cos(uTime * (0.91 + aGlyph * 0.02) + aGlyph * 0.77) * 0.18
+          - hop * 0.14;
         float glyphHit = 1.0 - step(0.5, abs(aGlyph - uBurstGlyph));
         float burst = glyphHit * uBurstProgress;
         vec3 burstCenter = vec3(aLetterCenter, -0.08, 0.0);
@@ -289,12 +304,13 @@ function makeDadakidoNebulaMaterial() {
 
         vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mvPosition;
+        vScreenPosition = gl_Position.xy / max(gl_Position.w, 0.0001);
 
         float pulse = 0.82 + 0.1 * sin(uTime * 0.72 + aPhase + aGlyph * 0.43);
         float depthScale = 1.0 + p.z * 0.18 + depthBreath * 0.13;
-        gl_PointSize = aSize * depthScale * pulse * (1.0 + burst * 1.8) * 790.0 * uPixelRatio / max(-mvPosition.z, 0.01);
+        gl_PointSize = aSize * depthScale * pulse * (1.0 + burst * 1.8) * 960.0 * uPixelRatio / max(-mvPosition.z, 0.01);
         vColor = color;
-        vAlpha = aAlpha * pulse * smoothstep(0.0, 1.0, uReveal) * (0.56 + depthScale * 0.08) * (1.0 + burst * 0.9);
+        vAlpha = aAlpha * pulse * smoothstep(0.0, 1.0, uReveal) * (0.82 + depthScale * 0.12) * (1.0 + burst * 0.9);
         vDepth = -mvPosition.z;
       }
     `,
@@ -302,6 +318,10 @@ function makeDadakidoNebulaMaterial() {
       varying vec3 vColor;
       varying float vAlpha;
       varying float vDepth;
+      varying vec2 vScreenPosition;
+      uniform float uFrontOccluderCount;
+      uniform vec4 uFrontOccluders[${MAX_DADAKIDO_OCCLUDERS}];
+      uniform float uFrontOccluderStrengths[${MAX_DADAKIDO_OCCLUDERS}];
 
       void main() {
         vec2 p = gl_PointCoord - vec2(0.5);
@@ -311,6 +331,19 @@ function makeDadakidoNebulaMaterial() {
         float outer = smoothstep(0.64, 0.06, d) * 0.11;
         float alpha = (core + halo + outer) * vAlpha;
         alpha *= 1.0 - smoothstep(16.0, 28.0, vDepth) * 0.18;
+        float foregroundMask = 0.0;
+        for (int i = 0; i < ${MAX_DADAKIDO_OCCLUDERS}; i += 1) {
+          if (float(i) >= uFrontOccluderCount) break;
+          vec4 occluder = uFrontOccluders[i];
+          vec2 relative = (vScreenPosition - occluder.xy) / max(occluder.zw, vec2(0.001));
+          float softMask = 1.0 - smoothstep(0.38, 1.12, dot(relative, relative));
+          foregroundMask = max(
+            foregroundMask,
+            softMask * uFrontOccluderStrengths[i]
+          );
+        }
+        alpha *= 1.0 - foregroundMask * 0.98;
+        if (alpha < 0.002) discard;
         gl_FragColor = vec4(vColor, alpha);
       }
     `
@@ -349,9 +382,9 @@ function createDadakidoNebula(): DadakidoNebulaLayer {
       letterCenters,
       index: i,
       position,
-      color: colorForSample(sample, random),
-      size: THREE.MathUtils.lerp(0.011, 0.034, random() ** 0.62),
-      alpha: THREE.MathUtils.lerp(0.18, 0.52, sample.density) * THREE.MathUtils.lerp(0.72, 0.96, random()),
+      color: colorForSample(sample),
+      size: THREE.MathUtils.lerp(0.018, 0.048, random() ** 0.62),
+      alpha: THREE.MathUtils.lerp(0.42, 0.76, sample.density) * THREE.MathUtils.lerp(0.84, 0.98, random()),
       phase: random() * Math.PI * 2,
       glyph: sample.glyph
     });
@@ -380,9 +413,9 @@ function createDadakidoNebula(): DadakidoNebulaLayer {
       letterCenters,
       index,
       position,
-      color: colorForSample(sample, random).lerp(new THREE.Color('#f7f3ff'), random() * 0.08),
-      size: THREE.MathUtils.lerp(0.018, 0.072, random() ** 1.2),
-      alpha: THREE.MathUtils.lerp(0.014, 0.062, random()),
+      color: colorForSample(sample).lerp(new THREE.Color('#ffffff'), random() * 0.022),
+      size: THREE.MathUtils.lerp(0.022, 0.078, random() ** 1.2),
+      alpha: THREE.MathUtils.lerp(0.028, 0.085, random()),
       phase: random() * Math.PI * 2,
       glyph: sample.glyph
     });
@@ -412,9 +445,9 @@ function createDadakidoNebula(): DadakidoNebulaLayer {
       letterCenters,
       index,
       position,
-      color: colorForSample(sample, random).lerp(new THREE.Color('#64d9ff'), 0.12),
-      size: THREE.MathUtils.lerp(0.012, 0.04, random() ** 0.8),
-      alpha: THREE.MathUtils.lerp(0.016, 0.066, random()),
+      color: colorForSample(sample),
+      size: THREE.MathUtils.lerp(0.017, 0.048, random() ** 0.8),
+      alpha: THREE.MathUtils.lerp(0.026, 0.075, random()),
       phase: random() * Math.PI * 2,
       glyph: sample.glyph
     });
@@ -438,6 +471,11 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
   const groupRef = useRef<THREE.Group>(null);
   const burstRef = useRef({ glyph: -1, startedAt: -100 });
   const lastAutoPulseRef = useRef(0);
+  const occluderCenterRef = useRef(new THREE.Vector3());
+  const occluderRightPointRef = useRef(new THREE.Vector3());
+  const occluderUpPointRef = useRef(new THREE.Vector3());
+  const cameraRightRef = useRef(new THREE.Vector3());
+  const cameraUpRef = useRef(new THREE.Vector3());
   const [layer, setLayer] = useState<DadakidoNebulaLayer | null>(null);
   const nebulaPulse = useAutoCosmicInteractionStore((state) => state.nebulaPulse);
   const { width, height } = useThree((s) => s.size);
@@ -471,7 +509,7 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
     };
   }, [nebulaPulse]);
 
-  useFrame(({ clock }) => {
+  useFrame(({ clock, camera }) => {
     if (!layer) return;
     const time = clock.elapsedTime;
     const burstAge = performance.now() * 0.001 - burstRef.current.startedAt;
@@ -486,11 +524,38 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
       reveal,
       0.045
     );
+    cameraRightRef.current.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+    cameraUpRef.current.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+    const projectedOccluders = layer.material.uniforms.uFrontOccluders.value as THREE.Vector4[];
+    const projectedOccluderStrengths = layer.material.uniforms.uFrontOccluderStrengths.value as Float32Array;
+    let occluderCount = 0;
+    for (const occluder of getDadakidoOccluders()) {
+      if (occluderCount >= MAX_DADAKIDO_OCCLUDERS) break;
+      occluderCenterRef.current.copy(occluder.position).project(camera);
+      if (occluderCenterRef.current.z < -1 || occluderCenterRef.current.z > 1) continue;
+      occluderRightPointRef.current.copy(occluder.position)
+        .addScaledVector(cameraRightRef.current, occluder.radiusX)
+        .project(camera);
+      occluderUpPointRef.current.copy(occluder.position)
+        .addScaledVector(cameraUpRef.current, occluder.radiusY)
+        .project(camera);
+      const radiusX = Math.abs(occluderRightPointRef.current.x - occluderCenterRef.current.x);
+      const radiusY = Math.abs(occluderUpPointRef.current.y - occluderCenterRef.current.y);
+      if (radiusX < 0.001 || radiusY < 0.001) continue;
+      projectedOccluders[occluderCount].set(
+        occluderCenterRef.current.x,
+        occluderCenterRef.current.y,
+        radiusX,
+        radiusY
+      );
+      projectedOccluderStrengths[occluderCount] = occluder.strength;
+      occluderCount += 1;
+    }
+    projectedOccluderStrengths.fill(0, occluderCount);
+    layer.material.uniforms.uFrontOccluderCount.value = occluderCount;
 
     if (groupRef.current) {
-      groupRef.current.rotation.y = Math.sin(time * 0.18) * 0.24;
-      groupRef.current.rotation.x = Math.sin(time * 0.09) * 0.08;
-      groupRef.current.rotation.z = Math.sin(time * 0.045) * 0.018;
+      groupRef.current.rotation.set(0, 0, 0);
     }
   });
 
@@ -505,9 +570,15 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
         DADAKIDO_WORLD_POSITION[2]
       ]}
       scale={[scale, scale, scale]}
-      renderOrder={4}
+      renderOrder={DADAKIDO_RENDER_ORDER}
     >
-      <points geometry={layer.geometry} material={layer.material} renderOrder={4} frustumCulled={false} raycast={() => null} />
+      <points
+        geometry={layer.geometry}
+        material={layer.material}
+        renderOrder={DADAKIDO_RENDER_ORDER}
+        frustumCulled={false}
+        raycast={() => null}
+      />
       {GLYPH_CENTERS.map((center, glyph) => (
         <mesh
           key={`${GLYPHS[glyph]}-${glyph}`}

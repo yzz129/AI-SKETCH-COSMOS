@@ -10,17 +10,25 @@ type CreaturePulse = {
   creatureId: string | null;
 };
 
+type PlanetPulse = {
+  id: number;
+  planetIndex: number;
+};
+
 type AutoCosmicInteractionState = {
-  planetPulseId: number;
+  planetPulse: PlanetPulse;
   nebulaPulse: NebulaPulse;
   creaturePulse: CreaturePulse;
-  triggerPlanetPulse: () => void;
+  triggerPlanetPulse: (planetIndex: number) => void;
   triggerNebulaPulse: (glyph: number) => void;
   triggerCreatureBurst: (creatureId: string) => void;
 };
 
 export const useAutoCosmicInteractionStore = create<AutoCosmicInteractionState>((set) => ({
-  planetPulseId: 0,
+  planetPulse: {
+    id: 0,
+    planetIndex: -1
+  },
   nebulaPulse: {
     id: 0,
     glyph: 0
@@ -29,8 +37,11 @@ export const useAutoCosmicInteractionStore = create<AutoCosmicInteractionState>(
     id: 0,
     creatureId: null
   },
-  triggerPlanetPulse: () => set((state) => ({
-    planetPulseId: state.planetPulseId + 1
+  triggerPlanetPulse: (planetIndex) => set((state) => ({
+    planetPulse: {
+      id: state.planetPulse.id + 1,
+      planetIndex
+    }
   })),
   triggerNebulaPulse: (glyph) => set((state) => ({
     nebulaPulse: {

@@ -5,11 +5,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .storage import output_roots
+
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = BACKEND_ROOT / "data"
 DB_PATH = DATA_DIR / "cosmos.db"
-OUTPUT_ROOT = BACKEND_ROOT / "outputs"
 
 
 def _now_iso() -> str:
@@ -44,6 +45,13 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             aspect REAL,
             features_json TEXT,
             gaussian_json TEXT,
+            evolution_level INTEGER NOT NULL DEFAULT 0,
+            evolution_experience REAL NOT NULL DEFAULT 0,
+            evolution_victories INTEGER NOT NULL DEFAULT 0,
+            evolution_defeats INTEGER NOT NULL DEFAULT 0,
+            evolution_planet_traps INTEGER NOT NULL DEFAULT 0,
+            evolution_revision INTEGER NOT NULL DEFAULT 0,
+            evolution_updated_at TEXT,
             is_deleted INTEGER NOT NULL DEFAULT 0,
             deleted_at TEXT,
             created_at TEXT NOT NULL,
@@ -56,6 +64,18 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE artworks ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
     if "deleted_at" not in columns:
         conn.execute("ALTER TABLE artworks ADD COLUMN deleted_at TEXT")
+    evolution_columns = {
+        "evolution_level": "INTEGER NOT NULL DEFAULT 0",
+        "evolution_experience": "REAL NOT NULL DEFAULT 0",
+        "evolution_victories": "INTEGER NOT NULL DEFAULT 0",
+        "evolution_defeats": "INTEGER NOT NULL DEFAULT 0",
+        "evolution_planet_traps": "INTEGER NOT NULL DEFAULT 0",
+        "evolution_revision": "INTEGER NOT NULL DEFAULT 0",
+        "evolution_updated_at": "TEXT",
+    }
+    for column_name, column_definition in evolution_columns.items():
+        if column_name not in columns:
+            conn.execute(f"ALTER TABLE artworks ADD COLUMN {column_name} {column_definition}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_artworks_created_at ON artworks(created_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_artworks_deleted_created_at ON artworks(is_deleted, created_at DESC)")
     conn.commit()
@@ -86,9 +106,26 @@ def upsert_generated_artwork(
     ply_url: str | None,
     manifest_url: str | None,
     gaussian_count: int,
+    features: dict[str, Any] | None = None,
+    rig_url: str | None = None,
+    job_id: str | None = None,
 ) -> None:
     now = _now_iso()
     name = source_path.name
+    gaussian_model = {
+        "jobId": job_id or "",
+        "sourceArtworkId": artwork_id,
+        "source": "triposplat",
+        "status": "ready",
+        "format": "both" if splat_url and ply_url else ("splat" if splat_url else "ply"),
+        "splatUrl": splat_url,
+        "plyUrl": ply_url,
+        "previewUrl": preview_url,
+        "manifestUrl": manifest_url,
+        "rigUrl": rig_url,
+        "gaussianCount": gaussian_count,
+        "createdAt": int(datetime.now(timezone.utc).timestamp() * 1000),
+    }
     with _connect() as conn:
         existing = conn.execute("SELECT created_at FROM artworks WHERE id = ?", (artwork_id,)).fetchone()
         created_at = existing["created_at"] if existing else now
@@ -96,9 +133,9 @@ def upsert_generated_artwork(
             """
             INSERT INTO artworks (
                 id, name, source_path, source_url, preview_url, splat_url, ply_url,
-                manifest_url, gaussian_count, created_at, updated_at
+                manifest_url, gaussian_count, features_json, gaussian_json, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 source_path = excluded.source_path,
                 source_url = excluded.source_url,
@@ -107,6 +144,8 @@ def upsert_generated_artwork(
                 ply_url = excluded.ply_url,
                 manifest_url = excluded.manifest_url,
                 gaussian_count = excluded.gaussian_count,
+                features_json = COALESCE(excluded.features_json, artworks.features_json),
+                gaussian_json = excluded.gaussian_json,
                 is_deleted = 0,
                 deleted_at = NULL,
                 updated_at = excluded.updated_at
@@ -121,6 +160,8 @@ def upsert_generated_artwork(
                 ply_url,
                 manifest_url,
                 gaussian_count,
+                _json_dumps(features),
+                _json_dumps(gaussian_model),
                 created_at,
                 now,
             ),
@@ -171,6 +212,46 @@ def update_artwork_metadata(
         return True
 
 
+def update_artwork_evolution(records: list[dict[str, Any]]) -> int:
+    if not records:
+        return 0
+
+    updated = 0
+    now = _now_iso()
+    with _connect() as conn:
+        for record in records:
+            cursor = conn.execute(
+                """
+                UPDATE artworks
+                SET
+                    evolution_level = ?,
+                    evolution_experience = ?,
+                    evolution_victories = ?,
+                    evolution_defeats = ?,
+                    evolution_planet_traps = ?,
+                    evolution_revision = ?,
+                    evolution_updated_at = ?,
+                    updated_at = ?
+                WHERE id = ? AND evolution_revision <= ?
+                """,
+                (
+                    record["level"],
+                    record["experience"],
+                    record["victories"],
+                    record["defeats"],
+                    record["planetTraps"],
+                    record["revision"],
+                    now,
+                    now,
+                    record["artworkId"],
+                    record["revision"],
+                ),
+            )
+            updated += cursor.rowcount
+        conn.commit()
+    return updated
+
+
 def _row_to_artwork(row: sqlite3.Row) -> dict[str, Any]:
     gaussian_model = _json_loads(row["gaussian_json"]) or {
         "jobId": "",
@@ -200,6 +281,15 @@ def _row_to_artwork(row: sqlite3.Row) -> dict[str, Any]:
         "aspect": row["aspect"],
         "features": _json_loads(row["features_json"]),
         "gaussianModel": gaussian_model,
+        "evolution": {
+            "level": row["evolution_level"],
+            "experience": row["evolution_experience"],
+            "victories": row["evolution_victories"],
+            "defeats": row["evolution_defeats"],
+            "planetTraps": row["evolution_planet_traps"],
+            "revision": row["evolution_revision"],
+            "updatedAt": row["evolution_updated_at"],
+        },
         "isDeleted": bool(row["is_deleted"]),
         "deletedAt": row["deleted_at"],
         "createdAt": row["created_at"],
@@ -294,68 +384,71 @@ def delete_artwork_permanently(artwork_id: str, *, delete_files: bool = True) ->
         conn.commit()
 
     if delete_files:
-        artwork_dir = OUTPUT_ROOT / artwork_id
-        if artwork_dir.is_dir() and artwork_dir.resolve().parent == OUTPUT_ROOT.resolve():
-            shutil.rmtree(artwork_dir, ignore_errors=True)
+        for output_root in output_roots():
+            artwork_dir = output_root / artwork_id
+            if artwork_dir.is_dir() and artwork_dir.resolve().parent == output_root.resolve():
+                shutil.rmtree(artwork_dir, ignore_errors=True)
 
     return True
 
 
 def backfill_existing_outputs() -> int:
-    if not OUTPUT_ROOT.is_dir():
+    roots = output_roots()
+    if not roots:
         return 0
 
     imported = 0
     with _connect() as conn:
-        for artwork_dir in OUTPUT_ROOT.iterdir():
-            if not artwork_dir.is_dir():
-                continue
-            artwork_id = artwork_dir.name
-            splat_path = artwork_dir / "model.splat"
-            ply_path = artwork_dir / "model.ply"
-            if not splat_path.is_file() and not ply_path.is_file():
-                continue
+        for output_root in roots:
+            for artwork_dir in output_root.iterdir():
+                if not artwork_dir.is_dir():
+                    continue
+                artwork_id = artwork_dir.name
+                splat_path = artwork_dir / "model.splat"
+                ply_path = artwork_dir / "model.ply"
+                if not splat_path.is_file() and not ply_path.is_file():
+                    continue
 
-            exists = conn.execute("SELECT id FROM artworks WHERE id = ?", (artwork_id,)).fetchone()
-            if exists:
-                continue
+                exists = conn.execute("SELECT id FROM artworks WHERE id = ?", (artwork_id,)).fetchone()
+                if exists:
+                    continue
 
-            source_path = next(artwork_dir.glob("source.*"), None)
-            preview_path = artwork_dir / "preprocessed_image.webp"
-            manifest_path = artwork_dir / "manifest.json"
-            gaussian_count = None
+                source_path = next(artwork_dir.glob("source.*"), None)
+                preview_path = artwork_dir / "preprocessed_image.webp"
+                manifest_path = artwork_dir / "manifest.json"
+                gaussian_count = None
 
-            if manifest_path.is_file():
-                try:
-                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    gaussian_count = manifest.get("gaussianCount")
-                except Exception:
-                    gaussian_count = None
+                if manifest_path.is_file():
+                    try:
+                        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        gaussian_count = manifest.get("gaussianCount")
+                    except Exception:
+                        gaussian_count = None
 
-            created_at = datetime.fromtimestamp(artwork_dir.stat().st_mtime, timezone.utc).isoformat()
-            conn.execute(
-                """
-                INSERT INTO artworks (
-                    id, name, source_path, source_url, preview_url, splat_url, ply_url,
-                    manifest_url, gaussian_count, is_deleted, deleted_at, created_at, updated_at
+                created_at = datetime.fromtimestamp(artwork_dir.stat().st_mtime, timezone.utc).isoformat()
+                conn.execute(
+                    """
+                    INSERT INTO artworks (
+                        id, name, source_path, source_url, preview_url, splat_url, ply_url,
+                        manifest_url, gaussian_count, is_deleted, deleted_at, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                    """,
+                    (
+                        artwork_id,
+                        source_path.name if source_path else artwork_id,
+                        str(source_path) if source_path else None,
+                        f"/assets/{artwork_id}/{source_path.name}" if source_path else None,
+                        f"/assets/{artwork_id}/preprocessed_image.webp" if preview_path.is_file() else None,
+                        f"/assets/{artwork_id}/model.splat" if splat_path.is_file() else None,
+                        f"/assets/{artwork_id}/model.ply" if ply_path.is_file() else None,
+                        f"/assets/{artwork_id}/manifest.json" if manifest_path.is_file() else None,
+                        gaussian_count,
+                        created_at,
+                        _now_iso(),
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
-                """,
-                (
-                    artwork_id,
-                    source_path.name if source_path else artwork_id,
-                    str(source_path) if source_path else None,
-                    f"/assets/{artwork_id}/{source_path.name}" if source_path else None,
-                    f"/assets/{artwork_id}/preprocessed_image.webp" if preview_path.is_file() else None,
-                    f"/assets/{artwork_id}/model.splat" if splat_path.is_file() else None,
-                    f"/assets/{artwork_id}/model.ply" if ply_path.is_file() else None,
-                    f"/assets/{artwork_id}/manifest.json" if manifest_path.is_file() else None,
-                    gaussian_count,
-                    created_at,
-                    _now_iso(),
-                ),
-            )
-            imported += 1
+                imported += 1
         conn.commit()
 
     return imported

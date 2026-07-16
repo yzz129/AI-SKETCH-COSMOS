@@ -10,7 +10,6 @@ function getDensity() {
 }
 
 export function DeepStarField() {
-  const groupRef = useRef<THREE.Group>(null);
   const pointsRef = useRef<THREE.Points>(null);
 
   const { geometry, material } = useMemo(() => {
@@ -67,17 +66,8 @@ export function DeepStarField() {
     }
   });
 
-  useFrame(({ clock }) => {
-    const time = clock.elapsedTime;
-    // Very slow rotation on Y and X — same pattern as reference
-    if (groupRef.current) {
-      groupRef.current.rotation.y = time * 0.005;
-      groupRef.current.rotation.x = time * 0.002;
-    }
-  });
-
   return (
-    <group ref={groupRef}>
+    <group>
       <points
         ref={pointsRef}
         geometry={geometry}

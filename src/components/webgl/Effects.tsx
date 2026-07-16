@@ -13,7 +13,9 @@ const CinematicPass = {
     tDiffuse: { value: null },
     uTime: { value: 0 },
     uVignette: { value: 0.85 },
-    uNoise: { value: 0.015 }
+    uNoise: { value: 0.004 },
+    uResolution: { value: new THREE.Vector2(1280, 720) },
+    uSharpness: { value: 0.14 }
   },
   vertexShader: `
     varying vec2 vUv;
@@ -28,6 +30,8 @@ const CinematicPass = {
     uniform float uTime;
     uniform float uVignette;
     uniform float uNoise;
+    uniform vec2 uResolution;
+    uniform float uSharpness;
     varying vec2 vUv;
 
     float hash(vec2 p) {
@@ -38,9 +42,19 @@ const CinematicPass = {
 
     void main() {
       vec4 color = texture2D(tDiffuse, vUv);
+      vec2 texel = 1.0 / max(uResolution, vec2(1.0));
+      vec3 neighbourAverage = (
+        texture2D(tDiffuse, vUv + vec2(texel.x, 0.0)).rgb
+        + texture2D(tDiffuse, vUv - vec2(texel.x, 0.0)).rgb
+        + texture2D(tDiffuse, vUv + vec2(0.0, texel.y)).rgb
+        + texture2D(tDiffuse, vUv - vec2(0.0, texel.y)).rgb
+      ) * 0.25;
       vec2 p = vUv - vec2(0.5);
       float vignette = smoothstep(0.86, 0.2, length(p * vec2(1.08, 0.92)));
       float grain = hash(vUv * vec2(1280.0, 720.0) + uTime) - 0.5;
+      float luminance = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+      float detailMask = smoothstep(0.025, 0.34, luminance);
+      color.rgb += (color.rgb - neighbourAverage) * uSharpness * detailMask;
       color.rgb *= mix(1.0 - uVignette, 1.0, vignette);
       color.rgb += grain * uNoise;
       gl_FragColor = color;
@@ -117,6 +131,8 @@ export function Effects() {
     const cinematicPass = new ShaderPass(CinematicPass);
     const outputPass = new OutputPass();
 
+    effectComposer.setPixelRatio(Math.min(gl.getPixelRatio(), 2));
+
     effectComposer.addPass(renderPass);
     effectComposer.addPass(bloomPass);
     effectComposer.addPass(collapsePass);
@@ -128,10 +144,16 @@ export function Effects() {
   const collapseStrength = useRef(0);
 
   useEffect(() => {
+    composer.effectComposer.setPixelRatio(Math.min(gl.getPixelRatio(), 2));
     composer.effectComposer.setSize(size.width, size.height);
     composer.bloomPass.setSize(size.width, size.height);
+    const pixelRatio = Math.min(gl.getPixelRatio(), 2);
+    composer.cinematicPass.uniforms.uResolution.value.set(
+      size.width * pixelRatio,
+      size.height * pixelRatio
+    );
     composer.collapsePass.uniforms.uAspect.value = size.width / Math.max(size.height, 1);
-  }, [composer, size.height, size.width]);
+  }, [composer, gl, size.height, size.width]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -172,15 +194,15 @@ export function Effects() {
       delta
     );
 
-    const bloomTarget = spotlightActive ? 0.035 : 0.18 + collapseStrength.current * 0.04;
+    const bloomTarget = spotlightActive ? 0.025 : 0.145 + collapseStrength.current * 0.035;
     composer.bloomPass.strength = THREE.MathUtils.damp(
       composer.bloomPass.strength,
       bloomReady ? bloomTarget : 0,
       3,
       delta
     );
-    composer.bloomPass.threshold = spotlightActive ? 0.86 : 0.72;
-    composer.bloomPass.radius = spotlightActive ? 0.08 : 0.22 + collapseStrength.current * 0.03;
+    composer.bloomPass.threshold = spotlightActive ? 0.88 : 0.77;
+    composer.bloomPass.radius = spotlightActive ? 0.045 : 0.12 + collapseStrength.current * 0.02;
     composer.collapsePass.uniforms.uTime.value = clock.elapsedTime;
     composer.collapsePass.uniforms.uCollapse.value = collapseStrength.current;
     composer.collapsePass.uniforms.uCenter.value.set(collapse.center[0], collapse.center[1]);
@@ -188,7 +210,8 @@ export function Effects() {
       ? (clock.elapsedTime * 0.36) % 1
       : THREE.MathUtils.clamp(releasedSeconds / Math.max(releaseDuration, 0.001), 0, 1);
     composer.cinematicPass.uniforms.uTime.value = clock.elapsedTime;
-    composer.cinematicPass.uniforms.uNoise.value = spotlightActive ? 0.004 : 0.009;
+    composer.cinematicPass.uniforms.uNoise.value = spotlightActive ? 0.001 : 0.0025;
+    composer.cinematicPass.uniforms.uSharpness.value = spotlightActive ? 0.1 : 0.14;
     composer.effectComposer.render(delta);
   }, 1);
 

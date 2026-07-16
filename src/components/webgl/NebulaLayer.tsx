@@ -1,5 +1,5 @@
-import { useFrame, useThree } from '@react-three/fiber';
-import { useMemo, useRef } from 'react';
+import { useThree } from '@react-three/fiber';
+import { useMemo } from 'react';
 import * as THREE from 'three';
 
 type NebulaSpec = {
@@ -12,8 +12,6 @@ type NebulaSpec = {
   colorA: THREE.Color;
   colorB: THREE.Color;
   sizeRange: [number, number];
-  rotSpeed: number;
-  rotAxis: [number, number, number];
 };
 
 type DarkCloudSpec = {
@@ -24,7 +22,6 @@ type DarkCloudSpec = {
   sy: number;
   count: number;
   color: THREE.Color;
-  rotSpeed: number;
 };
 
 type ParticleCloud = {
@@ -34,24 +31,24 @@ type ParticleCloud = {
 
 // Base nebula positions — spread to edges, responsive scaling applied at render
 const BASE_NEBULAE: NebulaSpec[] = [
-  { center: [-6.3, 2.8, -9.5], radiusX: 2.4, radiusY: 1.35, radiusZ: 1.8, count: 7500, opacity: 0.3, colorA: new THREE.Color('#64d9ff'), colorB: new THREE.Color('#7b4dff'), sizeRange: [0.004, 0.032], rotSpeed: 0.12, rotAxis: [0.02, 0, 0.98] },
-  { center: [6.0, 2.9, -9.0], radiusX: 2.1, radiusY: 1.2, radiusZ: 1.6, count: 6500, opacity: 0.28, colorA: new THREE.Color('#7b4dff'), colorB: new THREE.Color('#f7d6ff'), sizeRange: [0.004, 0.029], rotSpeed: -0.14, rotAxis: [-0.03, 0.02, 0.96] },
-  { center: [-6.0, -3.0, -9.0], radiusX: 2.0, radiusY: 1.15, radiusZ: 1.6, count: 6200, opacity: 0.28, colorA: new THREE.Color('#3a2a8c'), colorB: new THREE.Color('#64d9ff'), sizeRange: [0.004, 0.028], rotSpeed: -0.15, rotAxis: [-0.04, -0.02, 0.94] },
-  { center: [6.3, -2.8, -8.5], radiusX: 1.9, radiusY: 1.1, radiusZ: 1.55, count: 5800, opacity: 0.26, colorA: new THREE.Color('#7b4dff'), colorB: new THREE.Color('#64d9ff'), sizeRange: [0.004, 0.026], rotSpeed: 0.11, rotAxis: [0.03, -0.04, 0.93] },
-  { center: [-6.8, 0.2, -10.2], radiusX: 1.4, radiusY: 1.1, radiusZ: 1.2, count: 4200, opacity: 0.24, colorA: new THREE.Color('#d76bff'), colorB: new THREE.Color('#f3a6ff'), sizeRange: [0.003, 0.023], rotSpeed: -0.2, rotAxis: [-0.05, 0.01, 0.9] },
-  { center: [6.8, -0.3, -10.0], radiusX: 1.35, radiusY: 1.0, radiusZ: 1.15, count: 3800, opacity: 0.23, colorA: new THREE.Color('#1e7ce6'), colorB: new THREE.Color('#d76bff'), sizeRange: [0.003, 0.021], rotSpeed: 0.18, rotAxis: [0.04, -0.03, 0.9] },
-  { center: [-0.4, 3.5, -11.5], radiusX: 1.5, radiusY: 1.25, radiusZ: 1.3, count: 4800, opacity: 0.25, colorA: new THREE.Color('#64d9ff'), colorB: new THREE.Color('#d76bff'), sizeRange: [0.003, 0.025], rotSpeed: 0.09, rotAxis: [0.01, -0.02, 0.98] },
-  { center: [0.3, -3.5, -11.2], radiusX: 1.55, radiusY: 1.05, radiusZ: 1.35, count: 4600, opacity: 0.25, colorA: new THREE.Color('#3a2a8c'), colorB: new THREE.Color('#f7f3ff'), sizeRange: [0.003, 0.024], rotSpeed: -0.1, rotAxis: [-0.02, 0.03, 0.97] },
+  { center: [-4.7, 2.7, -9.5], radiusX: 1.8, radiusY: 1.05, radiusZ: 1.5, count: 5600, opacity: 0.27, colorA: new THREE.Color('#64d9ff'), colorB: new THREE.Color('#7b4dff'), sizeRange: [0.004, 0.03] },
+  { center: [5.0, 2.5, -9.0], radiusX: 1.65, radiusY: 1.0, radiusZ: 1.4, count: 5100, opacity: 0.26, colorA: new THREE.Color('#7b4dff'), colorB: new THREE.Color('#f7d6ff'), sizeRange: [0.004, 0.028] },
+  { center: [-4.8, -2.6, -9.0], radiusX: 1.7, radiusY: 1.0, radiusZ: 1.4, count: 5000, opacity: 0.26, colorA: new THREE.Color('#3a2a8c'), colorB: new THREE.Color('#64d9ff'), sizeRange: [0.004, 0.027] },
+  { center: [4.5, -2.7, -8.5], radiusX: 1.6, radiusY: 0.95, radiusZ: 1.35, count: 4800, opacity: 0.24, colorA: new THREE.Color('#7b4dff'), colorB: new THREE.Color('#64d9ff'), sizeRange: [0.004, 0.025] },
+  { center: [-7.4, 1.15, -10.2], radiusX: 1.15, radiusY: 0.9, radiusZ: 1.05, count: 3200, opacity: 0.22, colorA: new THREE.Color('#d76bff'), colorB: new THREE.Color('#f3a6ff'), sizeRange: [0.003, 0.022] },
+  { center: [7.4, -1.1, -10.0], radiusX: 1.1, radiusY: 0.85, radiusZ: 1.0, count: 3000, opacity: 0.21, colorA: new THREE.Color('#1e7ce6'), colorB: new THREE.Color('#d76bff'), sizeRange: [0.003, 0.02] },
+  { center: [0, 4.25, -11.5], radiusX: 1.25, radiusY: 0.9, radiusZ: 1.1, count: 3400, opacity: 0.23, colorA: new THREE.Color('#64d9ff'), colorB: new THREE.Color('#d76bff'), sizeRange: [0.003, 0.024] },
+  { center: [0, -4.15, -11.2], radiusX: 1.3, radiusY: 0.85, radiusZ: 1.15, count: 3300, opacity: 0.23, colorA: new THREE.Color('#3a2a8c'), colorB: new THREE.Color('#f7f3ff'), sizeRange: [0.003, 0.023] },
 ];
 
 const DARK_CLOUDS: DarkCloudSpec[] = [
-  { x: -6.5, y: -2.9, zRange: [-6.4, -3.6], sx: 2.2, sy: 0.8, count: 480, color: new THREE.Color('#020611'), rotSpeed: -0.04 },
-  { x: 6.3, y: -2.9, zRange: [-7.0, -3.8], sx: 2.5, sy: 1.05, count: 560, color: new THREE.Color('#08142e'), rotSpeed: 0.05 },
-  { x: -6.7, y: 2.4, zRange: [-8.0, -4.2], sx: 1.0, sy: 2.6, count: 380, color: new THREE.Color('#160b2f'), rotSpeed: -0.06 },
-  { x: 6.6, y: 1.8, zRange: [-8.0, -4.2], sx: 1.1, sy: 2.4, count: 380, color: new THREE.Color('#0c0524'), rotSpeed: 0.07 },
-  { x: -6.2, y: 2.9, zRange: [-7.5, -4.0], sx: 1.4, sy: 0.9, count: 300, color: new THREE.Color('#0a0418'), rotSpeed: -0.05 },
-  { x: 5.8, y: 2.9, zRange: [-7.5, -4.0], sx: 1.3, sy: 0.85, count: 280, color: new THREE.Color('#0c0524'), rotSpeed: 0.06 },
-  { x: -6.2, y: -0.3, zRange: [-6.5, -3.4], sx: 2.2, sy: 0.7, count: 360, color: new THREE.Color('#03081a'), rotSpeed: -0.03 },
+  { x: -4.8, y: -2.7, zRange: [-6.4, -3.6], sx: 1.7, sy: 0.7, count: 390, color: new THREE.Color('#020611') },
+  { x: 4.6, y: -2.8, zRange: [-7.0, -3.8], sx: 1.8, sy: 0.8, count: 420, color: new THREE.Color('#08142e') },
+  { x: -7.3, y: 1.2, zRange: [-8.0, -4.2], sx: 0.9, sy: 1.8, count: 300, color: new THREE.Color('#160b2f') },
+  { x: 7.3, y: -1.1, zRange: [-8.0, -4.2], sx: 0.9, sy: 1.8, count: 300, color: new THREE.Color('#0c0524') },
+  { x: -4.5, y: 2.7, zRange: [-7.5, -4.0], sx: 1.1, sy: 0.7, count: 250, color: new THREE.Color('#0a0418') },
+  { x: 5.0, y: 2.5, zRange: [-7.5, -4.0], sx: 1.1, sy: 0.7, count: 240, color: new THREE.Color('#0c0524') },
+  { x: 0, y: -4.0, zRange: [-6.5, -3.4], sx: 1.6, sy: 0.6, count: 280, color: new THREE.Color('#03081a') },
 ];
 
 function createNebulaPoints(spec: NebulaSpec): ParticleCloud {
@@ -246,28 +243,12 @@ function createDarkCloudPoints(spec: DarkCloudSpec): ParticleCloud {
 }
 
 function NebulaCloud({ spec, xScale, yScale }: { spec: NebulaSpec; xScale: number; yScale: number }) {
-  const groupRef = useRef<THREE.Group>(null);
   const cloud = useMemo(() => createNebulaPoints(spec), [spec]);
   const sx = spec.center[0] * xScale;
   const sy = spec.center[1] * yScale;
 
-  useFrame(({ clock }) => {
-    cloud.material.uniforms.uTime.value = clock.elapsedTime;
-    if (groupRef.current) {
-      const t = clock.elapsedTime;
-      const [ax, ay, az] = spec.rotAxis;
-      groupRef.current.rotation.set(
-        ax * t * spec.rotSpeed * 2.2 + Math.sin(t * 0.13 + spec.radiusX) * 0.045,
-        ay * t * spec.rotSpeed * 2.0 + Math.cos(t * 0.11 + spec.radiusY) * 0.05,
-        az * t * spec.rotSpeed * 2.45
-      );
-      const breathe = 1 + Math.sin(t * 0.18 + spec.radiusZ) * 0.045;
-      groupRef.current.scale.setScalar(breathe);
-    }
-  });
-
   return (
-    <group ref={groupRef} position={[sx, sy, spec.center[2]]}>
+    <group position={[sx, sy, spec.center[2]]}>
       <points
         geometry={cloud.geometry}
         material={cloud.material}
@@ -281,25 +262,14 @@ function NebulaCloud({ spec, xScale, yScale }: { spec: NebulaSpec; xScale: numbe
 }
 
 function DarkCloud({ spec, xScale, yScale }: { spec: DarkCloudSpec; xScale: number; yScale: number }) {
-  const groupRef = useRef<THREE.Group>(null);
   const cloud = useMemo(() => createDarkCloudPoints(spec), [spec]);
-
-  useFrame(({ clock }) => {
-    cloud.material.uniforms.uTime.value = clock.elapsedTime;
-    if (groupRef.current) {
-      const time = clock.elapsedTime;
-      groupRef.current.rotation.z = time * spec.rotSpeed * 2.15;
-      groupRef.current.rotation.x = Math.sin(time * 0.12 + spec.x) * 0.035;
-      groupRef.current.rotation.y = Math.cos(time * 0.1 + spec.y) * 0.04;
-    }
-  });
 
   const sx = spec.x * xScale;
   const sy = spec.y * yScale;
   const midZ = (spec.zRange[0] + spec.zRange[1]) * 0.5;
 
   return (
-    <group ref={groupRef} position={[sx, sy, midZ]}>
+    <group position={[sx, sy, midZ]}>
       <points
         geometry={cloud.geometry}
         material={cloud.material}

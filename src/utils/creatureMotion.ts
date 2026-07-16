@@ -1,3 +1,5 @@
+import * as THREE from 'three';
+
 export type CreatureMotionType = 'fly' | 'hop' | 'swim' | 'run' | 'walk' | 'crawl' | 'float';
 
 export const CREATURE_ACTION_TYPES = [
@@ -22,7 +24,12 @@ export const CREATURE_ACTION_TYPES = [
   'stretch',
   'trail',
   'approach',
-  'retreat'
+  'retreat',
+  'spin',
+  'jump',
+  'soar',
+  'accelerate',
+  'bounce'
 ] as const;
 
 export type CreatureActionType = typeof CREATURE_ACTION_TYPES[number];
@@ -77,6 +84,9 @@ export type CreatureActionPose = {
   scaleZ: number;
   flowMultiplier: number;
   trailMultiplier: number;
+  spin: number;
+  speedMultiplier: number;
+  impact: number;
 };
 
 export type CreatureMotionPreset = {
@@ -204,10 +214,28 @@ export function createCreatureMotionConfig(
   };
 }
 
-export function pickCreatureAction(actions: CreatureActionType[], time: number, phase: number) {
+export function pickCreatureAction(
+  actions: CreatureActionType[],
+  time: number,
+  phase: number,
+  motionType: CreatureMotionType = 'float'
+) {
+  const segment = Math.floor((time + phase * 2.7) / 4.6);
+  const naturalActions: Record<CreatureMotionType, CreatureActionType[]> = {
+    fly: ['soar', 'glide', 'flutter', 'accelerate', 'spin'],
+    swim: ['swim', 'sweep', 'dart', 'accelerate', 'drift'],
+    hop: ['hop', 'jump', 'bounce', 'approach'],
+    run: ['accelerate', 'jump', 'approach', 'retreat'],
+    walk: ['approach', 'bounce', 'drift', 'retreat'],
+    crawl: ['wiggle', 'accelerate', 'approach', 'retreat'],
+    float: ['drift', 'soar', 'spin', 'bounce', 'orbit']
+  };
+  if (segment % 4 === 0) {
+    const choices = naturalActions[motionType];
+    return choices[Math.abs(segment + Math.floor(phase * 7)) % choices.length];
+  }
   if (actions.length === 0) return 'drift';
 
-  const segment = Math.floor((time + phase * 2.7) / 4.6);
   const noise = Math.sin(segment * 12.9898 + phase * 78.233) * 43758.5453;
   const index = Math.abs(Math.floor(noise)) % actions.length;
   return actions[index];
@@ -227,7 +255,10 @@ export function getCreatureActionPose(action: CreatureActionType, time: number, 
     scaleY: 1,
     scaleZ: 1,
     flowMultiplier: 1,
-    trailMultiplier: 1
+    trailMultiplier: 1,
+    spin: 0,
+    speedMultiplier: 1,
+    impact: 0
   };
 
   switch (action) {
@@ -279,6 +310,22 @@ export function getCreatureActionPose(action: CreatureActionType, time: number, 
       return { ...none, offsetZ: Math.sin(time * 0.7 + phase) * 0.12 + 0.06, scaleX: 1.02, scaleY: 1.02, trailMultiplier: 0.88 };
     case 'retreat':
       return { ...none, offsetX: Math.sin(time * 1.2 + phase) * -0.08, offsetZ: -0.1 + Math.cos(time * 0.7 + phase) * 0.05, roll: drift * -0.11, trailMultiplier: 1.18 };
+    case 'spin':
+      return { ...none, offsetY: Math.sin(time * 1.8 + phase) * 0.08, spin: 1, flowMultiplier: 1.18, trailMultiplier: 1.42 };
+    case 'jump': {
+      const jump = Math.max(0, Math.sin(time * 2.15 + phase));
+      return { ...none, offsetY: jump * 0.58, scaleX: 1 + (1 - jump) * 0.06, scaleY: 0.94 + jump * 0.13, impact: 1 - jump, trailMultiplier: 0.92 };
+    }
+    case 'soar':
+      return { ...none, offsetY: Math.sin(time * 0.8 + phase) * 0.24 + 0.12, offsetZ: Math.cos(time * 0.55 + phase) * 0.14, roll: Math.sin(time * 0.72 + phase) * 0.2, yaw: Math.cos(time * 0.48 + phase) * 0.16, flowMultiplier: 1.12, trailMultiplier: 1.5 };
+    case 'accelerate': {
+      const acceleration = THREE.MathUtils.smootherstep(Math.max(0, Math.sin(time * 1.55 + phase)), 0, 1);
+      return { ...none, offsetX: acceleration * 0.18, offsetZ: acceleration * -0.12, scaleX: 1 + acceleration * 0.08, scaleY: 1 - acceleration * 0.035, speedMultiplier: 1 + acceleration * 1.25, flowMultiplier: 1.28, trailMultiplier: 1.72 };
+    }
+    case 'bounce': {
+      const bounce = Math.abs(Math.sin(time * 2.8 + phase));
+      return { ...none, offsetY: bounce * 0.32, roll: Math.sin(time * 2.8 + phase) * 0.13, scaleX: 1 + (1 - bounce) * 0.07, scaleY: 0.95 + bounce * 0.1, impact: 1 - bounce };
+    }
     case 'drift':
     default:
       return { ...none, offsetX: drift * 0.04, offsetY: Math.sin(time * 0.82 + phase) * 0.08, offsetZ: Math.cos(time * 0.58 + phase) * 0.05, roll: drift * 0.04, flowMultiplier: 0.86 };

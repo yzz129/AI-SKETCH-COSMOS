@@ -1,4 +1,3 @@
-import { useFrame } from '@react-three/fiber';
 import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
 
@@ -81,10 +80,6 @@ export function ForegroundBokehDust() {
 
     return { geometry, material };
   }, []);
-
-  useFrame(({ clock }) => {
-    material.uniforms.uTime.value = clock.elapsedTime;
-  });
 
   return <points ref={pointsRef} geometry={geometry} material={material} renderOrder={13} frustumCulled={false} raycast={() => null} />;
 }

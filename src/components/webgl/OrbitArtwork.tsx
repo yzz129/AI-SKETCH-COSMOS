@@ -1,60 +1,83 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useArtworkStore } from '../../stores/artworkStore';
+import { useSketchStore } from '../../stores/useSketchStore';
 import { ArtworkEntity } from './ArtworkEntity';
 
-const MAX_ACTIVE_ARTWORKS = 50;
+const INITIAL_MODEL_COUNT = 2;
+const INITIAL_MODEL_STAGGER_MS = 560;
 
 export function OrbitArtwork() {
   const artworks = useArtworkStore((state) => state.artworks);
-  const activeArtworks = artworks.slice(0, MAX_ACTIVE_ARTWORKS);
-  const [visibleCount, setVisibleCount] = useState(0);
-  const previousLengthRef = useRef(0);
+  const activeCreatureId = useSketchStore((state) => state.spotlight.creatureId);
+  const requestedCreatureId = useSketchStore((state) => state.spotlight.requestedCreatureId);
+  const pendingCreatureId = useSketchStore((state) => state.spotlight.pendingCreatureId);
+  const admittedIdsRef = useRef(new Set<string>());
+  const stableIndexesRef = useRef(new Map<string, number>());
+  const nextStableIndexRef = useRef(0);
+  const [mountedCount, setMountedCount] = useState(0);
+  const targetVisibleCount = artworks.length;
+  const visibleCount = Math.min(mountedCount, targetVisibleCount);
+  const orderedArtworks = useMemo(
+    () => [...artworks].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id)),
+    [artworks]
+  );
+
+  const visibleArtworks = useMemo(() => {
+    const existingIds = new Set(artworks.map((artwork) => artwork.id));
+    for (const id of admittedIdsRef.current) {
+      if (!existingIds.has(id)) admittedIdsRef.current.delete(id);
+    }
+    for (const artwork of orderedArtworks) {
+      if (!stableIndexesRef.current.has(artwork.id)) {
+        stableIndexesRef.current.set(artwork.id, nextStableIndexRef.current++);
+      }
+    }
+    for (const artwork of orderedArtworks.slice(0, visibleCount)) {
+      admittedIdsRef.current.add(artwork.id);
+    }
+    for (const priorityId of [activeCreatureId, requestedCreatureId, pendingCreatureId]) {
+      if (priorityId && existingIds.has(priorityId)) admittedIdsRef.current.add(priorityId);
+    }
+    return orderedArtworks
+      .filter((artwork) => admittedIdsRef.current.has(artwork.id))
+      .map((artwork) => ({
+        artwork,
+        globalIndex: stableIndexesRef.current.get(artwork.id) ?? 0
+      }));
+  }, [activeCreatureId, artworks, orderedArtworks, pendingCreatureId, requestedCreatureId, visibleCount]);
 
   useEffect(() => {
-    const activeLength = activeArtworks.length;
-    const previousLength = previousLengthRef.current;
-    previousLengthRef.current = activeLength;
-
-    if (activeLength === 0) {
-      setVisibleCount(0);
+    if (targetVisibleCount === 0) {
+      setMountedCount(0);
       return;
     }
 
-    if (previousLength > 0) {
-      setVisibleCount((count) => {
-        if (activeLength > previousLength) {
-          return Math.min(activeLength, count + activeLength - previousLength);
-        }
-        return Math.min(count, activeLength);
-      });
-      return;
-    }
+    setMountedCount((current) => current === 0
+      ? Math.min(INITIAL_MODEL_COUNT, targetVisibleCount)
+      : Math.min(current, targetVisibleCount));
 
-    setVisibleCount(Math.min(2, activeLength));
-
-    let mounted = true;
-    let nextCount = Math.min(2, activeLength);
     const intervalId = window.setInterval(() => {
-      if (!mounted) return;
+      setMountedCount((current) => {
+        if (current >= targetVisibleCount) {
+          window.clearInterval(intervalId);
+          return current;
+        }
+        return current + 1;
+      });
+    }, INITIAL_MODEL_STAGGER_MS);
 
-      nextCount += 1;
-      setVisibleCount(Math.min(nextCount, activeLength));
-
-      if (nextCount >= activeLength) {
-        window.clearInterval(intervalId);
-      }
-    }, 850);
-
-    return () => {
-      mounted = false;
-      window.clearInterval(intervalId);
-    };
-  }, [activeArtworks.length]);
+    return () => window.clearInterval(intervalId);
+  }, [targetVisibleCount]);
 
   return (
     <>
-      {activeArtworks.slice(0, visibleCount).map((artwork, index) => (
-        <ArtworkEntity key={artwork.id} artwork={artwork} index={index} />
+      {visibleArtworks.map(({ artwork, globalIndex }) => (
+        <ArtworkEntity
+          key={artwork.id}
+          artwork={artwork}
+          index={globalIndex}
+          showEntryTrail={false}
+        />
       ))}
     </>
   );

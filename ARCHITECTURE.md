@@ -496,7 +496,7 @@ type Artwork3DModelResult = { modelUrl: string; thumbnailUrl?: string };
 **工作流程**：
 1. 接收 base64 图片
 2. 调用火山方舟 Ark API（`POST https://ark.cn-beijing.volces.com/api/v3/responses`）
-3. 模型：`doubao-seed-2-0-lite-260428`
+3. 模型：`doubao-seed-2-0-mini-260428`（后台语义部位识别通过 `volcenginesdkarkruntime.Ark.responses.create` 调用）
 4. 传递精心设计的 System Prompt，要求输出结构化 JSON
 5. 解析返回的 JSON，提取画作特征
 

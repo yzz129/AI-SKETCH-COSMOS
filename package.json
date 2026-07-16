@@ -6,13 +6,19 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "test:occlusion": "node --test scripts/dadakido-occlusion.test.mjs",
+    "test:evolution": "node --test scripts/creature-evolution.test.mjs",
+    "test:part-actions": "node --test scripts/creature-part-actions.test.mjs scripts/joint-motion-math.test.mjs",
+    "test:skinning": "node --test scripts/gpu-splat-skinning.test.mjs",
+    "test:spotlight": "node --test scripts/spotlight-motion.test.mjs",
+    "test:portals": "node --test scripts/galaxy-portal-routing.test.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
     "@react-three/postprocessing": "^3.0.4",
-    "@sparkjsdev/spark": "^0.1.10",
+    "@sparkjsdev/spark": "0.1.10",
     "@vitejs/plugin-react": "^4.3.4",
     "gsap": "^3.15.0",
     "lucide-react": "^0.468.0",

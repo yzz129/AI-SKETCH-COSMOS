@@ -11,9 +11,18 @@ type CreatureAuraParticlesProps = {
   seed: number;
   motionType: CreatureMotionType;
   spotlightFocusRef?: MutableRefObject<number>;
+  renderOrderRef?: MutableRefObject<number>;
 };
 
-export function CreatureAuraParticles({ particles, width, height, seed, motionType, spotlightFocusRef }: CreatureAuraParticlesProps) {
+export function CreatureAuraParticles({
+  particles,
+  width,
+  height,
+  seed,
+  motionType,
+  spotlightFocusRef,
+  renderOrderRef
+}: CreatureAuraParticlesProps) {
   const pointsRef = useRef<THREE.Points>(null);
   const geometry = useMemo(() => {
     const count = Math.min(58, Math.max(24, Math.floor(particles.length * 0.045)));
@@ -103,6 +112,7 @@ export function CreatureAuraParticles({ particles, width, height, seed, motionTy
     material.uniforms.uFocusAmount.value = spotlightFocusRef?.current ?? 0;
     material.visible = (spotlightFocusRef?.current ?? 0) < 0.96;
     if (!pointsRef.current) return;
+    pointsRef.current.renderOrder = renderOrderRef?.current ?? 10;
     const speed = motionType === 'fly' || motionType === 'swim' ? 0.12 : 0.075;
     pointsRef.current.rotation.z = clock.elapsedTime * speed + Math.sin(clock.elapsedTime * 0.7 + seed) * 0.04;
     pointsRef.current.rotation.x = Math.sin(clock.elapsedTime * 0.45 + seed) * (motionType === 'float' ? 0.14 : 0.2);
