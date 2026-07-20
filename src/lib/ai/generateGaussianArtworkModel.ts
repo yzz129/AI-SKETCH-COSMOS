@@ -13,6 +13,7 @@ type TripoSplatModelPayload = {
 type TripoSplatJobPayload = {
   jobId?: string;
   artworkId?: string;
+  submissionId?: string;
   status?: ArtworkGaussianModelStatus;
   progress?: number;
   message?: string;
@@ -23,6 +24,8 @@ type TripoSplatJobPayload = {
 
 type GenerateGaussianArtworkModelInput = {
   file: File;
+  submissionId?: string;
+  signal?: AbortSignal;
   gaussianCount?: number;
   format?: 'splat' | 'ply' | 'both';
   onProgress?: (result: ArtworkGaussianModelResult) => void;
@@ -46,8 +49,22 @@ export function isTripoSplatGenerationEnabled() {
   return envBoolean(import.meta.env.VITE_TRIPOSPLAT_ENABLED) && triposplatApiBase().length > 0;
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Request aborted.', 'AbortError'));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', handleAbort);
+      resolve();
+    }, ms);
+    const handleAbort = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException('Request aborted.', 'AbortError'));
+    };
+    signal?.addEventListener('abort', handleAbort, { once: true });
+  });
 }
 
 async function readJson(response: Response): Promise<TripoSplatJobPayload> {
@@ -97,6 +114,8 @@ function toResult({
 
 export async function generateGaussianArtworkModel({
   file,
+  submissionId,
+  signal,
   gaussianCount = DEFAULT_GAUSSIAN_COUNT,
   format = 'splat',
   onProgress,
@@ -111,16 +130,27 @@ export async function generateGaussianArtworkModel({
   formData.set('image', file);
   formData.set('numGaussians', String(gaussianCount));
   formData.set('format', format);
+  if (submissionId) formData.set('submissionId', submissionId);
   if (features) formData.set('features', JSON.stringify(features));
 
   const createResponse = await fetch(`${baseUrl}/api/artworks`, {
     method: 'POST',
-    body: formData
+    body: formData,
+    signal
   });
   const created = await readJson(createResponse);
 
   if (!createResponse.ok || !created.jobId) {
+    if (createResponse.status === 429) {
+      throw new Error('当前上传人数较多，生成队列已满，请稍后再试。');
+    }
     throw new Error(created.error ?? `TripoSplat task creation failed with ${createResponse.status}.`);
+  }
+  const validatesSubmissionIdentity = Boolean(
+    submissionId && typeof created.submissionId === 'string'
+  );
+  if (validatesSubmissionIdentity && created.submissionId !== submissionId) {
+    throw new Error('Submission identity mismatch.');
   }
 
   const queued = toResult({
@@ -151,11 +181,14 @@ export async function generateGaussianArtworkModel({
 
     const previousResult = lastResult;
     const pollStartedAt = Date.now();
-    const pollResponse = await fetch(`${baseUrl}/api/jobs/${encodeURIComponent(created.jobId)}?${params}`);
+    const pollResponse = await fetch(`${baseUrl}/api/jobs/${encodeURIComponent(created.jobId)}?${params}`, { signal });
     const polled = await readJson(pollResponse);
 
     if (!pollResponse.ok) {
       throw new Error(polled.error ?? `TripoSplat task polling failed with ${pollResponse.status}.`);
+    }
+    if (validatesSubmissionIdentity && polled.submissionId !== submissionId) {
+      throw new Error('Submission identity mismatch.');
     }
 
     const result = toResult({
@@ -182,7 +215,7 @@ export async function generateGaussianArtworkModel({
     lastResult = result;
 
     if (didNotLongPoll) {
-      await sleep(LEGACY_POLL_INTERVAL_MS);
+      await sleep(LEGACY_POLL_INTERVAL_MS, signal);
     }
   }
 

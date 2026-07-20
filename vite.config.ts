@@ -571,6 +571,9 @@ export default defineConfig(({ mode }) => {
       react(),
       arkRecognitionPlugin(env.ARK_API_KEY)
     ],
+    resolve: {
+      dedupe: ['react', 'react-dom']
+    },
     server: {
       allowedHosts: ['.trycloudflare.com', '.yzzwnw.asia'],
       proxy: createTripoSplatProxy(triposplatApiTarget)

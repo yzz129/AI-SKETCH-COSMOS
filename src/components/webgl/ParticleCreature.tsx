@@ -17,6 +17,7 @@ type ParticleCreatureProps = {
   spotlightFocusRef?: MutableRefObject<number>;
   renderOrderRef?: MutableRefObject<number>;
   partActionRef?: MutableRefObject<CreaturePartActionPose>;
+  internalMotionStrengthRef?: MutableRefObject<number>;
   spotlightEnabled?: boolean;
 };
 
@@ -276,6 +277,7 @@ export function ParticleCreature({
   spotlightFocusRef,
   renderOrderRef,
   partActionRef,
+  internalMotionStrengthRef,
   spotlightEnabled = false
 }: ParticleCreatureProps) {
   const bodyPointsRef = useRef<THREE.Points>(null);
@@ -342,13 +344,14 @@ export function ParticleCreature({
       : 0;
     const modelVisibility = Math.max(reappearRef?.current ?? 1, burstVisibility);
     const partAction = partActionRef?.current;
+    const internalMotionStrength = internalMotionStrengthRef?.current ?? 1;
 
     if (bodyMaterialRef.current) {
       updatePartActionUniforms(bodyMaterialRef.current, partAction);
       bodyMaterialRef.current.uniforms.uTime.value = clock.elapsedTime;
       bodyMaterialRef.current.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio, 2);
-      bodyMaterialRef.current.uniforms.uFlowAmount.value = flowAmount;
-      bodyMaterialRef.current.uniforms.uBreathAmount.value = breathAmount;
+      bodyMaterialRef.current.uniforms.uFlowAmount.value = flowAmount * internalMotionStrength;
+      bodyMaterialRef.current.uniforms.uBreathAmount.value = breathAmount * internalMotionStrength;
       bodyMaterialRef.current.uniforms.uInteractionPulse.value = interactionPulseRef?.current ?? 0;
       bodyMaterialRef.current.uniforms.uBurstProgress.value = burstProgress;
       bodyMaterialRef.current.uniforms.uGlow.value = 0.06;
@@ -363,8 +366,8 @@ export function ParticleCreature({
       updatePartActionUniforms(outlineMaterialRef.current, partAction);
       outlineMaterialRef.current.uniforms.uTime.value = clock.elapsedTime;
       outlineMaterialRef.current.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio, 2);
-      outlineMaterialRef.current.uniforms.uFlowAmount.value = flowAmount * 0.18;
-      outlineMaterialRef.current.uniforms.uBreathAmount.value = breathAmount * 0.55;
+      outlineMaterialRef.current.uniforms.uFlowAmount.value = flowAmount * 0.18 * internalMotionStrength;
+      outlineMaterialRef.current.uniforms.uBreathAmount.value = breathAmount * 0.55 * internalMotionStrength;
       outlineMaterialRef.current.uniforms.uInteractionPulse.value = (interactionPulseRef?.current ?? 0) * 0.55;
       outlineMaterialRef.current.uniforms.uBurstProgress.value = burstProgress * 0.82;
       outlineMaterialRef.current.uniforms.uGlow.value = 0.05;
@@ -381,8 +384,8 @@ export function ParticleCreature({
       detailMaterialRef.current.visible = spotlightEnabled && spotlightFocus > 0.01;
       detailMaterialRef.current.uniforms.uTime.value = clock.elapsedTime;
       detailMaterialRef.current.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio, 2);
-      detailMaterialRef.current.uniforms.uFlowAmount.value = flowAmount * 0.16;
-      detailMaterialRef.current.uniforms.uBreathAmount.value = breathAmount * 0.38;
+      detailMaterialRef.current.uniforms.uFlowAmount.value = flowAmount * 0.16 * internalMotionStrength;
+      detailMaterialRef.current.uniforms.uBreathAmount.value = breathAmount * 0.38 * internalMotionStrength;
       detailMaterialRef.current.uniforms.uInteractionPulse.value = (interactionPulseRef?.current ?? 0) * 0.28;
       detailMaterialRef.current.uniforms.uBurstProgress.value = burstProgress * 0.32;
       detailMaterialRef.current.uniforms.uGlow.value = 0.035;

@@ -1,4 +1,7 @@
 import json
+import os
+import re
+import shutil
 import uuid
 from pathlib import Path
 from time import perf_counter
@@ -18,7 +21,7 @@ from .artwork_db import (
     update_artwork_evolution,
     update_artwork_metadata,
 )
-from .jobs import job_to_response, jobs
+from .jobs import JobQueueFullError, job_to_response, jobs
 from .perf_logger import log_perf
 from .schemas import (
     ArtworkEvolutionBatchUpdate,
@@ -27,11 +30,13 @@ from .schemas import (
     JobStatus,
     PersistedArtwork,
 )
-from .storage import create_artwork_dir, ensure_output_root, output_roots, save_upload
+from .storage import UploadTooLargeError, create_artwork_dir, ensure_output_root, output_roots, save_upload
 from .triposplat_worker import triposplat_config_status
 
 
 app = FastAPI(title="AI Sketch Cosmos TripoSplat Backend")
+MAX_UPLOAD_BYTES = int(os.getenv("TRIPOSPLAT_MAX_UPLOAD_BYTES", str(15 * 1024 * 1024)))
+SUBMISSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class MultiRootStaticFiles(StaticFiles):
@@ -68,7 +73,7 @@ def health():
 
 @app.get("/health/triposplat")
 def triposplat_health():
-    return triposplat_config_status()
+    return {**triposplat_config_status(), "queue": jobs.stats()}
 
 
 @app.get("/api/artworks", response_model=list[PersistedArtwork])
@@ -91,11 +96,12 @@ def get_artwork_by_id(artwork_id: str):
 
 
 @app.post("/api/artworks", response_model=JobResponse)
-async def create_artwork_job(
+def create_artwork_job(
     image: UploadFile = File(...),
     numGaussians: int = Form(65_536),
     format: str = Form("splat"),
     features: str | None = Form(None),
+    submissionId: str | None = Form(None),
 ):
     request_start = perf_counter()
     triposplat_status = triposplat_config_status()
@@ -109,38 +115,70 @@ async def create_artwork_job(
     if numGaussians < 4_096 or numGaussians > 262_144:
         raise HTTPException(status_code=400, detail="numGaussians must be between 4096 and 262144")
 
+    client_submission_id = submissionId.strip() if submissionId else None
+    if client_submission_id and not SUBMISSION_ID_PATTERN.fullmatch(client_submission_id):
+        raise HTTPException(status_code=400, detail="submissionId contains invalid characters")
+
+    queue = jobs.stats()
+    if queue["active"] >= queue["capacity"]:
+        raise HTTPException(
+            status_code=429,
+            detail="generation queue is full; retry later",
+            headers={"Retry-After": "10"},
+        )
+
     create_dir_start = perf_counter()
     artwork_id, artwork_dir = create_artwork_dir()
     log_perf(artwork_id, "request", "create_artwork_dir", f"elapsed={perf_counter() - create_dir_start:.3f}s")
-    save_start = perf_counter()
-    source_path = save_upload(image.file, artwork_dir, image.filename or "source.png")
-    log_perf(
-        artwork_id,
-        "request",
-        "save_upload",
-        (
-            f"elapsed={perf_counter() - save_start:.3f}s "
-            f"filename={image.filename or 'source.png'} bytes={source_path.stat().st_size}"
-        ),
-    )
-    parsed_features = None
-    if features:
-        try:
-            parsed_features = json.loads(features)
-            if not isinstance(parsed_features, dict):
-                raise ValueError("features must decode to an object")
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=f"invalid features JSON: {exc}") from exc
+    try:
+        save_start = perf_counter()
+        source_path = save_upload(
+            image.file,
+            artwork_dir,
+            image.filename or "source.png",
+            max_bytes=MAX_UPLOAD_BYTES,
+        )
+        log_perf(
+            artwork_id,
+            "request",
+            "save_upload",
+            (
+                f"elapsed={perf_counter() - save_start:.3f}s "
+                f"filename={image.filename or 'source.png'} bytes={source_path.stat().st_size}"
+            ),
+        )
+        parsed_features = None
+        if features:
+            try:
+                parsed_features = json.loads(features)
+                if not isinstance(parsed_features, dict):
+                    raise ValueError("features must decode to an object")
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=f"invalid features JSON: {exc}") from exc
 
-    job = jobs.create(
-        job_id=f"job_{uuid.uuid4().hex}",
-        artwork_id=artwork_id,
-        artwork_dir=artwork_dir,
-        source_path=source_path,
-        num_gaussians=numGaussians,
-        export_format=export_format,
-        features=parsed_features,
-    )
+        job = jobs.create(
+            job_id=f"job_{uuid.uuid4().hex}",
+            artwork_id=artwork_id,
+            submission_id=client_submission_id,
+            artwork_dir=artwork_dir,
+            source_path=source_path,
+            num_gaussians=numGaussians,
+            export_format=export_format,
+            features=parsed_features,
+        )
+    except UploadTooLargeError as exc:
+        shutil.rmtree(artwork_dir, ignore_errors=True)
+        raise HTTPException(status_code=413, detail=f"image exceeds {MAX_UPLOAD_BYTES} bytes") from exc
+    except JobQueueFullError as exc:
+        shutil.rmtree(artwork_dir, ignore_errors=True)
+        raise HTTPException(
+            status_code=429,
+            detail="generation queue is full; retry later",
+            headers={"Retry-After": "10"},
+        ) from exc
+    except Exception:
+        shutil.rmtree(artwork_dir, ignore_errors=True)
+        raise
     log_perf(
         artwork_id,
         job.job_id,

@@ -1,8 +1,37 @@
 import { ChangeEvent, useRef, useState } from 'react';
-import { Eye, EyeOff, Upload } from 'lucide-react';
+import { Eye, EyeOff, Gauge } from 'lucide-react';
 import { submitArtworkFile } from '../../lib/artwork/submitArtworkFile';
 import { useArtworkStore, type StoredArtwork } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
+
+const LOCAL_STRESS_ARTWORK_PREFIX = 'local-stress:';
+const MAX_LOCAL_STRESS_TOTAL = 1_000;
+
+function isLocalStressArtwork(artwork: Pick<StoredArtwork, 'id'>) {
+  return artwork.id.startsWith(LOCAL_STRESS_ARTWORK_PREFIX);
+}
+
+function createLocalStressArtwork(source: StoredArtwork, index: number, createdAt: number): StoredArtwork {
+  const id = `${LOCAL_STRESS_ARTWORK_PREFIX}${index + 1}`;
+  return {
+    ...source,
+    id,
+    name: `压力测试 ${index + 1} · ${source.name}`,
+    createdAt,
+    model3d: source.model3d
+      ? { ...source.model3d, taskId: id, createdAt }
+      : undefined,
+    gaussianModel: source.gaussianModel
+      ? {
+          ...source.gaussianModel,
+          jobId: id,
+          sourceArtworkId: undefined,
+          createdAt,
+          message: 'local stress-test clone'
+        }
+      : undefined
+  };
+}
 
 function renderModeLabel(hasSplat: boolean) {
   return hasSplat ? 'TripoSplat .splat' : '图片 3D 粒子化';
@@ -58,7 +87,8 @@ type WindowWithFilePicker = Window & {
 
 export function CosmicControlPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [isHidden, setIsHidden] = useState(false);
+  const [isHidden, setIsHidden] = useState(true);
+  const [stressTarget, setStressTarget] = useState('60');
   const artworks = useArtworkStore((state) => state.artworks);
   const latestArtwork = useArtworkStore((state) => state.latestArtwork);
   const clearArtworks = useArtworkStore((state) => state.clearArtworks);
@@ -146,6 +176,69 @@ export function CosmicControlPanel() {
     }
   };
 
+  const localStressCount = artworks.reduce(
+    (count, artwork) => count + (isLocalStressArtwork(artwork) ? 1 : 0),
+    0
+  );
+  const localSourceCount = artworks.length - localStressCount;
+
+  const runLocalStressTest = () => {
+    const requestedTotal = Number.parseInt(stressTarget, 10);
+    const sourceArtworks = useArtworkStore.getState().artworks.filter(
+      (artwork) => !isLocalStressArtwork(artwork)
+    );
+    if (sourceArtworks.length === 0) {
+      setError('本地模型库为空，请先上传或同步至少一个模型。');
+      return;
+    }
+    const safeTarget = Math.max(
+      sourceArtworks.length,
+      Math.min(
+        MAX_LOCAL_STRESS_TOTAL,
+        Number.isFinite(requestedTotal) ? Math.max(1, requestedTotal) : sourceArtworks.length
+      )
+    );
+    const stressCount = safeTarget - sourceArtworks.length;
+    const createdAt = Date.now();
+    const stressArtworks = Array.from({ length: stressCount }, (_, index) => (
+      createLocalStressArtwork(
+        sourceArtworks[index % sourceArtworks.length],
+        index,
+        createdAt + index
+      )
+    ));
+    useArtworkStore.setState((state) => ({
+      artworks: [...sourceArtworks, ...stressArtworks],
+      latestArtwork: state.latestArtwork && !isLocalStressArtwork(state.latestArtwork)
+        ? state.latestArtwork
+        : sourceArtworks[0] ?? null
+    }));
+    setStressTarget(String(safeTarget));
+    useSketchStore.setState({
+      status: 'idle',
+      message: `本地压力测试已启动：${sourceArtworks.length} 个真实模型 + ${stressCount} 个本地副本，共 ${safeTarget} 个。`
+    });
+  };
+
+  const clearLocalStressTest = () => {
+    const currentArtworks = useArtworkStore.getState().artworks;
+    const removedArtworks = currentArtworks.filter(isLocalStressArtwork);
+    const retainedArtworks = currentArtworks.filter((artwork) => !isLocalStressArtwork(artwork));
+    for (const artwork of removedArtworks) {
+      useSketchStore.getState().cancelSpotlight(artwork.id);
+    }
+    useArtworkStore.setState((state) => ({
+      artworks: retainedArtworks,
+      latestArtwork: state.latestArtwork && !isLocalStressArtwork(state.latestArtwork)
+        ? state.latestArtwork
+        : retainedArtworks[0] ?? null
+    }));
+    useSketchStore.setState({
+      status: 'idle',
+      message: '本地压力测试模型已清除，真实作品保持不变。'
+    });
+  };
+
   const hasSplat = latestArtwork?.gaussianModel?.status === 'ready' && Boolean(latestArtwork.gaussianModel.splatUrl);
   const latestDustCount = latestArtwork
     ? hasSplat
@@ -157,32 +250,16 @@ export function CosmicControlPanel() {
   if (isHidden) {
     return (
       <div className="cosmic-panel-compact" onPointerDown={(event) => event.stopPropagation()}>
-        <input
-          ref={inputRef}
-          className="cosmic-panel__input"
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          onChange={onFileChange}
-        />
         <button
           type="button"
-          className="cosmic-panel-compact__upload"
-          onClick={openArtworkPicker}
-          disabled={status === 'processing'}
+          className="cosmic-panel-toggle"
+          aria-label="显示控制面板"
+          title="显示控制面板"
+          onClick={() => setIsHidden(false)}
+          onPointerDown={(event) => event.stopPropagation()}
         >
-          <Upload size={17} strokeWidth={2.2} aria-hidden="true" />
-          <span>{status === 'processing' ? '生成中' : '发布作品'}</span>
+          <Eye size={18} strokeWidth={2.2} aria-hidden="true" />
         </button>
-      <button
-        type="button"
-        className="cosmic-panel-toggle"
-        aria-label="显示控制面板"
-        title="显示控制面板"
-        onClick={() => setIsHidden(false)}
-        onPointerDown={(event) => event.stopPropagation()}
-      >
-        <Eye size={18} strokeWidth={2.2} aria-hidden="true" />
-      </button>
       </div>
     );
   }
@@ -258,6 +335,49 @@ export function CosmicControlPanel() {
           </div>
         </dl>
       ) : null}
+
+      <div className="cosmic-panel__stress" aria-label="本地模型压力测试">
+        <div className="cosmic-panel__stress-heading">
+          <span><Gauge size={16} strokeWidth={2.2} aria-hidden="true" />本地模型压力测试</span>
+          <em>{localStressCount} 测试 / {artworks.length} 总计</em>
+        </div>
+        <p>仅复用当前已载入的本地模型，不调用生成接口，也不写入后台成长数据。</p>
+        <div className="cosmic-panel__stress-controls">
+          <label htmlFor="local-stress-target">目标上屏总数</label>
+          <input
+            id="local-stress-target"
+            type="number"
+            min={1}
+            max={MAX_LOCAL_STRESS_TOTAL}
+            step={1}
+            inputMode="numeric"
+            value={stressTarget}
+            onChange={(event) => setStressTarget(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') runLocalStressTest();
+            }}
+            disabled={status === 'processing'}
+          />
+        </div>
+        <div className="cosmic-panel__stress-actions">
+          <button
+            type="button"
+            className="cosmic-button cosmic-button--stress"
+            onClick={runLocalStressTest}
+            disabled={status === 'processing' || localSourceCount === 0}
+          >
+            开始压力测试
+          </button>
+          <button
+            type="button"
+            className="cosmic-button"
+            onClick={clearLocalStressTest}
+            disabled={status === 'processing' || localStressCount === 0}
+          >
+            清除测试模型
+          </button>
+        </div>
+      </div>
 
       <div className="cosmic-panel__actions">
         <input

@@ -7,6 +7,7 @@ import {
 import { useCreatureEvolutionStore } from './creatureEvolutionStore';
 
 const EVOLUTION_SYNC_INTERVAL_MS = 1_200;
+const LOCAL_STRESS_ARTWORK_PREFIX = 'local-stress:';
 const persistedRevisions = new Map<string, number>();
 
 export function hydrateCreatureEvolution(records: BackendArtworkRecord[]) {
@@ -58,10 +59,12 @@ export function startCreatureEvolutionPersistence() {
 
   const capture = () => {
     const artworks = useArtworkStore.getState().artworks;
-    const backendIdByCreatureId = new Map(artworks.map((artwork) => [
+    const backendIdByCreatureId = new Map(artworks
+      .filter((artwork) => !artwork.id.startsWith(LOCAL_STRESS_ARTWORK_PREFIX))
+      .map((artwork) => [
       artwork.id,
       artwork.gaussianModel?.sourceArtworkId ?? artwork.id
-    ]));
+      ]));
     const records = useCreatureEvolutionStore.getState().records;
     for (const [creatureId, record] of Object.entries(records)) {
       const artworkId = backendIdByCreatureId.get(creatureId);

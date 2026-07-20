@@ -624,8 +624,14 @@ export function updateCpuSplatPartMotion(
   if (!Number.isFinite(runtime.lastUpdateTime)) {
     runtime.lastUpdateTime = time - runtime.updateOffset;
   }
-  if (time - runtime.lastUpdateTime < runtime.updateInterval) return;
-  const deltaTime = THREE.MathUtils.clamp(time - runtime.lastUpdateTime, runtime.updateInterval, 0.12);
+  const actionActive = Boolean(action && action.kind !== 'idle');
+  // Only the small number of models taking part in an authored interaction need
+  // the higher cadence. Idle crowds retain the cheaper staggered update budget.
+  const activeInterval = actionActive
+    ? Math.min(runtime.updateInterval, 1 / 30)
+    : runtime.updateInterval;
+  if (time - runtime.lastUpdateTime < activeInterval) return;
+  const deltaTime = THREE.MathUtils.clamp(time - runtime.lastUpdateTime, activeInterval, 0.12);
   runtime.lastUpdateTime = time;
   updateBoneTransforms(
     runtime,

@@ -30,6 +30,28 @@ function normalizeRecord(baseUrl: string, record: BackendArtworkRecord): Backend
 
 export type BackendArtworkStatus = 'active' | 'deleted' | 'all';
 
+export type BackendArtworkLibraryRevision = {
+  revision: string;
+  total: number;
+  latestCreatedAt?: string | null;
+};
+
+export async function fetchBackendArtworkLibraryRevision(
+  status: BackendArtworkStatus = 'active'
+): Promise<BackendArtworkLibraryRevision> {
+  // Reuse the existing list endpoint so this stays compatible with backend
+  // processes that have not been restarted or upgraded yet. Only the newest
+  // record is transferred; the full library is fetched only after this compact
+  // signature changes.
+  const page = await fetchBackendArtworkPage(1, 0, status);
+  const latest = page.records[0];
+  return {
+    revision: [page.total, latest?.id ?? '', latest?.createdAt ?? ''].join(':'),
+    total: page.total,
+    latestCreatedAt: latest?.createdAt ?? null
+  };
+}
+
 export async function fetchBackendArtworkPage(limit = 50, offset = 0, status: BackendArtworkStatus = 'active'): Promise<{
   records: BackendArtworkRecord[];
   total: number;
@@ -42,7 +64,9 @@ export async function fetchBackendArtworkPage(limit = 50, offset = 0, status: Ba
     offset: String(offset),
     status
   });
-  const response = await fetch(`${baseUrl}/api/artworks?${params}`);
+  const response = await fetch(`${baseUrl}/api/artworks?${params}`, {
+    cache: 'no-store'
+  });
   if (!response.ok) {
     throw new Error(`Failed to load backend artwork library: ${response.status}`);
   }

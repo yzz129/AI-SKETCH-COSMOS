@@ -22,6 +22,7 @@ class ArtworkAssets(BaseModel):
 class JobResponse(BaseModel):
     jobId: str
     artworkId: str
+    submissionId: str | None = None
     status: JobStatus
     progress: float | None = None
     message: str | None = None

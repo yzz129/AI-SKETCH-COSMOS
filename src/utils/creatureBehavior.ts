@@ -20,9 +20,9 @@ type CreatureBehaviorState = {
   removeCreaturePosition: (id: string) => void;
 };
 
-const CROWD_AVOIDANCE_RADIUS = 1.35;
+const CROWD_AVOIDANCE_RADIUS = 1.7;
 const CROWD_AVOIDANCE_RADIUS_SQ = CROWD_AVOIDANCE_RADIUS * CROWD_AVOIDANCE_RADIUS;
-const MAX_CROWD_NEIGHBORS = 4;
+const MAX_CROWD_NEIGHBORS = 6;
 const creatureSpatialBuckets = new Map<string, Set<string>>();
 const creatureCellById = new Map<string, string>();
 const crowdDelta = new THREE.Vector3();
@@ -165,7 +165,7 @@ export function crowdAvoidance(id: string, from: THREE.Vector3) {
           if (distanceSq <= 0.000001 || distanceSq > CROWD_AVOIDANCE_RADIUS_SQ) continue;
 
           const distance = Math.sqrt(distanceSq);
-          const strength = (1 - distance / CROWD_AVOIDANCE_RADIUS) * 0.22;
+          const strength = (1 - distance / CROWD_AVOIDANCE_RADIUS) * 0.28;
           avoidance.addScaledVector(crowdDelta, strength / distance);
           neighbors += 1;
           if (neighbors >= MAX_CROWD_NEIGHBORS) return avoidance;

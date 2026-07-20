@@ -26,6 +26,18 @@ body {
   min-width: 320px;
 }
 
+.route-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: #03010d;
+  color: rgba(226, 220, 255, 0.78);
+  font-size: 14px;
+  letter-spacing: 0.08em;
+}
+
 .display-shell,
 .webgl-stage {
   width: 100%;

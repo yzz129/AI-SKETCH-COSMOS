@@ -96,14 +96,30 @@ async function addLocalParticleArtwork(file: File) {
     processArtworkImage(file),
     analyzeArtworkFeatures(file)
   ]);
-  useArtworkStore.getState().addArtwork(artwork, features);
+  const storedArtwork = useArtworkStore.getState().addArtwork(artwork, features);
   useSketchStore.setState({
     status: 'ready',
     message: localReadyMessage(artwork, features)
   });
+  return storedArtwork;
 }
 
-export async function submitArtworkFile(file: File) {
+export type SubmitArtworkFileOptions = {
+  allowLocalFallback?: boolean;
+  onGaussianProgress?: (result: ArtworkGaussianModelResult) => void;
+  submissionId?: string;
+  signal?: AbortSignal;
+};
+
+export async function submitArtworkFile(
+  file: File,
+  {
+    allowLocalFallback = true,
+    onGaussianProgress,
+    submissionId,
+    signal
+  }: SubmitArtworkFileOptions = {}
+) {
   const sketchStore = useSketchStore.getState();
   const flowStartedAt = performance.now();
   const logStage = (stage: string) => {
@@ -111,9 +127,13 @@ export async function submitArtworkFile(file: File) {
   };
 
   if (!isTripoSplatGenerationEnabled()) {
+    if (!allowLocalFallback) {
+      const error = new Error('TripoSplat 服务尚未配置，当前作品无法发送到大屏。');
+      sketchStore.setError(error.message);
+      throw error;
+    }
     sketchStore.setProcessing('正在本地去白底、提取主色并生成 3D 粒子生命...');
-    await addLocalParticleArtwork(file);
-    return;
+    return addLocalParticleArtwork(file);
   }
 
   try {
@@ -141,9 +161,12 @@ export async function submitArtworkFile(file: File) {
     // runs in parallel and can update motion after the intact Splat appears.
     const gaussianModel = await generateGaussianArtworkModel({
       file,
+      submissionId,
+      signal,
       format: 'splat',
       features: fallbackFeatures,
       onProgress: (result) => {
+        onGaussianProgress?.(result);
         useSketchStore.setState({
           status: 'processing',
           message: progressMessage(result)
@@ -176,9 +199,20 @@ export async function submitArtworkFile(file: File) {
         logStage(`late scene motion updated / ${lateFeatures.motionPreset}`);
       });
     }
+    return displayedArtwork;
   } catch (error) {
+    if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+      throw error;
+    }
+    if (!allowLocalFallback) {
+      const message = error instanceof Error
+        ? error.message
+        : 'TripoSplat 后端不可用或生成失败，请稍后重试。';
+      useSketchStore.getState().setError(message);
+      throw error;
+    }
     console.warn('[triposplat] backend-first generation failed; falling back to local particles:', error);
     useSketchStore.getState().setProcessing('TripoSplat 后端不可用或生成失败，正在回退到本地粒子生命...');
-    await addLocalParticleArtwork(file);
+    return addLocalParticleArtwork(file);
   }
 }

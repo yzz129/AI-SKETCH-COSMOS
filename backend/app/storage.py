@@ -32,11 +32,26 @@ def create_artwork_dir() -> tuple[str, Path]:
     return artwork_id, artwork_dir
 
 
-def save_upload(stream: BinaryIO, artwork_dir: Path, filename: str) -> Path:
+def save_upload(
+    stream: BinaryIO,
+    artwork_dir: Path,
+    filename: str,
+    *,
+    max_bytes: int | None = None,
+) -> Path:
     suffix = Path(filename).suffix.lower() or ".png"
     source_path = artwork_dir / f"source{suffix}"
-    with source_path.open("wb") as target:
-        shutil.copyfileobj(stream, target)
+    written = 0
+    try:
+        with source_path.open("wb") as target:
+            while chunk := stream.read(1024 * 1024):
+                written += len(chunk)
+                if max_bytes is not None and written > max_bytes:
+                    raise UploadTooLargeError(f"upload exceeds {max_bytes} bytes")
+                target.write(chunk)
+    except Exception:
+        source_path.unlink(missing_ok=True)
+        raise
     return source_path
 
 
@@ -65,3 +80,7 @@ def write_manifest(artwork_dir: Path, payload: dict) -> Path:
 
 def asset_url(artwork_id: str, filename: str) -> str:
     return f"/assets/{artwork_id}/{filename}"
+
+
+class UploadTooLargeError(ValueError):
+    pass

@@ -7,6 +7,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Iterator
 
 from dotenv import load_dotenv
@@ -20,6 +21,7 @@ from .storage import asset_url, write_json_atomic, write_manifest
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(BACKEND_ROOT / ".env", override=True)
 _RIG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="splat-rig")
+_PIPELINE_RUN_LOCK = Lock()
 
 REQUIRED_TRIPOSPLAT_PATHS = {
     "TRIPOSPLAT_REPO_ROOT": "directory",
@@ -346,7 +348,7 @@ def generate_triposplat_assets(
     num_gaussians: int,
     export_format: str,
     features: dict | None = None,
-    progress_callback: Callable[[float, str], None] | None = None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> dict:
     total_start = time.perf_counter()
     timings: dict[str, float] = {}
@@ -392,11 +394,18 @@ def generate_triposplat_assets(
         ),
     )
     if progress_callback:
+        early_assets = None
+        if seedream_preparation.reference_filename:
+            early_assets = {
+                "previewUrl": asset_url(artwork_id, seedream_preparation.reference_filename),
+                "gaussianCount": effective_num_gaussians,
+            }
         progress_callback(
             0.45 if seedream_preparation.used else 0.28,
             "Seedream 参考图已生成，正在加载 TripoSplat 管线"
             if seedream_preparation.used
             else "正在使用原图加载 TripoSplat 管线",
+            early_assets,
         )
 
     # Part analysis now runs against views rendered from the completed 3D
@@ -432,28 +441,31 @@ def generate_triposplat_assets(
     if progress_callback:
         progress_callback(0.5, "TripoSplat 管线已就绪，正在生成 Gaussian Splat")
 
-    with _timed_stage(
-        artwork_id,
-        "pipeline_run",
-        timings,
-        gaussians=effective_num_gaussians,
-        steps=steps,
-        guidanceScale=guidance_scale,
-        erodeRadius=erode_radius,
-        trustSourceAlpha=trust_source_alpha,
-        format=export_format,
-    ):
-        gaussian, prepared = pipeline.run(
-            str(triposplat_source_path),
-            seed=seed,
+    # The cached pipeline owns mutable model/GPU state. Queue callers may run
+    # Seedream concurrently, but only one inference may enter this instance.
+    with _PIPELINE_RUN_LOCK:
+        with _timed_stage(
+            artwork_id,
+            "pipeline_run",
+            timings,
+            gaussians=effective_num_gaussians,
             steps=steps,
-            guidance_scale=guidance_scale,
-            shift=shift,
-            num_gaussians=effective_num_gaussians,
-            erode_radius=erode_radius,
-            trust_source_alpha=trust_source_alpha,
-            show_progress=True,
-        )
+            guidanceScale=guidance_scale,
+            erodeRadius=erode_radius,
+            trustSourceAlpha=trust_source_alpha,
+            format=export_format,
+        ):
+            gaussian, prepared = pipeline.run(
+                str(triposplat_source_path),
+                seed=seed,
+                steps=steps,
+                guidance_scale=guidance_scale,
+                shift=shift,
+                num_gaussians=effective_num_gaussians,
+                erode_radius=erode_radius,
+                trust_source_alpha=trust_source_alpha,
+                show_progress=True,
+            )
     if progress_callback:
         progress_callback(0.9, "Gaussian Splat 已生成，正在保存预览和模型")
 
@@ -464,7 +476,14 @@ def generate_triposplat_assets(
         elif hasattr(prepared, "save"):
             prepared.save(preview_path)
     if progress_callback:
-        progress_callback(0.94, "预览图已保存，正在导出模型")
+        progress_callback(
+            0.94,
+            "预览图已保存，正在导出模型",
+            {
+                "previewUrl": asset_url(artwork_id, "preprocessed_image.webp"),
+                "gaussianCount": effective_num_gaussians,
+            },
+        )
 
     splat_path = artwork_dir / "model.splat"
     ply_path = artwork_dir / "model.ply"

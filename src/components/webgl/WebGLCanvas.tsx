@@ -76,7 +76,7 @@ export function WebGLCanvas() {
       <Canvas
         className="webgl-canvas"
         camera={{ position: [0, 0, 6], fov: 50, near: 0.1, far: 100 }}
-        dpr={[1.4, 2]}
+        dpr={[1, 1.5]}
         gl={{
           antialias: true,
           alpha: false,

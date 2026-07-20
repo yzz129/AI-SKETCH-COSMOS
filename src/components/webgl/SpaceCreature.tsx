@@ -3,13 +3,12 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 import * as THREE from 'three';
 import type { StoredArtwork } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
-import { crowdAvoidance, nearestFoodAttraction, pointerAvoidance, useCreatureBehaviorStore } from '../../utils/creatureBehavior';
+import { crowdAvoidance, useCreatureBehaviorStore } from '../../utils/creatureBehavior';
 import {
   createCreatureMotionConfig,
   getCreatureActionPose,
   getCreatureMotionPose,
-  getCreatureMotionPreset,
-  pickCreatureAction
+  getCreatureMotionPreset
 } from '../../utils/creatureMotion';
 import { CreatureAuraDust } from './CreatureAuraDust';
 import { CreatureDustFeeding } from './CreatureDustFeeding';
@@ -60,14 +59,40 @@ import {
 import { getPlanetWorldPosition, PLANETS } from './OrbitalPlanets';
 import { getGalaxyPortal } from './galaxyPortalRegistry';
 import { markCreaturePriorityHit } from './pointerPriority';
+import {
+  type CreatureBubbleScreenAnchor,
+  getCreatureBubbleScreenAnchor,
+  writeCreatureBubbleWorldPosition
+} from './creatureActivity';
 
 const SPOTLIGHT_FEATURED_HOLD_DURATION = 20;
 const SPOTLIGHT_FEATURED_RETURN_DURATION = 5;
+const INITIAL_ENTRY_DURATION = 2.6;
+const AMBIENT_ACTION_STRENGTH = 0.34;
+const AMBIENT_FLOAT_POSITION_SCALE = 1.55;
+const RESTING_MODEL_VISIBILITY = 0.7;
+const ACTIVITY_MATERIALIZE_DURATION = 3.2;
+const ACTIVITY_RELEASE_DURATION = 1.6;
+const ACTIVITY_PATH_RECENTER_DURATION = 45;
+const ACTIVITY_START_SCALE = 0.68;
+const RETIRING_TARGET_SCALE = 0.62;
+const PORTAL_EMERGE_DURATION = 1.8;
 const AUDIENCE_SWAY_ANGLE = THREE.MathUtils.degToRad(5.2);
 const FEATURED_SWAY_ANGLE = THREE.MathUtils.degToRad(3.6);
 const SPOTLIGHT_TWIST_ANGLE = THREE.MathUtils.degToRad(10);
 const SPOTLIGHT_ROLL_ANGLE = THREE.MathUtils.degToRad(3.5);
 const MAX_INTERACTION_FACING_OFFSET = THREE.MathUtils.degToRad(5.5);
+const MAX_FREE_FLIGHT_FACING_OFFSET = THREE.MathUtils.degToRad(14);
+const MAX_ROLL_FRAME_TRAVEL = 0.18;
+const RESTING_RENDER_ORDER = 1;
+
+function dampAngle(current: number, target: number, lambda: number, delta: number) {
+  const shortestDelta = THREE.MathUtils.euclideanModulo(
+    target - current + Math.PI,
+    Math.PI * 2
+  ) - Math.PI;
+  return current + shortestDelta * (1 - Math.exp(-lambda * delta));
+}
 function getSpotlightLandingPosition(index: number) {
   const slot = index % 7;
   const angle = slot * (Math.PI * 2 / 7) + 0.3;
@@ -82,6 +107,13 @@ function getSpotlightLandingPosition(index: number) {
 type SpaceCreatureProps = {
   artwork: StoredArtwork;
   index: number;
+  active: boolean;
+  bubbleIndex: number;
+  bubbleCount: number;
+  crowdScale: number;
+  ambientMotionEnabled?: boolean;
+  restAnchor?: CreatureBubbleScreenAnchor;
+  onRestAnchorCapture?: (id: string, anchor: CreatureBubbleScreenAnchor) => void;
   showEntryTrail?: boolean;
 };
 
@@ -379,7 +411,19 @@ function RespawnMeteorTrail({
   );
 }
 
-export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceCreatureProps) {
+export function SpaceCreature({
+  artwork,
+  index,
+  active,
+  bubbleIndex,
+  bubbleCount,
+  crowdScale,
+  ambientMotionEnabled = true,
+  restAnchor,
+  onRestAnchorCapture,
+  showEntryTrail = false
+}: SpaceCreatureProps) {
+  const startsFromRest = Boolean(restAnchor);
   const spotlightCreatureId = useSketchStore((state) => state.spotlight.creatureId);
   const spotlightRequestedCreatureId = useSketchStore((state) => state.spotlight.requestedCreatureId);
   const spotlightPendingCreatureId = useSketchStore((state) => state.spotlight.pendingCreatureId);
@@ -398,13 +442,10 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
   const pulseRef = useRef(0);
   const burstRef = useRef(0);
   const burstPhaseRef = useRef(1);
-  const portalApproachPositionRef = useRef(new THREE.Vector3());
-  const portalApproachVelocityRef = useRef(new THREE.Vector3());
-  const portalDesiredVelocityRef = useRef(new THREE.Vector3());
-  const portalTargetRef = useRef(new THREE.Vector3());
   const portalVisibilityRef = useRef(1);
   const respawnVisibilityRef = useRef(1);
-  const reappearRef = useRef(1);
+  const reappearRef = useRef(startsFromRest ? RESTING_MODEL_VISIBILITY : 1);
+  const activityEffectRef = useRef(startsFromRest ? 0 : 1);
   const spotlightFocusRef = useRef(0);
   const cameraFacingYawRef = useRef(0);
   const cameraFacingInitializedRef = useRef(false);
@@ -434,10 +475,31 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
   const creatureViewPositionRef = useRef(new THREE.Vector3());
   const dadakidoViewPositionRef = useRef(new THREE.Vector3());
   const lastPositionRef = useRef(new THREE.Vector3());
+  const lastPositionInitializedRef = useRef(false);
+  const smoothedFrameTravelRef = useRef(new THREE.Vector3());
+  const internalMotionStrengthRef = useRef(0);
+  const restBlendRef = useRef(startsFromRest ? 1 : 0);
+  const restPositionRef = useRef(new THREE.Vector3());
+  const retirementPositionRef = useRef<THREE.Vector3 | null>(null);
+  const retirementProjectionRef = useRef(new THREE.Vector3());
+  const wasActiveRef = useRef(active);
+  const activationStartedAtRef = useRef<number | null>(startsFromRest ? null : -100);
+  const activationPathOffsetRef = useRef(new THREE.Vector3());
+  const activationPathOffsetInitializedRef = useRef(!startsFromRest);
+  const activationPathOffsetStartedAtRef = useRef(-100);
+  const restForwardRef = useRef(new THREE.Vector3());
+  const restRightRef = useRef(new THREE.Vector3());
+  const restUpRef = useRef(new THREE.Vector3());
   const smoothedOffsetRef = useRef(new THREE.Vector3());
-  const aiDesiredOffsetRef = useRef(new THREE.Vector3());
-  const aiTargetPositionRef = useRef(new THREE.Vector3());
-  const actionSpinRef = useRef(0);
+  const previousPathPositionRef = useRef(new THREE.Vector3());
+  const currentPathPositionRef = useRef(new THREE.Vector3());
+  const targetPathPositionRef = useRef(new THREE.Vector3());
+  const frameMotionOffsetRef = useRef(new THREE.Vector3());
+  const pathWorldPositionRef = useRef(new THREE.Vector3());
+  const behaviorPositionTupleRef = useRef<[number, number, number]>([0, 0, 0]);
+  const pathDirectionRef = useRef(new THREE.Vector3(1, 0, 0));
+  const pathDirectionTargetRef = useRef(new THREE.Vector3());
+  const pathPositionInitializedRef = useRef(false);
   const lastInteractionSequenceRef = useRef(0);
   const lastInteractionBeatRef = useRef(0);
   const effectSignalRef = useRef<CreatureEffectSignal>({ id: 0, kind: 'entry', startedAt: -100 });
@@ -453,19 +515,45 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
     () => createCreatureMotionConfig(index, artwork.motionType, artwork.behaviorSignature),
     [artwork.behaviorSignature, artwork.motionType, index]
   );
+  const nextBubbleScreenAnchor = useMemo(
+    () => restAnchor ?? getCreatureBubbleScreenAnchor(bubbleIndex, bubbleCount),
+    [bubbleCount, bubbleIndex, restAnchor]
+  );
+  const bubbleScreenAnchorRef = useRef(nextBubbleScreenAnchor);
+  if (!active) bubbleScreenAnchorRef.current = nextBubbleScreenAnchor;
   /* ---- Spherical shell motion around dadakido ---- */
   const orbitParams = useMemo(() => {
     const baseRadii = [4.2, 5.8, 7.6, 9.5, 11.0, 13.0];
-    const orbitRadius = baseRadii[index % baseRadii.length];
-    // Keep farther shells slower while letting each creature drift across latitude.
-    const orbitSpeed = 0.34 * Math.pow(orbitRadius / 4.2, -1.25);
+    const crowdSpread = 1 - crowdScale;
+    const orbitRadius = Math.min(
+      15.8,
+      baseRadii[index % baseRadii.length] * (1 + crowdSpread * 0.35) + crowdSpread * 2.2
+    );
+    // Keep every generated path slow enough to read as drifting rather than chasing.
+    const orbitSpeed = 0.22 * Math.pow(orbitRadius / 4.2, -1.18);
     const phaseOffset = index * 0.61803398875 + motion.phase * 0.031;
-    const latitudeSpeed = orbitSpeed * (0.72 + (index % 5) * 0.09);
+    const latitudeSpeed = orbitSpeed * (0.58 + (index % 5) * 0.07);
     const latitudePhase = motion.phase * 0.17 + index * 1.173;
-    const latitudeAmplitude = 0.72 + (index % 4) * 0.08;
-    const radiusBreath = 0.018 + (index % 3) * 0.006;
-    return { orbitRadius, orbitSpeed, phaseOffset, latitudeSpeed, latitudePhase, latitudeAmplitude, radiusBreath };
-  }, [index, motion.phase]);
+    const latitudeAmplitude = 0.58 + (index % 4) * 0.075 + crowdSpread * 0.16;
+    const radiusBreath = 0.026 + (index % 3) * 0.006;
+    const direction = index % 3 === 0 ? -1 : 1;
+    const wanderPhase = motion.seed * 0.137 + index * 2.417;
+    const turnWanderSpeed = 0.032 + (index % 5) * 0.004;
+    const verticalWanderSpeed = 0.041 + (index % 4) * 0.005;
+    return {
+      orbitRadius,
+      orbitSpeed,
+      phaseOffset,
+      latitudeSpeed,
+      latitudePhase,
+      latitudeAmplitude,
+      radiusBreath,
+      direction,
+      wanderPhase,
+      turnWanderSpeed,
+      verticalWanderSpeed
+    };
+  }, [crowdScale, index, motion.phase, motion.seed]);
   const interactionMaterial = useMemo(() => new THREE.MeshBasicMaterial({
     transparent: true,
     opacity: 0,
@@ -479,15 +567,42 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
   const [previewReadyUrl, setPreviewReadyUrl] = useState<string | null>(null);
   const [previewFailedUrl, setPreviewFailedUrl] = useState<string | null>(null);
   const [splatReadyUrl, setSplatReadyUrl] = useState<string | null>(null);
-  const previewMaterial = useMemo(() => new THREE.MeshBasicMaterial({
-    map: previewTexture,
+  const splatRevealRef = useRef(0);
+  const previewMaterial = useMemo(() => new THREE.ShaderMaterial({
+    uniforms: {
+      uMap: { value: previewTexture },
+      uOpacity: { value: 0 }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      precision highp float;
+      uniform sampler2D uMap;
+      uniform float uOpacity;
+      varying vec2 vUv;
+      void main() {
+        vec4 sampleColor = texture2D(uMap, vUv);
+        float brightness = max(sampleColor.r, max(sampleColor.g, sampleColor.b));
+        float foreground = smoothstep(0.045, 0.16, brightness);
+        float alpha = sampleColor.a * foreground * uOpacity;
+        if (alpha < 0.012) discard;
+        gl_FragColor = vec4(sampleColor.rgb, alpha);
+      }
+    `,
     transparent: true,
-    opacity: 0,
     depthWrite: false,
     depthTest: true,
     side: THREE.DoubleSide,
     blending: THREE.NormalBlending,
+    toneMapped: false
   }), [previewTexture]);
+
+  useEffect(() => () => previewMaterial.dispose(), [previewMaterial]);
 
   useEffect(() => {
     let disposed = false;
@@ -527,6 +642,15 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
   useEffect(() => () => {
     removeDadakidoOccluder(artwork.id);
   }, [artwork.id]);
+
+  useEffect(() => {
+    if (active) return;
+    useCreatureBehaviorStore.getState().removeCreaturePosition(artwork.id);
+    const interactions = useCreatureInteractionStore.getState();
+    interactions.clearEvent(artwork.id);
+    interactions.clearPortalApproach(artwork.id);
+    useCreatureEvolutionStore.getState().clearIntent(artwork.id);
+  }, [active, artwork.id]);
 
   const maxSize = 1.05;
   const planeWidth = artwork.aspect >= 1 ? maxSize : maxSize * artwork.aspect;
@@ -600,19 +724,82 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
     useCreatureEvolutionStore.getState().ensureCreature(artwork.id, index);
   }, [artwork.id, index]);
 
-  useFrame(({ clock, camera }, delta) => {
+  useFrame(({ clock, camera, size }, delta) => {
     const group = groupRef.current;
     const visual = visualRef.current;
     if (!group) return;
 
     const time = clock.elapsedTime;
     const wallTime = performance.now() * 0.001;
+    splatRevealRef.current = THREE.MathUtils.damp(
+      splatRevealRef.current,
+      splatUrl && splatReadyUrl === splatUrl ? 1 : 0,
+      2.8,
+      Math.min(delta, 1 / 30)
+    );
+    if (wasActiveRef.current && !active) {
+      activationStartedAtRef.current = -100;
+      retirementPositionRef.current = group.position.clone();
+      retirementProjectionRef.current.copy(group.position).project(camera);
+      const viewPosition = restPositionRef.current
+        .copy(group.position)
+        .applyMatrix4(camera.matrixWorldInverse);
+      const capturedDepth = Math.max(0.1, -viewPosition.z);
+      const finalRetiringWorldSize = Math.max(planeWidth, planeHeight)
+        * motion.baseScale
+        * RETIRING_TARGET_SCALE;
+      const capturedPointSize = camera instanceof THREE.PerspectiveCamera
+        ? THREE.MathUtils.clamp(
+          finalRetiringWorldSize
+            * size.height
+            / (
+              2
+              * Math.tan(THREE.MathUtils.degToRad(camera.getEffectiveFOV() * 0.5))
+              * capturedDepth
+              * 0.76
+            ),
+          8,
+          240
+        )
+        : undefined;
+      const capturedAnchor = {
+        x: THREE.MathUtils.clamp(retirementProjectionRef.current.x, -0.98, 0.98),
+        y: THREE.MathUtils.clamp(retirementProjectionRef.current.y, -0.94, 0.94),
+        depth: capturedDepth,
+        pointSize: capturedPointSize
+      };
+      bubbleScreenAnchorRef.current = capturedAnchor;
+      onRestAnchorCapture?.(artwork.id, capturedAnchor);
+    } else if (!wasActiveRef.current && active) {
+      retirementPositionRef.current = null;
+      activationStartedAtRef.current = time;
+      activationPathOffsetInitializedRef.current = false;
+      activationPathOffsetStartedAtRef.current = -100;
+    }
+    wasActiveRef.current = active;
+    if (active && activationStartedAtRef.current === null) {
+      activationStartedAtRef.current = time;
+    }
+
+    const restPosition = !active && retirementPositionRef.current
+      ? restPositionRef.current.copy(retirementPositionRef.current)
+      : (!active || restBlendRef.current > 0.001)
+      ? writeCreatureBubbleWorldPosition(
+        camera,
+        bubbleScreenAnchorRef.current,
+        restPositionRef.current,
+        restForwardRef.current,
+        restRightRef.current,
+        restUpRef.current
+      )
+      : restPositionRef.current;
     const interactionEvent = useCreatureInteractionStore.getState().events[artwork.id];
     // Interaction events are scheduled on the R3F clock. Using performance.now
     // here made events appear to skip phases after a slow first load.
     const interactionAge = interactionEvent ? time - interactionEvent.startedAt : Number.POSITIVE_INFINITY;
     const interactionActive = Boolean(
-      interactionEvent
+      active
+      && interactionEvent
       && interactionAge >= 0
       && interactionAge < interactionEvent.duration
       && !spotlightEnabled
@@ -634,8 +821,14 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
       startTimeRef.current = time;
     }
 
-    const localTime = time - startTimeRef.current;
-    const entryProgress = THREE.MathUtils.smoothstep(THREE.MathUtils.clamp(localTime / 1.15, 0, 1), 0, 1);
+    const localTime = showEntryTrail
+      ? time - startTimeRef.current
+      : INITIAL_ENTRY_DURATION;
+    const entryProgress = THREE.MathUtils.smoothstep(
+      THREE.MathUtils.clamp(localTime / INITIAL_ENTRY_DURATION, 0, 1),
+      0,
+      1
+    );
 
     // ── spotlight showcase mode ──
     const spotlight = useSketchStore.getState().spotlight;
@@ -660,12 +853,116 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
     const isSpotlightHold = Boolean(spotlightLandingRef.current)
       && spotlightHoldAge >= 0
       && spotlightHoldAge < SPOTLIGHT_FEATURED_HOLD_DURATION;
-    /* ---- Spherical shell motion around dadakido ---- */
-    const azimuth = time * orbitParams.orbitSpeed + orbitParams.phaseOffset;
+
+    if (!active) {
+      const transitionDelta = Math.min(delta, 1 / 30);
+      restBlendRef.current = THREE.MathUtils.damp(restBlendRef.current, 1, 1.35, transitionDelta);
+      const restTransition = THREE.MathUtils.smootherstep(restBlendRef.current, 0, 1);
+      activityEffectRef.current = 1 - restTransition;
+      internalMotionStrengthRef.current = THREE.MathUtils.damp(
+        internalMotionStrengthRef.current,
+        0,
+        1.8,
+        transitionDelta
+      );
+      spotlightFocusRef.current = 0;
+      portalVisibilityRef.current = 1;
+      respawnVisibilityRef.current = 1;
+      reappearRef.current = 1 - restTransition;
+      if (retirementPositionRef.current) {
+        group.position.copy(retirementPositionRef.current);
+        lastPositionInitializedRef.current = true;
+      } else if (!lastPositionInitializedRef.current) {
+        group.position.copy(restPosition);
+        lastPositionInitializedRef.current = true;
+      } else {
+        group.position.lerp(restPosition, 1 - Math.exp(-transitionDelta * 1.35));
+      }
+      const restScale = motion.baseScale * RETIRING_TARGET_SCALE;
+      group.scale.setScalar(THREE.MathUtils.damp(
+        group.scale.x || restScale,
+        restScale,
+        1.2,
+        transitionDelta
+      ));
+      group.renderOrder = RESTING_RENDER_ORDER;
+      creatureRenderOrderRef.current = RESTING_RENDER_ORDER;
+      removeDadakidoOccluder(artwork.id);
+
+      const targetYaw = Math.atan2(
+        camera.position.x - group.position.x,
+        camera.position.z - group.position.z
+      );
+      cameraFacingYawRef.current = cameraFacingInitializedRef.current
+        ? dampAngle(cameraFacingYawRef.current, targetYaw, 3.2, transitionDelta)
+        : targetYaw;
+      cameraFacingInitializedRef.current = true;
+      if (visual) {
+        visual.position.set(0, 0, 0);
+        visual.rotation.set(0, cameraFacingYawRef.current, 0);
+        visual.scale.setScalar(1);
+      }
+      if (interactionMeshRef.current) interactionMeshRef.current.visible = false;
+      previewMaterial.uniforms.uOpacity.value = 0;
+      lastPositionRef.current.copy(group.position);
+      group.visible = true;
+      spotlightPreviousPhaseRef.current = spotlight.phase;
+      return;
+    }
+
+    if (interactionMeshRef.current) interactionMeshRef.current.visible = true;
+    const transitionDelta = Math.min(delta, 1 / 30);
+    let activationScale = 1;
+    if (activationStartedAtRef.current !== null && activationStartedAtRef.current >= 0) {
+      const activationAge = Math.max(0, time - activationStartedAtRef.current);
+      const materializeProgress = THREE.MathUtils.smootherstep(
+        THREE.MathUtils.clamp(activationAge / ACTIVITY_MATERIALIZE_DURATION, 0, 1),
+        0,
+        1
+      );
+      const glideProgress = THREE.MathUtils.smootherstep(
+        THREE.MathUtils.clamp(
+          (activationAge - ACTIVITY_MATERIALIZE_DURATION) / ACTIVITY_RELEASE_DURATION,
+          0,
+          1
+        ),
+        0,
+        1
+      );
+      restBlendRef.current = 1 - glideProgress;
+      activityEffectRef.current = materializeProgress;
+      activationScale = THREE.MathUtils.lerp(
+        ACTIVITY_START_SCALE,
+        1,
+        materializeProgress
+      );
+      if (glideProgress >= 0.999) activationStartedAtRef.current = -100;
+    } else {
+      restBlendRef.current = THREE.MathUtils.damp(restBlendRef.current, 0, 1.15, transitionDelta);
+    }
+    const restTransition = THREE.MathUtils.smootherstep(restBlendRef.current, 0, 1);
+    if (activationStartedAtRef.current === null || activationStartedAtRef.current < 0) {
+      activityEffectRef.current = 1 - restTransition;
+    }
+    /* ---- Slow seeded free-flight path around dadakido ---- */
+    const turnWander = Math.sin(
+      time * orbitParams.turnWanderSpeed + orbitParams.wanderPhase
+    ) * 0.34;
+    const azimuth = time * orbitParams.orbitSpeed * orbitParams.direction
+      + orbitParams.phaseOffset
+      + turnWander;
     const latitudeWave = time * orbitParams.latitudeSpeed + orbitParams.latitudePhase;
-    const latitude = Math.sin(latitudeWave) * orbitParams.latitudeAmplitude;
-    const radius = orbitParams.orbitRadius * (1 + Math.sin(time * 0.12 + motion.phase) * orbitParams.radiusBreath);
-    const portalApproach = useCreatureInteractionStore.getState().portalApproaches[artwork.id];
+    const latitude = (
+      Math.sin(latitudeWave)
+      + Math.sin(
+        time * orbitParams.verticalWanderSpeed + orbitParams.wanderPhase * 1.73
+      ) * 0.24
+    ) * orbitParams.latitudeAmplitude;
+    const radius = orbitParams.orbitRadius * (
+      1
+      + Math.sin(time * 0.073 + motion.phase) * orbitParams.radiusBreath
+      + Math.sin(time * 0.031 + orbitParams.wanderPhase) * 0.018
+    );
     const cosLat = Math.cos(latitude);
     const sinLat = Math.sin(latitude);
     const cosAz = Math.cos(azimuth);
@@ -674,67 +971,60 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
     const orbitX = cosAz * horizontalRadius;
     const orbitY = sinLat * radius;
     const orbitZ = sinAz * horizontalRadius;
-    const pathPosition = CREATURE_ORBIT_CENTER.clone()
-      .add(new THREE.Vector3(orbitX, orbitY, orbitZ));
-    // tangent for roll calculation
-    const latitudeVelocity = Math.cos(latitudeWave) * orbitParams.latitudeSpeed * orbitParams.latitudeAmplitude;
-    const tangent = new THREE.Vector3(
-      -radius * cosLat * sinAz * orbitParams.orbitSpeed - radius * sinLat * cosAz * latitudeVelocity,
-      radius * cosLat * latitudeVelocity,
-      radius * cosLat * cosAz * orbitParams.orbitSpeed - radius * sinLat * sinAz * latitudeVelocity
-    ).normalize();
-    const foodOffset = portalApproach
-      ? portalDesiredVelocityRef.current.set(0, 0, 0)
-      : nearestFoodAttraction(pathPosition, wallTime);
-    const avoidOffset = portalApproach
-      ? portalTargetRef.current.set(0, 0, 0)
-      : pointerAvoidance(pathPosition).add(crowdAvoidance(artwork.id, pathPosition));
-    const targetOffset = foodOffset.add(avoidOffset);
-    const aiIntent = useCreatureEvolutionStore.getState().intents[artwork.id];
-    aiDesiredOffsetRef.current.set(0, 0, 0);
-    const aiTargetPosition = aiIntent
-      ? useCreatureBehaviorStore.getState().creaturePositions[aiIntent.targetId]
-      : undefined;
-    if (!portalApproach && aiIntent && aiIntent.expiresAt >= time && aiTargetPosition) {
-      aiTargetPositionRef.current.set(...aiTargetPosition);
-      if (aiIntent.mode === 'chase') {
-        aiDesiredOffsetRef.current
-          .copy(aiTargetPositionRef.current)
-          .sub(pathPosition);
-        const distance = aiDesiredOffsetRef.current.length();
-        if (distance > 0.001) {
-          aiDesiredOffsetRef.current.multiplyScalar(
-            THREE.MathUtils.clamp(distance * 0.48, 0.72, 4.4)
-              * aiIntent.strength
-              / distance
-          );
-        }
-      } else {
-        aiDesiredOffsetRef.current
-          .copy(pathPosition)
-          .sub(aiTargetPositionRef.current);
-        const distance = aiDesiredOffsetRef.current.length();
-        if (distance > 0.001) {
-          aiDesiredOffsetRef.current.multiplyScalar(
-            THREE.MathUtils.clamp(1.05 + (8.5 - distance) * 0.28, 0.72, 3)
-              * aiIntent.strength
-              / distance
-          );
-        }
+    const pathPosition = currentPathPositionRef.current
+      .copy(CREATURE_ORBIT_CENTER)
+      .add(frameMotionOffsetRef.current.set(
+        orbitX + Math.sin(time * 0.047 + orbitParams.wanderPhase) * 0.72,
+        orbitY + Math.sin(time * 0.061 + orbitParams.wanderPhase * 0.83) * 0.38,
+        orbitZ + Math.cos(time * 0.039 + orbitParams.wanderPhase * 1.31) * 0.62
+      ));
+    if (!pathPositionInitializedRef.current) {
+      previousPathPositionRef.current.copy(pathPosition);
+      pathDirectionRef.current.set(
+        -sinAz * orbitParams.direction,
+        0,
+        cosAz * orbitParams.direction
+      ).normalize();
+      pathPositionInitializedRef.current = true;
+    } else {
+      pathDirectionTargetRef.current.subVectors(pathPosition, previousPathPositionRef.current);
+      if (pathDirectionTargetRef.current.lengthSq() > 0.000001) {
+        pathDirectionTargetRef.current.normalize();
+        pathDirectionRef.current.lerp(
+          pathDirectionTargetRef.current,
+          1 - Math.exp(-Math.min(delta, 1 / 30) * 2.2)
+        ).normalize();
       }
-      targetOffset.add(aiDesiredOffsetRef.current);
+      previousPathPositionRef.current.copy(pathPosition);
     }
-    smoothedOffsetRef.current.lerp(targetOffset, 1 - Math.exp(-delta * 2.4));
+    const tangent = pathDirectionRef.current;
+    const targetOffset = crowdAvoidance(artwork.id, pathPosition).multiplyScalar(0.55);
+    const fullInternalMotion = interactionActive
+      || isSpotlight
+      || isSpotlightHold
+      || burstPhaseRef.current < 0.999;
+    const internalMotionTarget = ambientMotionEnabled
+      ? (fullInternalMotion ? 1 : 0)
+      : 0;
+    internalMotionStrengthRef.current = THREE.MathUtils.damp(
+      internalMotionStrengthRef.current,
+      internalMotionTarget,
+      ambientMotionEnabled ? (fullInternalMotion ? 4.5 : 2.2) : 5.5,
+      Math.min(delta, 1 / 30)
+    );
+    const motionDelta = Math.min(delta, 1 / 30);
+    smoothedOffsetRef.current.lerp(targetOffset, 1 - Math.exp(-motionDelta * 1.5));
 
-    const basePose = getCreatureMotionPose(artwork.motionType, time, motion.phase);
-    const activeAction = pickCreatureAction(artwork.actionTypes, time, motion.phase, artwork.motionType);
-    const rawActionPose = getCreatureActionPose(activeAction, time, motion.phase);
+    const basePose = getCreatureMotionPose('float', time, motion.phase);
+    const rawActionPose = getCreatureActionPose('drift', time, motion.phase);
     const actionSegmentProgress = THREE.MathUtils.euclideanModulo(
       time + motion.phase * 2.7,
       4.6
     ) / 4.6;
-    const actionBlend = THREE.MathUtils.smootherstep(actionSegmentProgress, 0, 0.14)
-      * (1 - THREE.MathUtils.smootherstep(actionSegmentProgress, 0.82, 1));
+    const actionBlend = THREE.MathUtils.smootherstep(actionSegmentProgress, 0, 0.2)
+      * (1 - THREE.MathUtils.smootherstep(actionSegmentProgress, 0.72, 1))
+      * AMBIENT_ACTION_STRENGTH
+      * internalMotionStrengthRef.current;
     const actionPose = {
       ...rawActionPose,
       offsetX: rawActionPose.offsetX * actionBlend,
@@ -751,48 +1041,34 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
       speedMultiplier: THREE.MathUtils.lerp(1, rawActionPose.speedMultiplier, actionBlend),
       impact: rawActionPose.impact * actionBlend
     };
-    if (actionPose.spin > 0) {
-      actionSpinRef.current += delta * 1.45 * actionPose.spin;
-    } else {
-      const nearestTurn = Math.round(actionSpinRef.current / (Math.PI * 2)) * Math.PI * 2;
-      actionSpinRef.current = THREE.MathUtils.damp(actionSpinRef.current, nearestTurn, 5.5, delta);
+    const targetPosition = targetPathPositionRef.current
+      .copy(pathPosition)
+      .add(smoothedOffsetRef.current)
+      .add(frameMotionOffsetRef.current.set(
+        basePose.extraX * AMBIENT_FLOAT_POSITION_SCALE + actionPose.offsetX,
+        basePose.extraY * AMBIENT_FLOAT_POSITION_SCALE + actionPose.offsetY,
+        basePose.extraZ * AMBIENT_FLOAT_POSITION_SCALE + actionPose.offsetZ
+      ));
+    if (!activationPathOffsetInitializedRef.current) {
+      activationPathOffsetRef.current.subVectors(restPosition, targetPosition);
+      activationPathOffsetInitializedRef.current = true;
+      activationPathOffsetStartedAtRef.current = time;
     }
-    const actionThrust = portalApproach
-      ? portalDesiredVelocityRef.current.set(0, 0, 0)
-      : tangent.clone().multiplyScalar((actionPose.speedMultiplier - 1) * 0.85);
-    const targetPosition = pathPosition.clone().add(smoothedOffsetRef.current).add(new THREE.Vector3(
-      portalApproach ? 0 : basePose.extraX + actionPose.offsetX,
-      portalApproach ? 0 : basePose.extraY + actionPose.offsetY,
-      portalApproach ? 0 : basePose.extraZ + actionPose.offsetZ
-    )).add(actionThrust);
-    if (portalApproach) {
-      const portal = getGalaxyPortal(portalApproach.entryId);
-      if (portal) {
-        const currentVisible = lastPositionRef.current.lengthSq() > 0.0001
-          ? lastPositionRef.current
-          : pathPosition;
-        portalTargetRef.current
-          .copy(portal.position)
-          .addScaledVector(portal.velocity, 0.12);
-        portalDesiredVelocityRef.current
-          .subVectors(portalTargetRef.current, currentVisible);
-        const distance = portalDesiredVelocityRef.current.length();
-        if (distance > 0.001) {
-          const arrival = THREE.MathUtils.smoothstep(distance, portal.captureRadius, 2.4);
-          const speed = THREE.MathUtils.lerp(3.2, 8.5, arrival);
-          portalDesiredVelocityRef.current.multiplyScalar(speed / distance);
-        }
-        portalApproachVelocityRef.current.lerp(
-          portalDesiredVelocityRef.current,
-          1 - Math.exp(-delta * 11)
-        );
-        portalApproachPositionRef.current
-          .copy(currentVisible)
-          .addScaledVector(portalApproachVelocityRef.current, delta);
-        targetPosition.copy(portalApproachPositionRef.current);
-        tangent.copy(portalApproachVelocityRef.current).normalize();
-        smoothedOffsetRef.current.set(0, 0, 0);
-      }
+    if (activationPathOffsetStartedAtRef.current >= 0) {
+      const recenterAge = Math.max(
+        0,
+        time - activationPathOffsetStartedAtRef.current - ACTIVITY_MATERIALIZE_DURATION
+      );
+      const recenterProgress = THREE.MathUtils.smootherstep(
+        THREE.MathUtils.clamp(recenterAge / ACTIVITY_PATH_RECENTER_DURATION, 0, 1),
+        0,
+        1
+      );
+      targetPosition.addScaledVector(
+        activationPathOffsetRef.current,
+        1 - recenterProgress
+      );
+      if (recenterProgress >= 0.999) activationPathOffsetStartedAtRef.current = -100;
     }
 
     if (showEntryTrail && !entryTrailInitializedRef.current) {
@@ -800,7 +1076,7 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
       entryTrailEndRef.current = targetPosition.clone();
       entryTrailStartedAtRef.current = wallTime;
       entryTrailInitializedRef.current = true;
-    } else if (localTime < 1.25 && entryTrailEndRef.current) {
+    } else if (localTime < INITIAL_ENTRY_DURATION && entryTrailEndRef.current) {
       entryTrailEndRef.current.copy(targetPosition);
     }
     const x = THREE.MathUtils.lerp(motion.entryX, targetPosition.x, entryProgress);
@@ -818,10 +1094,10 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
     const entryGlow = 1 + (1 - entryProgress) * 0.2;
     const evolutionRecord = getCreatureEvolution(artwork.id, index);
     const evolutionScale = 1 + Math.min(evolutionRecord.level, 12) * 0.025;
-    const normalScale = motion.baseScale * 0.95 * depthFactor * entryGlow * evolutionScale;
+    const normalScale = motion.baseScale * 1.07 * depthFactor * entryGlow * evolutionScale;
 
     // ── Spotlight: model moves into the same outer layer as the entry burst ──
-    const pathWorldPosition = new THREE.Vector3(x, y, z);
+    const pathWorldPosition = pathWorldPositionRef.current.set(x, y, z);
     let interactionYaw = 0;
     let interactionRoll = 0;
     let interactionPitch = 0;
@@ -915,6 +1191,11 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
           planetPositionRef.current
         ).clone();
         const captureDuration = interactionEvent.captureDuration ?? 2.1;
+        const holdDuration = 0.9;
+        const returnDuration = Math.max(
+          1.6,
+          interactionEvent.duration - captureDuration - holdDuration
+        );
         writeTrappedCreaturePartAction(
           partActionRef.current,
           interactionAge,
@@ -928,11 +1209,12 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
           0.46
         );
         const rawSuctionProgress = THREE.MathUtils.clamp(interactionAge / captureDuration, 0, 1);
-        const suctionProgress = THREE.MathUtils.smootherstep(
-          THREE.MathUtils.clamp((rawSuctionProgress - 0.1) / 0.9, 0, 1),
+        const smoothSuctionProgress = THREE.MathUtils.smootherstep(
+          THREE.MathUtils.clamp((rawSuctionProgress - 0.04) / 0.96, 0, 1),
           0,
           1
         );
+        const suctionProgress = 1 - Math.pow(1 - smoothSuctionProgress, 1.35);
         if (interactionAge < captureDuration && interactionEvent.origin) {
           interactionAnchorRef.current.set(...interactionEvent.origin);
           if (suctionTrailSequenceRef.current !== interactionEvent.sequence) {
@@ -957,7 +1239,7 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
           interactionYaw = Math.sin(suctionProgress * Math.PI) * 0.26;
           interactionRoll = Math.sin(suctionProgress * Math.PI * 2) * curveFade * 0.14;
           interactionScale = THREE.MathUtils.lerp(1, insideScale, suctionProgress);
-        } else {
+        } else if (interactionAge < captureDuration + holdDuration) {
           const struggleAge = Math.max(0, interactionAge - captureDuration);
           const struggleRamp = THREE.MathUtils.smootherstep(
             THREE.MathUtils.clamp(struggleAge / 0.34, 0, 1),
@@ -977,6 +1259,25 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
           interactionYaw = Math.sin(struggleAge * 8.4) * 0.3 * struggleEnvelope;
           interactionRoll = Math.sin(struggleAge * 4.2) * 0.055 * struggleEnvelope;
           interactionScale = insideScale + Math.sin(struggleAge * 5.6) * 0.008 * struggleEnvelope;
+        } else {
+          const returnProgress = THREE.MathUtils.smootherstep(
+            THREE.MathUtils.clamp(
+              (interactionAge - captureDuration - holdDuration) / returnDuration,
+              0,
+              1
+            ),
+            0,
+            1
+          );
+          interactionOverride = planetPosition.lerp(pathWorldPosition, returnProgress);
+          interactionScale = THREE.MathUtils.lerp(insideScale, 1, returnProgress);
+          interactionYaw = Math.sin(returnProgress * Math.PI) * 0.12 * (1 - returnProgress);
+          interactionRoll = Math.sin(returnProgress * Math.PI * 2) * 0.04 * (1 - returnProgress);
+          const trappedRecovery = 1 - returnProgress;
+          partActionRef.current.guard *= trappedRecovery;
+          partActionRef.current.curl *= trappedRecovery;
+          partActionRef.current.struggle *= trappedRecovery;
+          partActionRef.current.compression *= trappedRecovery;
         }
       } else if (interactionEvent.kind === 'portal' && interactionEvent.portal) {
         const portal = interactionEvent.portal;
@@ -989,22 +1290,15 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
         const portalFitScale = Math.min(1, portal.entryRadius * 0.88 / localCreatureRadius);
         if (interactionAge < transitionAt) {
           const raw = THREE.MathUtils.clamp(interactionAge / transitionAt, 0, 1);
-          const suction = THREE.MathUtils.smootherstep(raw, 0, 1);
+          const smoothSuction = THREE.MathUtils.smootherstep(raw, 0, 1);
+          const suction = 1 - Math.pow(1 - smoothSuction, 1.45);
           interactionAnchorRef.current.set(...(interactionEvent.origin ?? pathWorldPosition.toArray()));
-          const travel = entryPosition.clone().sub(interactionAnchorRef.current);
-          const side = new THREE.Vector3().crossVectors(travel, THREE.Object3D.DEFAULT_UP);
-          if (side.lengthSq() < 0.0001) side.set(1, 0, 0);
-          else side.normalize();
-          const lift = new THREE.Vector3().crossVectors(side, travel).normalize();
           interactionOverride = interactionAnchorRef.current.clone().lerp(entryPosition, suction)
-            .addScaledVector(side, Math.sin(suction * Math.PI * 3) * (1 - suction) * 0.48)
-            .addScaledVector(lift, Math.sin(suction * Math.PI) * (1 - suction) * 0.24);
-          interactionYaw = suction * Math.PI * 2.2;
-          interactionRoll = suction * Math.PI * 3.4;
+            .addScaledVector(THREE.Object3D.DEFAULT_UP, Math.sin(suction * Math.PI) * 0.12);
           interactionScale = THREE.MathUtils.lerp(1, portalFitScale * 0.08, suction);
           portalVisibilityRef.current = 1 - THREE.MathUtils.smootherstep(raw, 0.72, 1);
         } else {
-          const emergeDuration = 0.65;
+          const emergeDuration = PORTAL_EMERGE_DURATION;
           const emergeAge = interactionAge - transitionAt;
           const emergence = THREE.MathUtils.smootherstep(
             THREE.MathUtils.clamp(emergeAge / emergeDuration, 0, 1),
@@ -1023,9 +1317,8 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
             if (side.lengthSq() < 0.0001) side.set(0, 0, 1);
             else side.normalize();
             interactionOverride = exitPosition.clone().lerp(emergePosition, emergence)
-              .addScaledVector(side, Math.sin(emergence * Math.PI) * 0.28);
+              .addScaledVector(side, Math.sin(emergence * Math.PI) * 0.08);
             interactionScale = THREE.MathUtils.lerp(portalFitScale * 0.08, portalFitScale, emergence);
-            interactionRoll = (1 - emergence) * -Math.PI * 1.4;
             portalVisibilityRef.current = THREE.MathUtils.smootherstep(emergence, 0.08, 0.52);
             if (lastInteractionBeatRef.current < 1) {
               lastInteractionBeatRef.current = 1;
@@ -1036,8 +1329,16 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
               };
             }
           } else {
+            const returnDuration = Math.max(
+              0.8,
+              interactionEvent.duration - transitionAt - emergeDuration
+            );
             const returnProgress = THREE.MathUtils.smootherstep(
-              THREE.MathUtils.clamp((interactionAge - transitionAt - emergeDuration) / 1.3, 0, 1),
+              THREE.MathUtils.clamp(
+                (interactionAge - transitionAt - emergeDuration) / returnDuration,
+                0,
+                1
+              ),
               0,
               1
             );
@@ -1139,11 +1440,19 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
       spotlightAnchorRef.current = null;
       spotlightLandingRef.current = null;
       spotlightReleaseStartedRef.current = false;
-      group.position.copy(pathWorldPosition);
+      if (!lastPositionInitializedRef.current) {
+        group.position.copy(pathWorldPosition);
+      } else {
+        group.position.lerp(pathWorldPosition, 1 - Math.exp(-motionDelta * 7));
+      }
     }
     if (interactionOverride && !isSpotlight) {
       group.position.copy(interactionOverride);
     }
+    if (restBlendRef.current > 0.001) {
+      group.position.lerp(restPosition, restTransition);
+    }
+    group.visible = true;
 
     if (isSpotlight && (spotlight.phase === 'fly-in' || spotlight.phase === 'showcase')) {
       const focusProgress = spotlight.phase === 'fly-in'
@@ -1175,6 +1484,11 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
       group.scale.setScalar(normalScale);
     }
     group.scale.multiplyScalar(interactionScale);
+    group.scale.multiplyScalar(
+      activationScale * THREE.MathUtils.lerp(0.92, 1, activityEffectRef.current)
+    );
+    if (!isSpotlight) {
+    }
     const pulseAge = wallTime - pulseStartedAtRef.current;
     pulseRef.current = pulseAge < 1.15 ? Math.sin((1 - pulseAge / 1.15) * Math.PI) * 0.9 : 0;
     const burstAge = wallTime - burstStartedAtRef.current;
@@ -1249,7 +1563,12 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
     reappearRef.current = Math.min(
       portalVisibilityRef.current,
       respawnVisibilityRef.current,
-      spotlightReveal
+      spotlightReveal,
+      THREE.MathUtils.lerp(
+        RESTING_MODEL_VISIBILITY,
+        1,
+        activityEffectRef.current
+      )
     );
 
     creatureViewPositionRef.current.copy(group.position).applyMatrix4(camera.matrixWorldInverse);
@@ -1270,22 +1589,23 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
       0.75,
       2.2
     );
+    const occluderVisibility = THREE.MathUtils.smoothstep(reappearRef.current, 0.08, 0.42);
     const occlusionStrength = resolveCreatureOcclusionStrength(
       creatureViewDepth,
       dadakidoViewDepth,
       occlusionTransitionDepth
-    ) * THREE.MathUtils.smoothstep(reappearRef.current, 0.08, 0.42);
+    ) * occluderVisibility;
     updateDadakidoOccluder(
       artwork.id,
       group.position,
       planeWidth * occluderScale * 0.62,
       planeHeight * occluderScale * 0.62,
-      occlusionStrength
+      occlusionStrength,
+      occluderVisibility
     );
     if (previewMeshRef.current) {
       previewMeshRef.current.renderOrder = creatureRenderOrderRef.current + 3;
     }
-
     visibleInteractionPositionRef.current.copy(group.position);
     if (showEntryTrail) {
       if (!entryTrailHeadRef.current) entryTrailHeadRef.current = group.position.clone();
@@ -1303,11 +1623,11 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
       interactionMeshRef.current.scale.setScalar(group.scale.x);
     }
 
-    useCreatureBehaviorStore.getState().setCreaturePosition(artwork.id, [
-      group.position.x,
-      group.position.y,
-      group.position.z
-    ]);
+    const behaviorPosition = behaviorPositionTupleRef.current;
+    behaviorPosition[0] = group.position.x;
+    behaviorPosition[1] = group.position.y;
+    behaviorPosition[2] = group.position.z;
+    useCreatureBehaviorStore.getState().setCreaturePosition(artwork.id, behaviorPosition);
 
     // Face the final rendered position towards the camera. This must run after
     // spotlight, interaction and respawn overrides; using the unmodified orbit
@@ -1319,55 +1639,84 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
     const audienceSwayAmplitude = isSpotlight
       ? 0
       : (isSpotlightHold ? FEATURED_SWAY_ANGLE : AUDIENCE_SWAY_ANGLE);
-    const audienceSway = Math.sin(time * 0.36 + motion.phase) * audienceSwayAmplitude;
-    const desiredCameraFacingYaw = targetCameraFacingYaw + audienceSway;
+    const audienceSway = Math.sin(time * 0.36 + motion.phase)
+      * audienceSwayAmplitude
+      * internalMotionStrengthRef.current;
+    const travelYaw = Math.atan2(tangent.x, tangent.z);
+    const travelFacingDifference = THREE.MathUtils.euclideanModulo(
+      travelYaw - targetCameraFacingYaw + Math.PI,
+      Math.PI * 2
+    ) - Math.PI;
+    const freeFlightFacingOffset = isSpotlight || isSpotlightHold || interactionActive
+      ? 0
+      : THREE.MathUtils.clamp(
+        travelFacingDifference,
+        -MAX_FREE_FLIGHT_FACING_OFFSET,
+        MAX_FREE_FLIGHT_FACING_OFFSET
+      );
+    const desiredCameraFacingYaw = targetCameraFacingYaw
+      + freeFlightFacingOffset
+      + audienceSway;
     if (!cameraFacingInitializedRef.current) {
       // Do not let a newly mounted creature spend its first frames turning from
       // the default world angle into view.
       cameraFacingYawRef.current = desiredCameraFacingYaw;
       cameraFacingInitializedRef.current = true;
     } else {
-      cameraFacingYawRef.current = THREE.MathUtils.damp(
+      cameraFacingYawRef.current = dampAngle(
         cameraFacingYawRef.current,
         desiredCameraFacingYaw,
-        isSpotlight || isSpotlightHold ? 8.5 : 6.2,
-        delta
+        isSpotlight || isSpotlightHold ? 8.5 : 3.4,
+        Math.min(delta, 1 / 30)
       );
     }
 
     if (visual) {
       const splatFocus = splatUrl ? spotlightFocusRef.current : 0;
       const freeSplatMotion = splatUrl ? 1 - splatFocus : 0;
+      const internalMotionStrength = internalMotionStrengthRef.current;
       visual.position.set(
-        splatUrl ? 0 : Math.sin(time * 0.34 + motion.phase * 0.9) * 0.055 * freeSplatMotion,
-        Math.sin(time * 0.48 + motion.phase) * 0.12 * freeSplatMotion,
-        Math.sin(time * 0.28 + motion.phase * 1.4) * 0.16 * freeSplatMotion
+        splatUrl ? 0 : Math.sin(time * 0.34 + motion.phase * 0.9) * 0.08 * freeSplatMotion * internalMotionStrength,
+        Math.sin(time * 0.48 + motion.phase) * 0.18 * freeSplatMotion * internalMotionStrength,
+        Math.sin(time * 0.28 + motion.phase * 1.4) * 0.23 * freeSplatMotion * internalMotionStrength
       );
 
-      const velocity = group.position.clone().sub(lastPositionRef.current);
+      if (!lastPositionInitializedRef.current) {
+        lastPositionRef.current.copy(group.position);
+        smoothedFrameTravelRef.current.set(0, 0, 0);
+        lastPositionInitializedRef.current = true;
+      }
+      const frameTravel = group.position.clone().sub(lastPositionRef.current);
+      if (frameTravel.lengthSq() > MAX_ROLL_FRAME_TRAVEL * MAX_ROLL_FRAME_TRAVEL) {
+        frameTravel.setLength(MAX_ROLL_FRAME_TRAVEL);
+      }
+      smoothedFrameTravelRef.current.lerp(
+        frameTravel,
+        1 - Math.exp(-delta * 5.2)
+      );
       const rollFromPath = THREE.MathUtils.clamp(
-        tangent.x * -0.28 + tangent.z * 0.12 + velocity.x * -1.4,
+        tangent.x * -0.28 + tangent.z * 0.12 + smoothedFrameTravelRef.current.x * -1.4,
         -0.22,
         0.22
       );
       const readableRoll = THREE.MathUtils.clamp(
         rollFromPath
-          + basePose.rotationZ * 0.28
-          + actionPose.roll * 0.12
-          + Math.sin(time * 0.62 + motion.phase) * preset.rotationAmount * 0.18,
-        -0.12,
-        0.12
+          + basePose.rotationZ * 0.28 * internalMotionStrength
+          + actionPose.roll * 0.12 * internalMotionStrength
+          + Math.sin(time * 0.62 + motion.phase) * preset.rotationAmount * 0.18 * internalMotionStrength,
+        -0.18,
+        0.18
       );
       const truePitch = THREE.MathUtils.clamp(
-        Math.sin(time * 0.18 + motion.phase * 0.7) * 0.07
+        Math.sin(time * 0.18 + motion.phase * 0.7) * 0.07 * internalMotionStrength
           + tangent.z * 0.06
-          + Math.sin(time * basePose.waveFrequency + motion.phase) * basePose.waveAmplitude * 0.04,
+          + Math.sin(time * basePose.waveFrequency + motion.phase) * basePose.waveAmplitude * 0.04 * internalMotionStrength,
         -Math.PI / 12,
         Math.PI / 12
       );
       const focusAmount = spotlightFocusRef.current;
       const splatPoseLock = focusAmount;
-      const overallRoll = actionSpinRef.current + interactionRoll;
+      const overallRoll = interactionRoll;
       const readableInteractionYaw = THREE.MathUtils.clamp(
         interactionYaw * (1 - splatPoseLock),
         -MAX_INTERACTION_FACING_OFFSET,
@@ -1387,12 +1736,14 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
         );
       }
 
-      const breathAmount = THREE.MathUtils.lerp(0.045, 0.008, focusAmount);
-      const breath = 1 + Math.sin(time * 1.35 + motion.phase) * breathAmount;
+      const breathAmount = THREE.MathUtils.lerp(0.018, 0.006, focusAmount);
+      const breath = 1 + Math.sin(time * 1.35 + motion.phase)
+        * breathAmount
+        * internalMotionStrength;
       const poseScale = THREE.MathUtils.lerp(
         1,
         (basePose.scaleX + basePose.scaleY + actionPose.scaleX + actionPose.scaleY) * 0.25,
-        THREE.MathUtils.lerp(0.32, 0.08, focusAmount)
+        THREE.MathUtils.lerp(0.32, 0.08, focusAmount) * internalMotionStrength
       );
       visual.scale.setScalar(breath * poseScale);
     }
@@ -1403,10 +1754,9 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
     const foregroundOpacity = creatureRenderOrderRef.current === CREATURE_FRONT_RENDER_ORDER
       ? 0.9
       : 0.72;
-    previewMaterial.opacity = splatUrl
-      ? 0
-      : spotlightFocusRef.current * foregroundOpacity;
-    previewMaterial.needsUpdate = true;
+    previewMaterial.uniforms.uOpacity.value = previewReadyUrl === artwork.url
+      ? (splatUrl ? 0 : spotlightFocusRef.current * foregroundOpacity)
+      : 0;
     spotlightPreviousPhaseRef.current = spotlight.phase;
   });
 
@@ -1439,7 +1789,7 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
         renderOrderBase={9}
         renderOrderRef={creatureRenderOrderRef}
       />
-      <group ref={groupRef} renderOrder={10}>
+      <group ref={groupRef} renderOrder={10} visible={false}>
       <group ref={visualRef}>
         {!splatUrl ? (
           <ParticleCreatureTrail
@@ -1448,6 +1798,7 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
             intensity={preset.trailIntensity * 0.42}
             spotlightFocusRef={spotlightFocusRef}
             renderOrderRef={creatureRenderOrderRef}
+            visibilityRef={activityEffectRef}
           />
         ) : null}
 
@@ -1462,8 +1813,11 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
             burstRef={burstRef}
             burstPhaseRef={burstPhaseRef}
             reappearRef={reappearRef}
+            loadVisibilityRef={splatRevealRef}
             renderOrderRef={creatureRenderOrderRef}
             partActionRef={partActionRef}
+            internalMotionStrengthRef={internalMotionStrengthRef}
+            allowDistanceCulling={false}
             onReady={() => {
               setSplatReadyUrl(splatUrl);
             }}
@@ -1487,6 +1841,7 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
             spotlightFocusRef={spotlightFocusRef}
             renderOrderRef={creatureRenderOrderRef}
             partActionRef={partActionRef}
+            internalMotionStrengthRef={internalMotionStrengthRef}
             spotlightEnabled={spotlightEnabled}
           />
         ) : null}
@@ -1500,28 +1855,29 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
             motionType={artwork.motionType}
             spotlightFocusRef={spotlightFocusRef}
             renderOrderRef={creatureRenderOrderRef}
+            visibilityRef={activityEffectRef}
           />
         ) : null}
 
         {/* Preview image plane — shows the original artwork during spotlight */}
-        {!splatUrl ? (
-          <mesh
-            ref={previewMeshRef}
-            material={previewMaterial}
-            renderOrder={3}
-            position={[0, 0, -0.12]}
-            frustumCulled
-          >
-            <planeGeometry args={[planeWidth, planeHeight]} />
-          </mesh>
-        ) : null}
+        <mesh
+          ref={previewMeshRef}
+          material={previewMaterial}
+          renderOrder={3}
+          position={[0, 0, -0.12]}
+          frustumCulled
+        >
+          <planeGeometry args={[planeWidth, planeHeight]} />
+        </mesh>
       </group>
-      <CreatureDustFeeding
-        creatureId={artwork.id}
-        seed={motion.seed}
-        renderOrderRef={creatureRenderOrderRef}
-        reappearRef={reappearRef}
-      />
+      {active ? (
+        <CreatureDustFeeding
+          creatureId={artwork.id}
+          seed={motion.seed}
+          renderOrderRef={creatureRenderOrderRef}
+          reappearRef={reappearRef}
+        />
+      ) : null}
       <CreatureLevelBadge
         creatureId={artwork.id}
         index={index}
@@ -1529,15 +1885,15 @@ export function SpaceCreature({ artwork, index, showEntryTrail = false }: SpaceC
         renderOrderRef={creatureRenderOrderRef}
         reappearRef={reappearRef}
       />
-      <CreatureEventParticles signalRef={effectSignalRef} />
-      <CreatureSuctionVortex creatureId={artwork.id} />
+      {active ? <CreatureEventParticles signalRef={effectSignalRef} /> : null}
+      {active ? <CreatureSuctionVortex creatureId={artwork.id} /> : null}
       </group>
       <mesh
         ref={interactionMeshRef}
         material={interactionMaterial}
         userData={markCreaturePriorityHit()}
         onPointerDown={() => {
-          if (spotlightEnabled || spotlightRequested || useCreatureInteractionStore.getState().events[artwork.id]) {
+          if (!active || spotlightEnabled || spotlightRequested || useCreatureInteractionStore.getState().events[artwork.id]) {
             return;
           }
           const now = performance.now() * 0.001;

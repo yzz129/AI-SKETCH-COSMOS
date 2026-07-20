@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { useFrame } from '@react-three/fiber';
+import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
 
 const TWINKLE_COUNT = 1200;
@@ -8,6 +9,7 @@ const BOUNDS_Z_MIN = -12;
 const BOUNDS_Z_MAX = -3;
 
 export function TwinkleStars() {
+  const pointsRef = useRef<THREE.Points>(null);
   const { geometry, material } = useMemo(() => {
     const geometry = new THREE.BufferGeometry();
     const positions = new Float32Array(TWINKLE_COUNT * 3);
@@ -107,7 +109,12 @@ export function TwinkleStars() {
         varying float vAlpha;
 
         void main() {
-          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          float nearFactor = smoothstep(${BOUNDS_Z_MIN.toFixed(1)}, ${BOUNDS_Z_MAX.toFixed(1)}, position.z);
+          float parallax = mix(0.025, 0.2, nearFactor);
+          vec3 driftedPosition = position;
+          driftedPosition.x += sin(uTime * 0.04 + aPhase) * parallax;
+          driftedPosition.y += cos(uTime * 0.032 + aPhase * 0.73) * parallax * 0.58;
+          vec4 mvPosition = modelViewMatrix * vec4(driftedPosition, 1.0);
           gl_Position = projectionMatrix * mvPosition;
 
           float wave = sin(uTime * aTwinkleSpeed + aPhase);
@@ -143,8 +150,19 @@ export function TwinkleStars() {
     return { geometry, material };
   }, []);
 
+  useFrame(({ clock }) => {
+    const time = clock.elapsedTime;
+    material.uniforms.uTime.value = time;
+    if (!pointsRef.current) return;
+
+    pointsRef.current.position.x = Math.sin(time * 0.025) * 0.16;
+    pointsRef.current.position.y = Math.cos(time * 0.019 + 0.7) * 0.09;
+    pointsRef.current.rotation.z = Math.sin(time * 0.012) * 0.004;
+  });
+
   return (
     <points
+      ref={pointsRef}
       geometry={geometry}
       material={material}
       raycast={() => null}

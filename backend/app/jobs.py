@@ -1,3 +1,4 @@
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ def _log_perf(job_id: str, artwork_id: str, stage: str, message: str = "") -> No
 class GenerationJob:
     job_id: str
     artwork_id: str
+    submission_id: str | None
     artwork_dir: Path
     source_path: Path
     num_gaussians: int
@@ -31,6 +33,11 @@ class GenerationJob:
     error: str | None = None
     created_at_perf: float = 0
     processing_started_at_perf: float = 0
+    finished_at_perf: float = 0
+
+
+class JobQueueFullError(RuntimeError):
+    pass
 
 
 class JobRegistry:
@@ -38,13 +45,42 @@ class JobRegistry:
         self._jobs: dict[str, GenerationJob] = {}
         self._lock = Lock()
         self._condition = Condition(self._lock)
-        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="triposplat")
+        self._max_workers = max(1, int(os.getenv("TRIPOSPLAT_MAX_WORKERS", "2")))
+        self._max_active_jobs = max(
+            self._max_workers,
+            int(os.getenv("TRIPOSPLAT_MAX_ACTIVE_JOBS", "24")),
+        )
+        self._retention_seconds = max(60, int(os.getenv("TRIPOSPLAT_JOB_RETENTION_SECONDS", "3600")))
+        self._executor = ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="triposplat")
+
+    def _prune_locked(self, now: float) -> None:
+        expired = [
+            job_id
+            for job_id, job in self._jobs.items()
+            if job.finished_at_perf > 0 and now - job.finished_at_perf >= self._retention_seconds
+        ]
+        for job_id in expired:
+            del self._jobs[job_id]
+
+    def stats(self) -> dict[str, int]:
+        with self._lock:
+            self._prune_locked(perf_counter())
+            queued = sum(job.status == JobStatus.queued for job in self._jobs.values())
+            processing = sum(job.status == JobStatus.processing for job in self._jobs.values())
+            return {
+                "queued": queued,
+                "processing": processing,
+                "active": queued + processing,
+                "capacity": self._max_active_jobs,
+                "workers": self._max_workers,
+            }
 
     def create(
         self,
         *,
         job_id: str,
         artwork_id: str,
+        submission_id: str | None,
         artwork_dir: Path,
         source_path: Path,
         num_gaussians: int,
@@ -54,6 +90,7 @@ class JobRegistry:
         job = GenerationJob(
             job_id=job_id,
             artwork_id=artwork_id,
+            submission_id=submission_id,
             artwork_dir=artwork_dir,
             source_path=source_path,
             num_gaussians=num_gaussians,
@@ -62,6 +99,15 @@ class JobRegistry:
             created_at_perf=perf_counter(),
         )
         with self._condition:
+            self._prune_locked(perf_counter())
+            active_jobs = sum(
+                item.status in {JobStatus.queued, JobStatus.processing}
+                for item in self._jobs.values()
+            )
+            if active_jobs >= self._max_active_jobs:
+                raise JobQueueFullError(
+                    f"generation queue is full ({active_jobs}/{self._max_active_jobs})"
+                )
             self._jobs[job_id] = job
             self._condition.notify_all()
         _log_perf(
@@ -127,12 +173,21 @@ class JobRegistry:
             )
             generate_start = perf_counter()
 
-            def report_progress(progress: float, message: str) -> None:
+            def report_progress(
+                progress: float,
+                message: str,
+                partial_assets: dict | None = None,
+            ) -> None:
+                updates = {
+                    "status": JobStatus.processing,
+                    "progress": progress,
+                    "message": message,
+                }
+                if partial_assets:
+                    updates["artwork"] = ArtworkAssets(**partial_assets)
                 self._update(
                     job_id,
-                    status=JobStatus.processing,
-                    progress=progress,
-                    message=message,
+                    **updates,
                 )
 
             assets = generate_triposplat_assets(
@@ -172,6 +227,7 @@ class JobRegistry:
                 progress=1,
                 message="ready",
                 artwork=ArtworkAssets(**assets),
+                finished_at_perf=perf_counter(),
             )
             _log_perf(
                 job.job_id,
@@ -187,6 +243,7 @@ class JobRegistry:
                 progress=1,
                 message="failed",
                 error=str(exc),
+                finished_at_perf=perf_counter(),
             )
 
 
@@ -194,6 +251,7 @@ def job_to_response(job: GenerationJob) -> JobResponse:
     return JobResponse(
         jobId=job.job_id,
         artworkId=job.artwork_id,
+        submissionId=job.submission_id,
         status=job.status,
         progress=job.progress,
         message=job.message,

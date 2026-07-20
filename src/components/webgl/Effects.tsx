@@ -1,6 +1,7 @@
 import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { useArtworkStore } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
@@ -122,6 +123,8 @@ const CollapsePass = {
 
 export function Effects() {
   const { gl, scene, camera, size } = useThree();
+  const artworkCount = useArtworkStore((state) => state.artworks.length);
+  const crowdedScene = artworkCount > 8;
   const [bloomReady, setBloomReady] = useState(false);
   const composer = useMemo(() => {
     const effectComposer = new EffectComposer(gl);
@@ -146,14 +149,18 @@ export function Effects() {
   useEffect(() => {
     composer.effectComposer.setPixelRatio(Math.min(gl.getPixelRatio(), 2));
     composer.effectComposer.setSize(size.width, size.height);
-    composer.bloomPass.setSize(size.width, size.height);
+    const bloomScale = crowdedScene ? 0.65 : 1;
+    composer.bloomPass.setSize(
+      Math.max(1, Math.round(size.width * bloomScale)),
+      Math.max(1, Math.round(size.height * bloomScale))
+    );
     const pixelRatio = Math.min(gl.getPixelRatio(), 2);
     composer.cinematicPass.uniforms.uResolution.value.set(
       size.width * pixelRatio,
       size.height * pixelRatio
     );
     composer.collapsePass.uniforms.uAspect.value = size.width / Math.max(size.height, 1);
-  }, [composer, gl, size.height, size.width]);
+  }, [composer, crowdedScene, gl, size.height, size.width]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -194,7 +201,9 @@ export function Effects() {
       delta
     );
 
-    const bloomTarget = spotlightActive ? 0.025 : 0.145 + collapseStrength.current * 0.035;
+    const bloomTarget = spotlightActive
+      ? 0.025
+      : (crowdedScene ? 0.085 : 0.145) + collapseStrength.current * 0.035;
     composer.bloomPass.strength = THREE.MathUtils.damp(
       composer.bloomPass.strength,
       bloomReady ? bloomTarget : 0,
@@ -210,7 +219,7 @@ export function Effects() {
       ? (clock.elapsedTime * 0.36) % 1
       : THREE.MathUtils.clamp(releasedSeconds / Math.max(releaseDuration, 0.001), 0, 1);
     composer.cinematicPass.uniforms.uTime.value = clock.elapsedTime;
-    composer.cinematicPass.uniforms.uNoise.value = spotlightActive ? 0.001 : 0.0025;
+    composer.cinematicPass.uniforms.uNoise.value = spotlightActive || crowdedScene ? 0.001 : 0.0025;
     composer.cinematicPass.uniforms.uSharpness.value = spotlightActive ? 0.1 : 0.14;
     composer.effectComposer.render(delta);
   }, 1);

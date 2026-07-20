@@ -9,6 +9,7 @@ type ParticleCreatureTrailProps = {
   intensity: number;
   spotlightFocusRef?: MutableRefObject<number>;
   renderOrderRef?: MutableRefObject<number>;
+  visibilityRef?: MutableRefObject<number>;
 };
 
 function useDensityMul() {
@@ -34,7 +35,8 @@ export function ParticleCreatureTrail({
   seed,
   intensity,
   spotlightFocusRef,
-  renderOrderRef
+  renderOrderRef,
+  visibilityRef
 }: ParticleCreatureTrailProps) {
   const pointsRef = useRef<THREE.Points>(null);
   const densityMul = useDensityMul();
@@ -82,12 +84,14 @@ export function ParticleCreatureTrail({
     uniforms: {
       uTime: { value: 0 },
       uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
-      uFocusAmount: { value: 0 }
+      uFocusAmount: { value: 0 },
+      uVisibility: { value: 0 }
     },
     vertexShader: `
       uniform float uTime;
       uniform float uPixelRatio;
       uniform float uFocusAmount;
+      uniform float uVisibility;
       attribute vec3 color;
       attribute float size;
       attribute float phase;
@@ -104,7 +108,7 @@ export function ParticleCreatureTrail({
         gl_Position = projectionMatrix * mvPosition;
         gl_PointSize = size * 118.0 * uPixelRatio * (1.0 / max(-mvPosition.z, 0.01));
         vColor = color;
-        vAlpha = alpha * 0.78 * (1.0 - smoothstep(0.08, 0.86, uFocusAmount));
+        vAlpha = alpha * 0.78 * uVisibility * (1.0 - smoothstep(0.08, 0.86, uFocusAmount));
       }
     `,
     fragmentShader: `
@@ -122,7 +126,9 @@ export function ParticleCreatureTrail({
   useFrame(({ clock }) => {
     material.uniforms.uTime.value = clock.elapsedTime;
     material.uniforms.uFocusAmount.value = spotlightFocusRef?.current ?? 0;
-    material.visible = (spotlightFocusRef?.current ?? 0) < 0.98;
+    material.uniforms.uVisibility.value = visibilityRef?.current ?? 1;
+    material.visible = (spotlightFocusRef?.current ?? 0) < 0.98
+      && (visibilityRef?.current ?? 1) > 0.01;
     if (!pointsRef.current) return;
     pointsRef.current.renderOrder = (renderOrderRef?.current ?? 10) - 1;
     pointsRef.current.rotation.z = Math.sin(clock.elapsedTime * 0.6 + seed) * 0.04;

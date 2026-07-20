@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame, useLoader, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
+import {
+  getDadakidoOccluders,
+  MAX_DADAKIDO_OCCLUDERS
+} from './dadakidoOcclusionRegistry';
 
 const TEXTURE_URL = '/textures/nebula-reference.png';
 const REFERENCE_ASPECT = 1016 / 585;
@@ -60,6 +64,18 @@ export function GalaxyParticleNebula({
     new THREE.Vector3(0, 0, 1),
     roll
   ), [roll]);
+  const portalWorldPosition = useMemo(() => new THREE.Vector3(), []);
+  const portalWorldScale = useMemo(() => new THREE.Vector3(), []);
+  const portalViewPosition = useMemo(() => new THREE.Vector3(), []);
+  const portalScreenCenter = useMemo(() => new THREE.Vector3(), []);
+  const portalRightPoint = useMemo(() => new THREE.Vector3(), []);
+  const portalUpPoint = useMemo(() => new THREE.Vector3(), []);
+  const occluderViewPosition = useMemo(() => new THREE.Vector3(), []);
+  const occluderCenter = useMemo(() => new THREE.Vector3(), []);
+  const occluderRightPoint = useMemo(() => new THREE.Vector3(), []);
+  const occluderUpPoint = useMemo(() => new THREE.Vector3(), []);
+  const cameraRight = useMemo(() => new THREE.Vector3(), []);
+  const cameraUp = useMemo(() => new THREE.Vector3(), []);
 
   const geometry = useMemo(() => {
     const image = texture.image as CanvasImageSource & { width: number; height: number };
@@ -188,7 +204,17 @@ export function GalaxyParticleNebula({
     uniforms: {
       uTime: { value: 0 },
       uSpinSpeed: { value: spinSpeed },
-      uPixelRatio: { value: pixelRatio }
+      uPixelRatio: { value: pixelRatio },
+      uFrontOccluderCount: { value: 0 },
+      uFrontOccluders: {
+        value: Array.from(
+          { length: MAX_DADAKIDO_OCCLUDERS },
+          () => new THREE.Vector4(0, 0, 0.001, 0.001)
+        )
+      },
+      uFrontOccluderStrengths: {
+        value: new Float32Array(MAX_DADAKIDO_OCCLUDERS)
+      }
     },
     vertexShader: /* glsl */ `
       uniform float uTime;
@@ -203,6 +229,8 @@ export function GalaxyParticleNebula({
       varying float vAlpha;
       varying float vFlowAngle;
       varying float vRadius;
+      varying float vMagicPhase;
+      varying vec2 vScreenPosition;
 
       void main() {
         vec3 p = position;
@@ -218,23 +246,34 @@ export function GalaxyParticleNebula({
         float breathing = cos(aPhase * 1.31 - uTime * 0.92 + aRadius * 9.0);
         p.xy += tangent * stream * aSize * 2.8;
         p.xy += radial * breathing * aSize * 0.55;
+        float gatePulse = sin(uTime * 0.58 + aRadius * 18.0 + aPhase * 0.28);
+        p.xy *= 1.0 + gatePulse * 0.008 * smoothstep(0.08, 0.72, aRadius);
         p.z = aBaseHeight + sin(aPhase + uTime * 1.05 + aRadius * 10.0) * aSize * 2.2;
 
         vec4 viewPosition = modelViewMatrix * vec4(p, 1.0);
-        gl_Position = projectionMatrix * viewPosition;
+        vec4 clipPosition = projectionMatrix * viewPosition;
+        gl_Position = clipPosition;
         gl_PointSize = aSize * (820.0 + (1.0 - smoothstep(0.0, 0.23, aRadius)) * 960.0)
           * uPixelRatio / max(-viewPosition.z, 0.1);
         vColor = color;
         vAlpha = aAlpha;
         vFlowAngle = atan(tangent.y, tangent.x);
         vRadius = aRadius;
+        vMagicPhase = aPhase;
+        vScreenPosition = clipPosition.xy / max(clipPosition.w, 0.0001);
       }
     `,
     fragmentShader: /* glsl */ `
+      uniform float uTime;
       varying vec3 vColor;
       varying float vAlpha;
       varying float vFlowAngle;
       varying float vRadius;
+      varying float vMagicPhase;
+      varying vec2 vScreenPosition;
+      uniform float uFrontOccluderCount;
+      uniform vec4 uFrontOccluders[${MAX_DADAKIDO_OCCLUDERS}];
+      uniform float uFrontOccluderStrengths[${MAX_DADAKIDO_OCCLUDERS}];
 
       void main() {
         vec2 point = gl_PointCoord - vec2(0.5);
@@ -244,11 +283,50 @@ export function GalaxyParticleNebula({
         streakPoint.x *= 0.52;
         float distanceToCenter = length(streakPoint);
         float alpha = (1.0 - smoothstep(0.12, 0.5, distanceToCenter)) * vAlpha;
-        float horizon = 1.0 - smoothstep(0.105, 0.145, vRadius);
-        float darkRim = smoothstep(0.11, 0.145, vRadius)
-          * (1.0 - smoothstep(0.21, 0.245, vRadius));
-        vec3 portalColor = mix(vColor, vec3(0.001, 0.002, 0.006), max(horizon, darkRim * 0.86));
-        alpha = max(alpha, horizon * (1.0 - smoothstep(0.24, 0.5, length(point))) * 0.98);
+
+        float portalCore = 1.0 - smoothstep(0.075, 0.135, vRadius);
+        float thresholdRing = smoothstep(0.09, 0.14, vRadius)
+          * (1.0 - smoothstep(0.205, 0.265, vRadius));
+        float middleRing = smoothstep(0.29, 0.35, vRadius)
+          * (1.0 - smoothstep(0.43, 0.51, vRadius));
+        float outerVeil = smoothstep(0.56, 0.64, vRadius)
+          * (1.0 - smoothstep(0.82, 0.96, vRadius));
+        float angularWave = 0.5 + 0.5 * sin(
+          vFlowAngle * 7.0 - uTime * 0.72 + vRadius * 38.0 + vMagicPhase * 0.18
+        );
+        float magicArc = pow(angularWave, 5.0);
+        float slowPulse = 0.72 + 0.28 * sin(uTime * 0.48 + vRadius * 11.0 + vMagicPhase * 0.12);
+        float runeGlow = magicArc * (thresholdRing + middleRing * 0.7 + outerVeil * 0.32);
+
+        vec3 deepGateway = vec3(0.008, 0.004, 0.035);
+        vec3 violetEnergy = vec3(0.43, 0.18, 0.98);
+        vec3 cyanEnergy = vec3(0.08, 0.88, 1.0);
+        vec3 roseEnergy = vec3(0.9, 0.18, 0.92);
+        float paletteFlow = 0.5 + 0.5 * sin(vFlowAngle * 2.0 + vRadius * 15.0 - uTime * 0.25);
+        vec3 magicEnergy = mix(violetEnergy, cyanEnergy, paletteFlow);
+        magicEnergy = mix(magicEnergy, roseEnergy, magicArc * outerVeil * 0.42);
+
+        vec3 portalColor = mix(vColor, magicEnergy, 0.24 + thresholdRing * 0.52);
+        portalColor += magicEnergy * runeGlow * (0.32 + slowPulse * 0.38);
+        portalColor = mix(portalColor, deepGateway, portalCore * 0.96);
+        portalColor += violetEnergy * thresholdRing * slowPulse * 0.24;
+
+        float softPoint = 1.0 - smoothstep(0.14, 0.5, length(point));
+        alpha = max(alpha, portalCore * softPoint * 0.96);
+        alpha = max(alpha, thresholdRing * softPoint * (0.72 + slowPulse * 0.24));
+        alpha += runeGlow * softPoint * 0.2;
+        float foregroundMask = 0.0;
+        for (int i = 0; i < ${MAX_DADAKIDO_OCCLUDERS}; i += 1) {
+          if (float(i) >= uFrontOccluderCount) break;
+          vec4 occluder = uFrontOccluders[i];
+          vec2 relative = (vScreenPosition - occluder.xy) / max(occluder.zw, vec2(0.001));
+          float silhouette = 1.0 - smoothstep(0.52, 1.0, dot(relative, relative));
+          foregroundMask = max(
+            foregroundMask,
+            silhouette * uFrontOccluderStrengths[i]
+          );
+        }
+        alpha *= 1.0 - foregroundMask;
         if (alpha < 0.004) discard;
         gl_FragColor = vec4(portalColor, alpha);
       }
@@ -273,6 +351,61 @@ export function GalaxyParticleNebula({
       .multiply(camera.quaternion)
       .multiply(fixedTiltQuaternion)
       .multiply(rollQuaternion);
+
+    group.getWorldPosition(portalWorldPosition);
+    group.getWorldScale(portalWorldScale);
+    portalViewPosition.copy(portalWorldPosition).applyMatrix4(camera.matrixWorldInverse);
+    const portalDepth = -portalViewPosition.z;
+    cameraRight.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+    cameraUp.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+    portalScreenCenter.copy(portalWorldPosition).project(camera);
+    const portalRadiusScale = Math.max(
+      Math.abs(portalWorldScale.x),
+      Math.abs(portalWorldScale.y),
+      Math.abs(portalWorldScale.z)
+    );
+    portalRightPoint.copy(portalWorldPosition)
+      .addScaledVector(cameraRight, radius * REFERENCE_ASPECT * portalRadiusScale)
+      .project(camera);
+    portalUpPoint.copy(portalWorldPosition)
+      .addScaledVector(cameraUp, radius * portalRadiusScale)
+      .project(camera);
+    const portalRadiusX = Math.abs(portalRightPoint.x - portalScreenCenter.x);
+    const portalRadiusY = Math.abs(portalUpPoint.y - portalScreenCenter.y);
+    const projectedOccluders = material.uniforms.uFrontOccluders.value as THREE.Vector4[];
+    const projectedStrengths = material.uniforms.uFrontOccluderStrengths.value as Float32Array;
+    let occluderCount = 0;
+    for (const occluder of getDadakidoOccluders()) {
+      if (occluderCount >= MAX_DADAKIDO_OCCLUDERS) break;
+      occluderViewPosition.copy(occluder.position).applyMatrix4(camera.matrixWorldInverse);
+      const occluderDepth = -occluderViewPosition.z;
+      if (occluderDepth >= portalDepth - 0.05) continue;
+      occluderCenter.copy(occluder.position).project(camera);
+      if (occluderCenter.z < -1 || occluderCenter.z > 1) continue;
+      occluderRightPoint.copy(occluder.position)
+        .addScaledVector(cameraRight, occluder.radiusX)
+        .project(camera);
+      occluderUpPoint.copy(occluder.position)
+        .addScaledVector(cameraUp, occluder.radiusY)
+        .project(camera);
+      const radiusX = Math.abs(occluderRightPoint.x - occluderCenter.x);
+      const radiusY = Math.abs(occluderUpPoint.y - occluderCenter.y);
+      if (radiusX < 0.001 || radiusY < 0.001) continue;
+      if (
+        Math.abs(occluderCenter.x - portalScreenCenter.x) > portalRadiusX + radiusX
+        || Math.abs(occluderCenter.y - portalScreenCenter.y) > portalRadiusY + radiusY
+      ) continue;
+      projectedOccluders[occluderCount].set(
+        occluderCenter.x,
+        occluderCenter.y,
+        radiusX,
+        radiusY
+      );
+      projectedStrengths[occluderCount] = occluder.visibility;
+      occluderCount += 1;
+    }
+    projectedStrengths.fill(0, occluderCount);
+    material.uniforms.uFrontOccluderCount.value = occluderCount;
   });
 
   useEffect(() => () => {

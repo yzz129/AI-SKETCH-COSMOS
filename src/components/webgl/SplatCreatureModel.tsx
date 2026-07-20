@@ -24,8 +24,11 @@ type SplatCreatureModelProps = {
   burstRef?: MutableRefObject<number>;
   burstPhaseRef?: MutableRefObject<number>;
   reappearRef?: MutableRefObject<number>;
+  loadVisibilityRef?: MutableRefObject<number>;
   renderOrderRef?: MutableRefObject<number>;
   partActionRef?: MutableRefObject<CreaturePartActionPose>;
+  internalMotionStrengthRef?: MutableRefObject<number>;
+  allowDistanceCulling?: boolean;
   flightWorldPositionRef?: MutableRefObject<THREE.Vector3>;
   flightOpacityRef?: MutableRefObject<number>;
   onReady?: () => void;
@@ -67,6 +70,13 @@ function isOutdatedPartMap(value: unknown) {
     && Number(candidate.version ?? 0) < 14;
 }
 
+function isUnavailablePartMap(value: unknown) {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as { enabled?: unknown; status?: unknown };
+  return candidate.enabled === false
+    || ['failed', 'unavailable', 'disabled'].includes(String(candidate.status));
+}
+
 export function SplatCreatureModel(props: SplatCreatureModelProps) {
   const { rigUrl } = props;
   const [rig, setRig] = useState<CpuSplatPartRig | null>(null);
@@ -94,7 +104,10 @@ export function SplatCreatureModel(props: SplatCreatureModelProps) {
       try {
         const response = await fetch(rigUrl, { signal: controller.signal, cache: 'no-store' });
         if (!response.ok) {
-          if (response.status === 404 && scheduleRetry()) return;
+          if (response.status === 404) {
+            scheduleRetry();
+            return;
+          }
           throw new Error(`Splat rig request failed with ${response.status}.`);
         }
         const payload = await response.json() as unknown;
@@ -104,6 +117,7 @@ export function SplatCreatureModel(props: SplatCreatureModelProps) {
           return;
         }
         if ((isPendingPartMap(payload) || isOutdatedPartMap(payload)) && scheduleRetry()) return;
+        if (isUnavailablePartMap(payload)) return;
         console.warn('[splat-part-motion] Background analysis finished without a usable part map:', payload);
       } catch (error) {
         if (controller.signal.aborted || disposed) return;
@@ -136,8 +150,11 @@ function StaticSplatCreatureModel({
   burstRef,
   burstPhaseRef,
   reappearRef,
+  loadVisibilityRef,
   renderOrderRef,
   partActionRef,
+  internalMotionStrengthRef,
+  allowDistanceCulling = true,
   flightWorldPositionRef,
   flightOpacityRef,
   onReady,
@@ -147,6 +164,7 @@ function StaticSplatCreatureModel({
   const particleProxyGroupRef = useRef<THREE.Group>(null);
   const particleProxyRef = useRef<THREE.Points>(null);
   const cpuPartMotionRef = useRef<CpuSplatPartMotionRuntime | null>(null);
+  const idlePartMotionStartedAtRef = useRef<number | null>(null);
   const baseScaleRef = useRef(scale);
   const basePositionRef = useRef(new THREE.Vector3());
   const flightLocalPositionRef = useRef(new THREE.Vector3());
@@ -171,6 +189,8 @@ function StaticSplatCreatureModel({
   useEffect(() => {
     let disposed = false;
     let loadedMesh: SparkSplatMesh | null = null;
+    let proxyIdleId: number | undefined;
+    let proxyTimerId: number | undefined;
     setFailed(false);
     setSplat(null);
     setParticleProxy((proxy) => {
@@ -199,13 +219,21 @@ function StaticSplatCreatureModel({
             // White is Spark's neutral recolor multiplier, so the authored
             // Gaussian colors remain unchanged throughout the animation.
             initializedMesh.recolor.copy(whiteColorRef.current);
-            setParticleProxy((proxy) => {
-              proxy?.geometry.dispose();
-              proxy?.material.dispose();
-              return createSplatParticleProxy(initializedMesh, motionPhase);
-            });
             setSplat(initializedMesh);
             onReadyRef.current?.();
+            const createParticleProxy = () => {
+              if (disposed || meshRef.current !== initializedMesh) return;
+              setParticleProxy((proxy) => {
+                proxy?.geometry.dispose();
+                proxy?.material.dispose();
+                return createSplatParticleProxy(initializedMesh, motionPhase);
+              });
+            };
+            if ('requestIdleCallback' in window) {
+              proxyIdleId = window.requestIdleCallback(createParticleProxy, { timeout: 1_500 });
+            } else {
+              proxyTimerId = window.setTimeout(createParticleProxy, 320);
+            }
           })
           .catch((error) => {
             if (disposed || meshRef.current !== mesh) return;
@@ -221,6 +249,8 @@ function StaticSplatCreatureModel({
 
     return () => {
       disposed = true;
+      if (proxyIdleId !== undefined) window.cancelIdleCallback(proxyIdleId);
+      if (proxyTimerId !== undefined) window.clearTimeout(proxyTimerId);
       disposeCpuSplatPartMotion(cpuPartMotionRef.current);
       cpuPartMotionRef.current = null;
       meshRef.current = null;
@@ -270,11 +300,13 @@ function StaticSplatCreatureModel({
     if (!mesh || failed) return;
 
     const t = clock.elapsedTime;
-    const breath = 1 + Math.sin(t * 0.52) * 0.018;
+    const internalMotionStrength = internalMotionStrengthRef?.current ?? 1;
+    const breath = 1 + Math.sin(t * 0.52) * 0.018 * internalMotionStrength;
     const focus = spotlightFocusRef?.current ?? 0;
     const burst = burstRef?.current ?? 0;
     const burstPhase = burstPhaseRef?.current ?? (burst > 0 ? 0.5 : 1);
     const reappear = reappearRef?.current ?? 1;
+    const loadVisibility = loadVisibilityRef?.current ?? 1;
     const flightOpacity = flightOpacityRef?.current ?? 0;
     const flightWorldPosition = flightWorldPositionRef?.current;
     const burstShock = THREE.MathUtils.smoothstep(burst, 0, 1);
@@ -290,12 +322,12 @@ function StaticSplatCreatureModel({
     const freeBodyMotion = 1 - focus;
     // Canonical orientation is applied once during normalization. Runtime pose
     // belongs to the parent visual group, avoiding Euler accumulation here.
-    const glowPulse = (Math.sin(t * 1.1 + motionPhase) + 1) * 0.5;
+    const glowPulse = 0.5 + Math.sin(t * 1.1 + motionPhase) * 0.5 * internalMotionStrength;
     mesh.recolor.copy(whiteColorRef.current);
     mesh.position.copy(basePositionRef.current);
     if (swimming || flying) {
       mesh.position.y += Math.sin(t * (swimming ? 1.35 : 1.7) + motionPhase)
-        * baseScale * 0.03 * freeBodyMotion;
+        * baseScale * 0.03 * freeBodyMotion * internalMotionStrength;
     }
     if (flightWorldPosition && flightOpacity > 0.001) {
       flightLocalPositionRef.current.copy(flightWorldPosition);
@@ -303,7 +335,10 @@ function StaticSplatCreatureModel({
       mesh.position.copy(flightLocalPositionRef.current).add(basePositionRef.current);
     }
     const distanceToCamera = mesh.getWorldPosition(cameraDistancePositionRef.current).distanceTo(camera.position);
-    const distanceCulled = distanceToCamera > 28 && !showFlightModel && !isBursting;
+    const distanceCulled = allowDistanceCulling
+      && distanceToCamera > 28
+      && !showFlightModel
+      && !isBursting;
     const burstModelOpacity = isBursting
       ? 1 - THREE.MathUtils.smootherstep(burstPhase, 0.015, 0.2)
       : 0;
@@ -312,19 +347,37 @@ function StaticSplatCreatureModel({
     const modelOpacity = isInFrontOfDadakido
       ? Math.min(1, baseModelOpacity + 0.045)
       : baseModelOpacity;
-    mesh.opacity = modelOpacity * Math.max(reappear, flightOpacity, burstModelOpacity);
+    mesh.opacity = modelOpacity
+      * Math.max(reappear, flightOpacity, burstModelOpacity)
+      * loadVisibility;
     mesh.visible = (!isBursting || burstModelOpacity > 0.01 || showFlightModel) && !distanceCulled;
 
     const cpuPartMotion = cpuPartMotionRef.current;
     if (cpuPartMotion && mesh.visible && Math.max(reappear, flightOpacity) > 0.2) {
-      const motionEnergy = 0.58 * (1 - focus * 0.82) * (1 - burstShock);
-      updateCpuSplatPartMotion(
-        cpuPartMotion,
-        t,
-        motionEnergy,
-        locomotion,
-        partActionRef?.current
-      );
+      // Resting creatures return to their authored neutral pose. Internal joint
+      // motion is enabled only by an explicit active state supplied by the parent.
+      const motionEnergy = 0.18
+        * internalMotionStrength
+        * (1 - focus * 0.82)
+        * (1 - burstShock);
+      const partAction = partActionRef?.current;
+      const actionActive = Boolean(partAction && partAction.kind !== 'idle');
+      if (motionEnergy > 0.002 || actionActive) {
+        idlePartMotionStartedAtRef.current = null;
+      } else if (idlePartMotionStartedAtRef.current === null) {
+        idlePartMotionStartedAtRef.current = t;
+      }
+      const settling = idlePartMotionStartedAtRef.current !== null
+        && t - idlePartMotionStartedAtRef.current < 1.1;
+      if (motionEnergy > 0.002 || actionActive || settling) {
+        updateCpuSplatPartMotion(
+          cpuPartMotion,
+          t,
+          motionEnergy,
+          locomotion,
+          partAction
+        );
+      }
     }
 
     const proxyGroup = particleProxyGroupRef.current;

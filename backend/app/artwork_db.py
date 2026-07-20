@@ -1,8 +1,10 @@
 import json
+import os
 import shutil
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from .storage import output_roots
@@ -11,6 +13,8 @@ from .storage import output_roots
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = BACKEND_ROOT / "data"
 DB_PATH = DATA_DIR / "cosmos.db"
+_SCHEMA_LOCK = Lock()
+_SCHEMA_READY = False
 
 
 def _now_iso() -> str:
@@ -18,12 +22,20 @@ def _now_iso() -> str:
 
 
 def _connect() -> sqlite3.Connection:
+    global _SCHEMA_READY
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    timeout_seconds = max(1, int(os.getenv("COSMOS_DB_BUSY_TIMEOUT_SECONDS", "30")))
+    conn = sqlite3.connect(DB_PATH, timeout=timeout_seconds)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(f"PRAGMA busy_timeout={timeout_seconds * 1000}")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    _init_schema(conn)
+    if not _SCHEMA_READY:
+        with _SCHEMA_LOCK:
+            if not _SCHEMA_READY:
+                conn.execute("PRAGMA journal_mode=WAL")
+                _init_schema(conn)
+                _SCHEMA_READY = True
     return conn
 
 

@@ -56,12 +56,17 @@ npm run preview -- --host 0.0.0.0 --port 4173
 
 # 方案 b: Nginx
 cp -r dist/* /var/www/cosmos/
-# nginx.conf: root /var/www/cosmos; index index.html;
+# nginx.conf:
+# root /var/www/cosmos;
+# index index.html;
+# location / { try_files $uri $uri/ /index.html; }
 
 # 方案 c: 一键部署到 Vercel / Netlify / Cloudflare Pages
 # 构建命令: npm run build
 # 输出目录: dist
 ```
+
+手机拍照/上传页位于 `/submit`。Nginx、CDN 或静态托管必须启用 SPA 回退，否则直接访问 `/submit` 会返回 404。局域网联调可运行 `npm run dev:lan`，并让 FastAPI 监听 `0.0.0.0`；手机必须访问电脑的局域网 IP，不能使用手机自己的 `127.0.0.1`。
 
 ### 缺点：无 AI 识别功能
 

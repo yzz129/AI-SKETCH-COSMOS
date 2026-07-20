@@ -20,6 +20,10 @@
     0 0 42px rgba(79, 151, 255, 0.13),
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
   backdrop-filter: blur(22px) saturate(1.28);
+  max-height: calc(100vh - clamp(28px, 4.44vw, 84px));
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(133, 224, 255, 0.42) transparent;
 }
 
 .cosmic-panel__hide,
@@ -197,6 +201,93 @@
   grid-template-columns: 1fr 1fr;
   gap: clamp(6px, 0.69vw, 14px);
   margin-top: clamp(12px, 1.25vw, 24px);
+}
+
+.cosmic-panel__stress {
+  display: grid;
+  gap: clamp(7px, 0.56vw, 11px);
+  margin-top: clamp(12px, 1.11vw, 20px);
+  padding: clamp(10px, 0.9vw, 16px);
+  border: 1px solid rgba(120, 225, 255, 0.2);
+  border-radius: clamp(12px, 1.11vw, 20px);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(180, 104, 255, 0.12), transparent 48%),
+    rgba(71, 147, 255, 0.065);
+}
+
+.cosmic-panel__stress-heading,
+.cosmic-panel__stress-heading span,
+.cosmic-panel__stress-controls {
+  display: flex;
+  align-items: center;
+}
+
+.cosmic-panel__stress-heading {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cosmic-panel__stress-heading span {
+  gap: 7px;
+  color: rgba(244, 250, 255, 0.94);
+  font-size: clamp(11px, 0.9vw, 15px);
+  font-weight: 850;
+}
+
+.cosmic-panel__stress-heading em {
+  color: #a9efff;
+  font-size: clamp(9px, 0.72vw, 12px);
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.cosmic-panel__stress p {
+  margin: 0;
+  color: rgba(213, 230, 255, 0.65);
+  font-size: clamp(9px, 0.76vw, 13px);
+  line-height: 1.45;
+}
+
+.cosmic-panel__stress-controls {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cosmic-panel__stress-controls label {
+  color: rgba(231, 241, 255, 0.82);
+  font-size: clamp(10px, 0.83vw, 14px);
+  font-weight: 700;
+}
+
+.cosmic-panel__stress-controls input {
+  width: clamp(72px, 6.25vw, 112px);
+  min-height: clamp(30px, 2.36vw, 42px);
+  border: 1px solid rgba(145, 217, 255, 0.25);
+  border-radius: 10px;
+  padding: 0 10px;
+  outline: none;
+  background: rgba(4, 10, 30, 0.58);
+  color: #f6fbff;
+  font: inherit;
+  font-size: clamp(11px, 0.9vw, 15px);
+  font-weight: 800;
+  text-align: center;
+}
+
+.cosmic-panel__stress-controls input:focus {
+  border-color: rgba(133, 232, 255, 0.72);
+  box-shadow: 0 0 0 3px rgba(91, 203, 255, 0.1);
+}
+
+.cosmic-panel__stress-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(6px, 0.56vw, 10px);
+}
+
+.cosmic-button--stress {
+  border-color: rgba(116, 233, 255, 0.42);
+  background: linear-gradient(135deg, rgba(85, 207, 255, 0.22), rgba(164, 105, 255, 0.22));
 }
 
 .cosmic-panel__input {

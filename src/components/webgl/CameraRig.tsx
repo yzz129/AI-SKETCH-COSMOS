@@ -15,12 +15,14 @@ import {
 const BASE_TARGET = CAMERA_ORBIT_TARGET.clone();
 const CLOSE_UP_DISTANCE = 3.0;
 const RELEASE_WIDE_DISTANCE = 9.6;
-const AUTO_ORBIT_AMPLITUDE = THREE.MathUtils.degToRad(12);
-const AUTO_ORBIT_SPEED = 0.038;
-const AUTO_PITCH_AMPLITUDE = THREE.MathUtils.degToRad(5);
-const AUTO_PITCH_SPEED = 0.029;
-const HEARTBEAT_DOLLY_CYCLE = 8.5;
 const SPOTLIGHT_USES_CAMERA_CLOSE_UP = false;
+const AUTO_ORBIT_YAW_AMPLITUDE = THREE.MathUtils.degToRad(24);
+const AUTO_ORBIT_YAW_CYCLE_SECONDS = 120;
+const AUTO_ORBIT_PITCH_AMPLITUDE = THREE.MathUtils.degToRad(9);
+const AUTO_ORBIT_PITCH_CYCLE_SECONDS = 145;
+const AUTO_ORBIT_DOLLY_AMPLITUDE = 0.07;
+const AUTO_ORBIT_DOLLY_CYCLE_SECONDS = 170;
+const AUTO_ORBIT_RESUME_DELAY_MS = 1_200;
 
 function smoothFactor(speed: number, delta: number) {
   return 1 - Math.exp(-delta * speed);
@@ -38,21 +40,6 @@ function moveVectorToward(
     cappedDampStep(current.y, target.y, smoothing, maxSpeed, delta),
     cappedDampStep(current.z, target.z, smoothing, maxSpeed, delta)
   );
-}
-
-function heartbeatDollyScale(time: number) {
-  const phase = THREE.MathUtils.euclideanModulo(time, HEARTBEAT_DOLLY_CYCLE) / HEARTBEAT_DOLLY_CYCLE;
-  const pulse = (center: number, width: number) => Math.exp(-Math.pow((phase - center) / width, 2));
-  const firstBeat = pulse(0.13, 0.038) * 0.16;
-  const recoil = pulse(0.19, 0.035) * 0.045;
-  const secondBeat = pulse(0.255, 0.052) * 0.095;
-  const settle = pulse(0.36, 0.09) * 0.025;
-  const outwardSwell = pulse(0.62, 0.22) * 0.16;
-  const slowBreath = Math.sin(time * 0.075 + 2.35) * 0.065;
-
-  // Larger scale means the camera is farther away. Each beat briefly pulls
-  // the viewer forward, rebounds, then settles back into the wide view.
-  return 1.35 + slowBreath - firstBeat + recoil - secondBeat + settle + outwardSwell;
 }
 
 export function CameraRig() {
@@ -79,14 +66,15 @@ export function CameraRig() {
   const hasSavedView = useRef(false);
   const hasRestoreStart = useRef(false);
   const isUserRotating = useRef(false);
-  const previousAutoOrbitAngle = useRef(0);
-  const previousAutoPitchAngle = useRef(0);
-  const previousAutoZoomScale = useRef<number | null>(null);
-  const hasAutoBaseline = useRef(false);
+  const autoOrbitResumeAt = useRef(0);
+  const autoOrbitBlend = useRef(1);
+  const previousAutoYaw = useRef(0);
+  const previousAutoPitch = useRef(0);
+  const previousAutoDistanceScale = useRef(1);
   const orbitOffset = useRef(new THREE.Vector3());
-  const orbitRightAxis = useRef(new THREE.Vector3());
+  const orbitSpherical = useRef(new THREE.Spherical());
 
-  useFrame(({ camera }, delta) => {
+  useFrame(({ camera, clock }, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
@@ -133,13 +121,6 @@ export function CameraRig() {
     controls.enabled = true;
     controls.noRotate = false;
 
-    const time = performance.now() * 0.001;
-    const baseTarget = new THREE.Vector3(
-      BASE_TARGET.x + Math.sin(time * 0.024) * 0.48,
-      BASE_TARGET.y + Math.cos(time * 0.019 + 0.8) * 0.28,
-      BASE_TARGET.z + Math.sin(time * 0.016 + 1.4) * 0.38
-    );
-
     // Spotlight presentation now moves the creature into the outer display
     // layer. Keep the universe camera on its normal path for the entire shot.
     const isCloseUp = SPOTLIGHT_USES_CAMERA_CLOSE_UP
@@ -150,9 +131,6 @@ export function CameraRig() {
       && phase === 'release';
 
     if (isCloseUp && creatureId) {
-      previousAutoOrbitAngle.current = 0;
-      previousAutoPitchAngle.current = 0;
-      previousAutoZoomScale.current = null;
       const creaturePos = useCreatureBehaviorStore.getState().creaturePositions[creatureId];
 
       if (creaturePos) {
@@ -197,9 +175,6 @@ export function CameraRig() {
     }
 
     if (isRelease) {
-      previousAutoOrbitAngle.current = 0;
-      previousAutoPitchAngle.current = 0;
-      previousAutoZoomScale.current = null;
       if (!hasRestoreStart.current) {
         restoreStartCamera.current.copy(camera.position);
         restoreStartTarget.current.copy(controls.target);
@@ -241,58 +216,63 @@ export function CameraRig() {
     }
 
     if (phase === 'idle') {
-      if (!hasAutoBaseline.current || priorPhase !== 'idle') {
-        previousAutoOrbitAngle.current = Math.sin(time * AUTO_ORBIT_SPEED) * AUTO_ORBIT_AMPLITUDE;
-        previousAutoPitchAngle.current = Math.sin(time * AUTO_PITCH_SPEED + 1.1) * AUTO_PITCH_AMPLITUDE;
-        previousAutoZoomScale.current = heartbeatDollyScale(time);
-        hasAutoBaseline.current = true;
-      }
       hasSavedView.current = false;
       hasRestoreStart.current = false;
       previousCreatureId.current = null;
     }
 
     const s = smoothFactor(1.6, delta);
-    defaultTarget.current.lerp(baseTarget, s);
+    defaultTarget.current.lerp(BASE_TARGET, s);
     controls.target.copy(defaultTarget.current);
-
-    // Slowly let the whole universe drift past the viewer. Using a bounded,
-    // reversible camera orbit avoids an endless 360-degree spin and preserves
-    // the user's current view after manual interaction.
-    const autoOrbitAngle = isUserRotating.current
-      ? previousAutoOrbitAngle.current
-      : Math.sin(time * AUTO_ORBIT_SPEED) * AUTO_ORBIT_AMPLITUDE;
-    const autoPitchAngle = isUserRotating.current
-      ? previousAutoPitchAngle.current
-      : Math.sin(time * AUTO_PITCH_SPEED + 1.1) * AUTO_PITCH_AMPLITUDE;
-    const autoZoomScale = isUserRotating.current
-      ? (previousAutoZoomScale.current ?? 1)
-      : heartbeatDollyScale(time);
-    if (previousAutoZoomScale.current === null) {
-      previousAutoZoomScale.current = autoZoomScale;
-    }
-    const autoOrbitDelta = autoOrbitAngle - previousAutoOrbitAngle.current;
-    const autoPitchDelta = autoPitchAngle - previousAutoPitchAngle.current;
-    const autoZoomRatio = autoZoomScale / Math.max(previousAutoZoomScale.current, 0.001);
-    if (!isUserRotating.current && (
-      Math.abs(autoOrbitDelta) > 0.000001
-      || Math.abs(autoPitchDelta) > 0.000001
-      || Math.abs(autoZoomRatio - 1) > 0.000001
-    )) {
-      orbitOffset.current.copy(camera.position).sub(controls.target);
-      orbitOffset.current.applyAxisAngle(THREE.Object3D.DEFAULT_UP, autoOrbitDelta);
-      orbitRightAxis.current.crossVectors(THREE.Object3D.DEFAULT_UP, orbitOffset.current);
-      if (orbitRightAxis.current.lengthSq() > 0.000001) {
-        orbitRightAxis.current.normalize();
-        orbitOffset.current.applyAxisAngle(orbitRightAxis.current, autoPitchDelta);
-      }
-      orbitOffset.current.multiplyScalar(autoZoomRatio);
-      camera.position.copy(controls.target).add(orbitOffset.current);
-    }
-    previousAutoOrbitAngle.current = autoOrbitAngle;
-    previousAutoPitchAngle.current = autoPitchAngle;
-    previousAutoZoomScale.current = autoZoomScale;
     controls.update();
+
+    const time = clock.elapsedTime;
+    const desiredYaw = Math.sin(
+      time * Math.PI * 2 / AUTO_ORBIT_YAW_CYCLE_SECONDS
+    ) * AUTO_ORBIT_YAW_AMPLITUDE;
+    const desiredPitch = Math.sin(
+      time * Math.PI * 2 / AUTO_ORBIT_PITCH_CYCLE_SECONDS
+    ) * AUTO_ORBIT_PITCH_AMPLITUDE;
+    const desiredDistanceScale = 1 + Math.sin(
+      time * Math.PI * 2 / AUTO_ORBIT_DOLLY_CYCLE_SECONDS
+    ) * AUTO_ORBIT_DOLLY_AMPLITUDE;
+    const autoOrbitAllowed = phase === 'idle'
+      && !isUserRotating.current
+      && performance.now() >= autoOrbitResumeAt.current;
+    autoOrbitBlend.current = THREE.MathUtils.damp(
+      autoOrbitBlend.current,
+      autoOrbitAllowed ? 1 : 0,
+      autoOrbitAllowed ? 0.85 : 8,
+      delta
+    );
+
+    if (autoOrbitBlend.current > 0.0001) {
+      orbitOffset.current.copy(camera.position).sub(controls.target);
+      orbitSpherical.current.setFromVector3(orbitOffset.current);
+      orbitSpherical.current.theta += (
+        desiredYaw - previousAutoYaw.current
+      ) * autoOrbitBlend.current;
+      orbitSpherical.current.phi = THREE.MathUtils.clamp(
+        orbitSpherical.current.phi
+          + (desiredPitch - previousAutoPitch.current) * autoOrbitBlend.current,
+        THREE.MathUtils.degToRad(24),
+        THREE.MathUtils.degToRad(156)
+      );
+      const distanceRatio = desiredDistanceScale
+        / Math.max(previousAutoDistanceScale.current, 0.001);
+      orbitSpherical.current.radius *= THREE.MathUtils.lerp(
+        1,
+        distanceRatio,
+        autoOrbitBlend.current
+      );
+      orbitOffset.current.setFromSpherical(orbitSpherical.current);
+      camera.position.copy(controls.target).add(orbitOffset.current);
+      camera.lookAt(controls.target);
+      camera.updateMatrixWorld();
+    }
+    previousAutoYaw.current = desiredYaw;
+    previousAutoPitch.current = desiredPitch;
+    previousAutoDistanceScale.current = desiredDistanceScale;
   });
 
   return (
@@ -308,14 +288,11 @@ export function CameraRig() {
       target={BASE_TARGET}
       onStart={() => {
         isUserRotating.current = true;
+        autoOrbitBlend.current = 0;
       }}
       onEnd={() => {
         isUserRotating.current = false;
-        previousAutoOrbitAngle.current = Math.sin(performance.now() * 0.001 * AUTO_ORBIT_SPEED)
-          * AUTO_ORBIT_AMPLITUDE;
-        previousAutoPitchAngle.current = Math.sin(performance.now() * 0.001 * AUTO_PITCH_SPEED + 1.1)
-          * AUTO_PITCH_AMPLITUDE;
-        previousAutoZoomScale.current = heartbeatDollyScale(performance.now() * 0.001);
+        autoOrbitResumeAt.current = performance.now() + AUTO_ORBIT_RESUME_DELAY_MS;
       }}
     />
   );

@@ -12,6 +12,7 @@ type CreatureAuraParticlesProps = {
   motionType: CreatureMotionType;
   spotlightFocusRef?: MutableRefObject<number>;
   renderOrderRef?: MutableRefObject<number>;
+  visibilityRef?: MutableRefObject<number>;
 };
 
 export function CreatureAuraParticles({
@@ -21,7 +22,8 @@ export function CreatureAuraParticles({
   seed,
   motionType,
   spotlightFocusRef,
-  renderOrderRef
+  renderOrderRef,
+  visibilityRef
 }: CreatureAuraParticlesProps) {
   const pointsRef = useRef<THREE.Points>(null);
   const geometry = useMemo(() => {
@@ -69,12 +71,14 @@ export function CreatureAuraParticles({
     uniforms: {
       uTime: { value: 0 },
       uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
-      uFocusAmount: { value: 0 }
+      uFocusAmount: { value: 0 },
+      uVisibility: { value: 0 }
     },
     vertexShader: `
       uniform float uTime;
       uniform float uPixelRatio;
       uniform float uFocusAmount;
+      uniform float uVisibility;
       attribute vec3 color;
       attribute float size;
       attribute float phase;
@@ -92,7 +96,7 @@ export function CreatureAuraParticles({
         gl_Position = projectionMatrix * mvPosition;
         gl_PointSize = size * 76.0 * uPixelRatio * (1.0 / max(-mvPosition.z, 0.01));
         vColor = color;
-        vAlpha = alpha * 0.58 * (1.0 - smoothstep(0.05, 0.72, uFocusAmount));
+        vAlpha = alpha * 0.58 * uVisibility * (1.0 - smoothstep(0.05, 0.72, uFocusAmount));
       }
     `,
     fragmentShader: `
@@ -110,7 +114,9 @@ export function CreatureAuraParticles({
   useFrame(({ clock }) => {
     material.uniforms.uTime.value = clock.elapsedTime;
     material.uniforms.uFocusAmount.value = spotlightFocusRef?.current ?? 0;
-    material.visible = (spotlightFocusRef?.current ?? 0) < 0.96;
+    material.uniforms.uVisibility.value = visibilityRef?.current ?? 1;
+    material.visible = (spotlightFocusRef?.current ?? 0) < 0.96
+      && (visibilityRef?.current ?? 1) > 0.01;
     if (!pointsRef.current) return;
     pointsRef.current.renderOrder = renderOrderRef?.current ?? 10;
     const speed = motionType === 'fly' || motionType === 'swim' ? 0.12 : 0.075;

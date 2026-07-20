@@ -46,6 +46,7 @@ type CreatureEvolutionState = {
   recordVictory: (id: string) => void;
   recordDefeat: (id: string) => void;
   recordPlanetTrap: (id: string) => void;
+  recordLevelLoss: (id: string) => void;
   setIntent: (id: string, intent: CreatureAiIntent) => void;
   replaceIntents: (intents: Record<string, CreatureAiIntent>) => void;
   clearIntent: (id: string) => void;
@@ -174,6 +175,10 @@ export const useCreatureEvolutionStore = create<CreatureEvolutionState>((set, ge
     degradeAfterDefeat(record);
     record.defeats += 1;
     record.planetTraps += 1;
+    return true;
+  }, set),
+  recordLevelLoss: (id) => updateRecord(id, (record) => {
+    degradeAfterDefeat(record);
     return true;
   }, set),
   setIntent: (id, intent) => set((state) => ({
