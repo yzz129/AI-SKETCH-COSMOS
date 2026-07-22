@@ -2,6 +2,7 @@ import { useFrame } from '@react-three/fiber';
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import type { StoredArtwork } from '../../stores/artworkStore';
+import { getRemoteModelPose } from '../../lib/artwork/modelControlSync';
 import { useSketchStore } from '../../stores/useSketchStore';
 import { crowdAvoidance, useCreatureBehaviorStore } from '../../utils/creatureBehavior';
 import {
@@ -31,7 +32,11 @@ import {
   spotlightReleaseProgress
 } from './spotlightMotion';
 import { useAutoCosmicInteractionStore } from './autoCosmicInteractionStore';
-import { CREATURE_ORBIT_CENTER, DADAKIDO_WORLD_POSITION } from './cosmicAnchors';
+import {
+  CREATURE_ORBIT_CENTER,
+  DADAKIDO_WORLD_POSITION,
+  EXHIBITION_CREATURE_ORBIT
+} from './cosmicAnchors';
 import {
   createCreaturePartAction,
   resetCreaturePartAction,
@@ -85,6 +90,20 @@ const MAX_INTERACTION_FACING_OFFSET = THREE.MathUtils.degToRad(5.5);
 const MAX_FREE_FLIGHT_FACING_OFFSET = THREE.MathUtils.degToRad(14);
 const MAX_ROLL_FRAME_TRAVEL = 0.18;
 const RESTING_RENDER_ORDER = 1;
+const remoteViewPositionScratch = new THREE.Vector3();
+const remoteDepthPositionScratch = new THREE.Vector3();
+const remoteProjectedPositionScratch = new THREE.Vector3();
+const remoteCameraRightScratch = new THREE.Vector3();
+const remoteCameraUpScratch = new THREE.Vector3();
+const remoteCameraForwardScratch = new THREE.Vector3();
+const REMOTE_ROTATION_DAMPING = 9;
+const REMOTE_TRANSLATION_DAMPING = 6;
+const REMOTE_DEPTH_DAMPING = 5;
+const REMOTE_CONTROL_LIMIT = 0.85;
+const REMOTE_SCREEN_PADDING = 0.06;
+const CREATURE_DEPTH_SCALE_MIN = 0.54;
+const CREATURE_DEPTH_SCALE_MAX = 1.38;
+const CREATURE_DEPTH_SCALE_BASE = 1.07;
 
 function dampAngle(current: number, target: number, lambda: number, delta: number) {
   const shortestDelta = THREE.MathUtils.euclideanModulo(
@@ -93,6 +112,135 @@ function dampAngle(current: number, target: number, lambda: number, delta: numbe
   ) - Math.PI;
   return current + shortestDelta * (1 - Math.exp(-lambda * delta));
 }
+
+function writeRemoteScreenOffset(
+  target: THREE.Vector3,
+  position: THREE.Vector3,
+  camera: THREE.Camera,
+  offsetX: number,
+  offsetY: number,
+  offsetZ: number,
+  controlled: boolean,
+  maxModelWorldRadius: number
+) {
+  target.set(0, 0, 0);
+  if (!controlled) return target;
+
+  camera.updateMatrixWorld();
+  remoteViewPositionScratch.copy(position).applyMatrix4(camera.matrixWorldInverse);
+  const baseDepth = Math.max(0.1, -remoteViewPositionScratch.z);
+  const depthAmount = THREE.MathUtils.clamp(
+    offsetZ / REMOTE_CONTROL_LIMIT,
+    -1,
+    1
+  );
+  const farLayerDepth = Math.max(
+    SPOTLIGHT_OUTER_LAYER_DISTANCE + EXHIBITION_CREATURE_ORBIT.radiusZ,
+    camera.position.distanceTo(CREATURE_ORBIT_CENTER) + EXHIBITION_CREATURE_ORBIT.radiusZ
+  );
+  const desiredDepth = depthAmount >= 0
+    ? THREE.MathUtils.lerp(baseDepth, SPOTLIGHT_OUTER_LAYER_DISTANCE, depthAmount)
+    : THREE.MathUtils.lerp(baseDepth, farLayerDepth, -depthAmount);
+  camera.getWorldDirection(remoteCameraForwardScratch).normalize();
+  target.addScaledVector(remoteCameraForwardScratch, desiredDepth - baseDepth);
+  remoteDepthPositionScratch.copy(position).add(target).applyMatrix4(camera.matrixWorldInverse);
+  let halfWidth = 1;
+  let halfHeight = 1;
+  let safeHalfWidth = 1;
+  let safeHalfHeight = 1;
+  if (camera instanceof THREE.PerspectiveCamera) {
+    const depth = Math.max(0.1, -remoteDepthPositionScratch.z);
+    halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.getEffectiveFOV() * 0.5)) * depth;
+    halfWidth = halfHeight * camera.aspect;
+    // Use one conservative boundary at the nearest possible depth. If the
+    // boundary were recalculated from the current depth, moving forward would
+    // also push an edge-positioned model sideways or vertically.
+    const safeDepth = Math.max(0.1, SPOTLIGHT_OUTER_LAYER_DISTANCE);
+    safeHalfHeight = Math.tan(
+      THREE.MathUtils.degToRad(camera.getEffectiveFOV() * 0.5)
+    ) * safeDepth;
+    safeHalfWidth = safeHalfHeight * camera.aspect;
+  } else if (camera instanceof THREE.OrthographicCamera) {
+    halfWidth = (camera.right - camera.left) / (2 * camera.zoom);
+    halfHeight = (camera.top - camera.bottom) / (2 * camera.zoom);
+    safeHalfWidth = halfWidth;
+    safeHalfHeight = halfHeight;
+  }
+
+  remoteCameraRightScratch.setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+  remoteCameraUpScratch.setFromMatrixColumn(camera.matrixWorld, 1).normalize();
+  remoteProjectedPositionScratch
+    .copy(position)
+    .add(target)
+    .project(camera);
+  const maxOffsetX = THREE.MathUtils.clamp(
+    1 - maxModelWorldRadius / safeHalfWidth - REMOTE_SCREEN_PADDING,
+    0,
+    0.9
+  );
+  const maxOffsetY = THREE.MathUtils.clamp(
+    1 - maxModelWorldRadius / safeHalfHeight - REMOTE_SCREEN_PADDING,
+    0,
+    0.9
+  );
+  const targetOffsetX = THREE.MathUtils.clamp(
+    offsetX / REMOTE_CONTROL_LIMIT,
+    -1,
+    1
+  ) * maxOffsetX;
+  const targetOffsetY = THREE.MathUtils.clamp(
+    offsetY / REMOTE_CONTROL_LIMIT,
+    -1,
+    1
+  ) * maxOffsetY;
+  return target
+    .addScaledVector(
+      remoteCameraRightScratch,
+      (targetOffsetX - remoteProjectedPositionScratch.x) * halfWidth
+    )
+    .addScaledVector(
+      remoteCameraUpScratch,
+      (targetOffsetY - remoteProjectedPositionScratch.y) * halfHeight
+    );
+}
+
+function resolveRemoteMaxWorldRadius(
+  planeWidth: number,
+  planeHeight: number,
+  motionBaseScale: number,
+  evolutionScale: number
+) {
+  const maximumDisplayScale = motionBaseScale
+    * CREATURE_DEPTH_SCALE_BASE
+    * CREATURE_DEPTH_SCALE_MAX
+    * evolutionScale;
+  return Math.max(planeWidth, planeHeight) * maximumDisplayScale * 0.58;
+}
+
+function resolveRemoteDisplayScale(
+  systemScale: number,
+  motionBaseScale: number,
+  evolutionScale: number,
+  offsetZ: number
+) {
+  const depthAmount = THREE.MathUtils.clamp(
+    offsetZ / REMOTE_CONTROL_LIMIT,
+    -1,
+    1
+  );
+  const farScale = motionBaseScale
+    * CREATURE_DEPTH_SCALE_BASE
+    * CREATURE_DEPTH_SCALE_MIN
+    * evolutionScale;
+  const frontScale = motionBaseScale
+    * CREATURE_DEPTH_SCALE_BASE
+    * CREATURE_DEPTH_SCALE_MAX
+    * evolutionScale;
+  return depthAmount >= 0
+    ? THREE.MathUtils.lerp(systemScale, frontScale, depthAmount)
+    : THREE.MathUtils.lerp(systemScale, farScale, -depthAmount);
+}
+
 function getSpotlightLandingPosition(index: number) {
   const slot = index % 7;
   const angle = slot * (Math.PI * 2 / 7) + 0.3;
@@ -449,6 +597,12 @@ export function SpaceCreature({
   const spotlightFocusRef = useRef(0);
   const cameraFacingYawRef = useRef(0);
   const cameraFacingInitializedRef = useRef(false);
+  const remoteYawRef = useRef(0);
+  const remotePitchRef = useRef(0);
+  const remoteOffsetXRef = useRef(0);
+  const remoteOffsetYRef = useRef(0);
+  const remoteOffsetZRef = useRef(0);
+  const appliedRemoteOffsetRef = useRef(new THREE.Vector3());
   const spotlightAnchorRef = useRef<THREE.Vector3 | null>(null);
   const spotlightLandingRef = useRef<THREE.Vector3 | null>(null);
   const spotlightHoldStartedAtRef = useRef(-100);
@@ -728,9 +882,42 @@ export function SpaceCreature({
     const group = groupRef.current;
     const visual = visualRef.current;
     if (!group) return;
+    group.position.sub(appliedRemoteOffsetRef.current);
+    appliedRemoteOffsetRef.current.set(0, 0, 0);
 
     const time = clock.elapsedTime;
     const wallTime = performance.now() * 0.001;
+    const remotePose = getRemoteModelPose(artwork.gaussianModel?.sourceArtworkId ?? artwork.id);
+    remoteYawRef.current = dampAngle(
+      remoteYawRef.current,
+      remotePose?.yaw ?? 0,
+      remotePose ? REMOTE_ROTATION_DAMPING : 3,
+      Math.min(delta, 1 / 30)
+    );
+    remotePitchRef.current = THREE.MathUtils.damp(
+      remotePitchRef.current,
+      remotePose?.pitch ?? 0,
+      remotePose ? REMOTE_ROTATION_DAMPING : 3,
+      Math.min(delta, 1 / 30)
+    );
+    remoteOffsetXRef.current = THREE.MathUtils.damp(
+      remoteOffsetXRef.current,
+      remotePose?.offsetX ?? 0,
+      remotePose ? REMOTE_TRANSLATION_DAMPING : 3,
+      Math.min(delta, 1 / 30)
+    );
+    remoteOffsetYRef.current = THREE.MathUtils.damp(
+      remoteOffsetYRef.current,
+      remotePose?.offsetY ?? 0,
+      remotePose ? REMOTE_TRANSLATION_DAMPING : 3,
+      Math.min(delta, 1 / 30)
+    );
+    remoteOffsetZRef.current = THREE.MathUtils.damp(
+      remoteOffsetZRef.current,
+      remotePose?.offsetZ ?? 0,
+      remotePose ? REMOTE_DEPTH_DAMPING : 3,
+      Math.min(delta, 1 / 30)
+    );
     splatRevealRef.current = THREE.MathUtils.damp(
       splatRevealRef.current,
       splatUrl && splatReadyUrl === splatUrl ? 1 : 0,
@@ -879,12 +1066,41 @@ export function SpaceCreature({
         group.position.lerp(restPosition, 1 - Math.exp(-transitionDelta * 1.35));
       }
       const restScale = motion.baseScale * RETIRING_TARGET_SCALE;
-      group.scale.setScalar(THREE.MathUtils.damp(
-        group.scale.x || restScale,
-        restScale,
-        1.2,
-        transitionDelta
-      ));
+      const restEvolution = remotePose ? getCreatureEvolution(artwork.id, index) : null;
+      const restEvolutionScale = restEvolution
+        ? 1 + Math.min(restEvolution.level, 12) * 0.025
+        : 1;
+      if (remotePose) {
+        group.scale.setScalar(resolveRemoteDisplayScale(
+          restScale,
+          motion.baseScale,
+          restEvolutionScale,
+          remoteOffsetZRef.current
+        ));
+      } else {
+        group.scale.setScalar(THREE.MathUtils.damp(
+          group.scale.x || restScale,
+          restScale,
+          1.2,
+          transitionDelta
+        ));
+      }
+      writeRemoteScreenOffset(
+        appliedRemoteOffsetRef.current,
+        group.position,
+        camera,
+        remoteOffsetXRef.current,
+        remoteOffsetYRef.current,
+        remoteOffsetZRef.current,
+        Boolean(remotePose),
+        resolveRemoteMaxWorldRadius(
+          planeWidth,
+          planeHeight,
+          motion.baseScale,
+          restEvolutionScale
+        )
+      );
+      group.position.add(appliedRemoteOffsetRef.current);
       group.renderOrder = RESTING_RENDER_ORDER;
       creatureRenderOrderRef.current = RESTING_RENDER_ORDER;
       removeDadakidoOccluder(artwork.id);
@@ -899,7 +1115,7 @@ export function SpaceCreature({
       cameraFacingInitializedRef.current = true;
       if (visual) {
         visual.position.set(0, 0, 0);
-        visual.rotation.set(0, cameraFacingYawRef.current, 0);
+        visual.rotation.set(remotePitchRef.current, cameraFacingYawRef.current + remoteYawRef.current, 0);
         visual.scale.setScalar(1);
       }
       if (interactionMeshRef.current) interactionMeshRef.current.visible = false;
@@ -1088,13 +1304,17 @@ export function SpaceCreature({
       THREE.MathUtils.clamp(z, farOrbitZ, nearOrbitZ),
       farOrbitZ,
       nearOrbitZ,
-      0.54,
-      1.38
+      CREATURE_DEPTH_SCALE_MIN,
+      CREATURE_DEPTH_SCALE_MAX
     );
     const entryGlow = 1 + (1 - entryProgress) * 0.2;
     const evolutionRecord = getCreatureEvolution(artwork.id, index);
     const evolutionScale = 1 + Math.min(evolutionRecord.level, 12) * 0.025;
-    const normalScale = motion.baseScale * 1.07 * depthFactor * entryGlow * evolutionScale;
+    const normalScale = motion.baseScale
+      * CREATURE_DEPTH_SCALE_BASE
+      * depthFactor
+      * entryGlow
+      * evolutionScale;
 
     // ── Spotlight: model moves into the same outer layer as the entry burst ──
     const pathWorldPosition = pathWorldPositionRef.current.set(x, y, z);
@@ -1559,6 +1779,14 @@ export function SpaceCreature({
     } else {
       respawnVisibilityRef.current = 1;
     }
+    if (remotePose) {
+      group.scale.setScalar(resolveRemoteDisplayScale(
+        group.scale.x,
+        motion.baseScale,
+        evolutionScale,
+        remoteOffsetZRef.current
+      ));
+    }
     if (!interactionActive || interactionEvent?.kind !== 'portal') portalVisibilityRef.current = 1;
     reappearRef.current = Math.min(
       portalVisibilityRef.current,
@@ -1570,6 +1798,23 @@ export function SpaceCreature({
         activityEffectRef.current
       )
     );
+
+    writeRemoteScreenOffset(
+      appliedRemoteOffsetRef.current,
+      group.position,
+      camera,
+      remoteOffsetXRef.current,
+      remoteOffsetYRef.current,
+      remoteOffsetZRef.current,
+      Boolean(remotePose),
+      resolveRemoteMaxWorldRadius(
+        planeWidth,
+        planeHeight,
+        motion.baseScale,
+        evolutionScale
+      )
+    );
+    group.position.add(appliedRemoteOffsetRef.current);
 
     creatureViewPositionRef.current.copy(group.position).applyMatrix4(camera.matrixWorldInverse);
     dadakidoViewPositionRef.current
@@ -1724,8 +1969,8 @@ export function SpaceCreature({
       );
       if (splatUrl) {
         visual.rotation.set(
-          interactionPitch * (1 - splatPoseLock),
-          cameraFacingYawRef.current + readableInteractionYaw + spotlightTwistYaw,
+          interactionPitch * (1 - splatPoseLock) + remotePitchRef.current,
+          cameraFacingYawRef.current + readableInteractionYaw + spotlightTwistYaw + remoteYawRef.current,
           overallRoll * (1 - splatPoseLock) + spotlightTwistRoll
         );
       } else {
@@ -1880,6 +2125,7 @@ export function SpaceCreature({
       ) : null}
       <CreatureLevelBadge
         creatureId={artwork.id}
+        name={artwork.name}
         index={index}
         height={planeHeight}
         renderOrderRef={creatureRenderOrderRef}

@@ -132,6 +132,7 @@ export type ArtworkGaussianModelStatus =
 export type ArtworkGaussianModelResult = {
   jobId: string;
   sourceArtworkId?: string;
+  artworkName?: string;
   source: 'triposplat';
   status: ArtworkGaussianModelStatus;
   format: 'splat' | 'ply' | 'both';

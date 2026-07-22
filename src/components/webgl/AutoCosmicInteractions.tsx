@@ -95,10 +95,10 @@ export function AutoCosmicInteractions() {
     fightCooldowns: new Map<string, number>(),
     planetCooldowns: new Map<string, number>(),
     portalCooldowns: new Map<string, number>(),
-    pendingEvolutionPenalties: new Map<string, {
+    pendingEvolutionChanges: new Map<string, {
       sequence: number;
       applyAt: number;
-      kind: 'defeat' | 'planet' | 'portal';
+      kind: 'victory' | 'defeat' | 'planet' | 'portal';
     }>()
   });
   const planetScratchRef = useRef(new THREE.Vector3());
@@ -197,21 +197,23 @@ export function AutoCosmicInteractions() {
 
     if (now >= eventRef.current.nextCleanupAt) {
       eventRef.current.nextCleanupAt = now + 0.15;
-      for (const [creatureId, penalty] of encounter.pendingEvolutionPenalties) {
-        if (now < penalty.applyAt) continue;
+      for (const [creatureId, change] of encounter.pendingEvolutionChanges) {
+        if (now < change.applyAt) continue;
         const event = useCreatureInteractionStore.getState().events[creatureId];
-        if (event?.sequence === penalty.sequence) {
-          if (penalty.kind === 'defeat') {
+        if (event?.sequence === change.sequence) {
+          if (change.kind === 'victory') {
+            evolution.recordVictory(creatureId);
+          } else if (change.kind === 'defeat') {
             evolution.recordDefeat(creatureId);
             auto.triggerCreatureBurst(creatureId);
-          } else if (penalty.kind === 'planet') {
+          } else if (change.kind === 'planet') {
             evolution.recordPlanetTrap(creatureId);
             auto.triggerCreatureBurst(creatureId);
           } else {
             evolution.recordLevelLoss(creatureId);
           }
         }
-        encounter.pendingEvolutionPenalties.delete(creatureId);
+        encounter.pendingEvolutionChanges.delete(creatureId);
       }
       const eventsForCleanup = useCreatureInteractionStore.getState().events;
       for (const creatureId in eventsForCleanup) {
@@ -273,7 +275,7 @@ export function AutoCosmicInteractions() {
               origin: creaturePosition.toArray(),
               captureDuration: PLANET_CAPTURE_DURATION
             });
-            encounter.pendingEvolutionPenalties.set(creatureId, {
+            encounter.pendingEvolutionChanges.set(creatureId, {
               sequence: trappedEvent.sequence,
               applyAt: now + PLANET_CAPTURE_DURATION,
               kind: 'planet'
@@ -343,7 +345,13 @@ export function AutoCosmicInteractions() {
               : rankDifference < 0
                 ? firstId
                 : (Math.random() < 0.5 ? firstId : secondId);
-            encounter.pendingEvolutionPenalties.set(loserId, {
+            const winnerId = loserId === firstId ? secondId : firstId;
+            encounter.pendingEvolutionChanges.set(winnerId, {
+              sequence: winnerId === firstId ? firstFightEvent.sequence : secondFightEvent.sequence,
+              applyAt: now + FIGHT_DURATION,
+              kind: 'victory'
+            });
+            encounter.pendingEvolutionChanges.set(loserId, {
               sequence: loserId === firstId ? firstFightEvent.sequence : secondFightEvent.sequence,
               applyAt: now + FIGHT_DURATION,
               kind: 'defeat'
@@ -401,7 +409,7 @@ export function AutoCosmicInteractions() {
               transitionAt: PORTAL_ENTRY_DURATION
             }
           });
-          encounter.pendingEvolutionPenalties.set(creatureId, {
+          encounter.pendingEvolutionChanges.set(creatureId, {
             sequence: portalEvent.sequence,
             applyAt: now + PORTAL_ENTRY_DURATION + PORTAL_EMERGE_DURATION,
             kind: 'portal'

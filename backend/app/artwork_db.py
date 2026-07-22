@@ -15,6 +15,9 @@ DATA_DIR = BACKEND_ROOT / "data"
 DB_PATH = DATA_DIR / "cosmos.db"
 _SCHEMA_LOCK = Lock()
 _SCHEMA_READY = False
+_DISPLAY_NAME_MIGRATION_KEY = "artwork_display_names_v1"
+_DISPLAY_NAME_COUNTER_KEY = "next_default_artwork_number"
+_MAX_DISPLAY_NAME_LENGTH = 18
 
 
 def _now_iso() -> str:
@@ -90,7 +93,57 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE artworks ADD COLUMN {column_name} {column_definition}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_artworks_created_at ON artworks(created_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_artworks_deleted_created_at ON artworks(is_deleted, created_at DESC)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+    migration = conn.execute(
+        "SELECT value FROM app_metadata WHERE key = ?",
+        (_DISPLAY_NAME_MIGRATION_KEY,),
+    ).fetchone()
+    if migration is None:
+        rows = conn.execute(
+            "SELECT id FROM artworks ORDER BY created_at ASC, id ASC"
+        ).fetchall()
+        migrated_at = _now_iso()
+        for number, row in enumerate(rows, start=1):
+            conn.execute(
+                "UPDATE artworks SET name = ?, updated_at = ? WHERE id = ?",
+                (f"dada{number}", migrated_at, row["id"]),
+            )
+        conn.execute(
+            "INSERT OR REPLACE INTO app_metadata (key, value) VALUES (?, ?)",
+            (_DISPLAY_NAME_COUNTER_KEY, str(len(rows) + 1)),
+        )
+        conn.execute(
+            "INSERT INTO app_metadata (key, value) VALUES (?, ?)",
+            (_DISPLAY_NAME_MIGRATION_KEY, "complete"),
+        )
     conn.commit()
+
+
+def _normalise_display_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = " ".join(value.split()).strip()
+    return cleaned[:_MAX_DISPLAY_NAME_LENGTH] or None
+
+
+def _allocate_default_display_name(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT value FROM app_metadata WHERE key = ?",
+        (_DISPLAY_NAME_COUNTER_KEY,),
+    ).fetchone()
+    number = max(1, int(row["value"])) if row else 1
+    conn.execute(
+        "INSERT OR REPLACE INTO app_metadata (key, value) VALUES (?, ?)",
+        (_DISPLAY_NAME_COUNTER_KEY, str(number + 1)),
+    )
+    return f"dada{number}"
 
 
 def _json_dumps(value: Any) -> str | None:
@@ -121,9 +174,9 @@ def upsert_generated_artwork(
     features: dict[str, Any] | None = None,
     rig_url: str | None = None,
     job_id: str | None = None,
-) -> None:
+    display_name: str | None = None,
+) -> str:
     now = _now_iso()
-    name = source_path.name
     gaussian_model = {
         "jobId": job_id or "",
         "sourceArtworkId": artwork_id,
@@ -139,6 +192,8 @@ def upsert_generated_artwork(
         "createdAt": int(datetime.now(timezone.utc).timestamp() * 1000),
     }
     with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        name = _normalise_display_name(display_name) or _allocate_default_display_name(conn)
         existing = conn.execute("SELECT created_at FROM artworks WHERE id = ?", (artwork_id,)).fetchone()
         created_at = existing["created_at"] if existing else now
         conn.execute(
@@ -179,6 +234,7 @@ def upsert_generated_artwork(
             ),
         )
         conn.commit()
+    return name
 
 
 def update_artwork_metadata(
@@ -191,6 +247,7 @@ def update_artwork_metadata(
     features: dict[str, Any] | None = None,
     gaussian_model: dict[str, Any] | None = None,
 ) -> bool:
+    normalised_name = _normalise_display_name(name)
     with _connect() as conn:
         row = conn.execute("SELECT id FROM artworks WHERE id = ?", (artwork_id,)).fetchone()
         if row is None:
@@ -210,7 +267,7 @@ def update_artwork_metadata(
             WHERE id = ?
             """,
             (
-                name,
+                normalised_name,
                 width,
                 height,
                 aspect,
@@ -411,6 +468,7 @@ def backfill_existing_outputs() -> int:
 
     imported = 0
     with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         for output_root in roots:
             for artwork_dir in output_root.iterdir():
                 if not artwork_dir.is_dir():
@@ -438,6 +496,7 @@ def backfill_existing_outputs() -> int:
                         gaussian_count = None
 
                 created_at = datetime.fromtimestamp(artwork_dir.stat().st_mtime, timezone.utc).isoformat()
+                display_name = _allocate_default_display_name(conn)
                 conn.execute(
                     """
                     INSERT INTO artworks (
@@ -448,7 +507,7 @@ def backfill_existing_outputs() -> int:
                     """,
                     (
                         artwork_id,
-                        source_path.name if source_path else artwork_id,
+                        display_name,
                         str(source_path) if source_path else None,
                         f"/assets/{artwork_id}/{source_path.name}" if source_path else None,
                         f"/assets/{artwork_id}/preprocessed_image.webp" if preview_path.is_file() else None,

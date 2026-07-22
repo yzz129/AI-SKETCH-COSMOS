@@ -1,12 +1,14 @@
+import asyncio
 import json
 import os
 import re
 import shutil
 import uuid
+from math import isfinite, pi
 from pathlib import Path
 from time import perf_counter
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -22,6 +24,7 @@ from .artwork_db import (
     update_artwork_metadata,
 )
 from .jobs import JobQueueFullError, job_to_response, jobs
+from .model_control import model_control_hub
 from .perf_logger import log_perf
 from .schemas import (
     ArtworkEvolutionBatchUpdate,
@@ -68,12 +71,79 @@ def hydrate_artwork_database():
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "modelControl": True}
 
 
 @app.get("/health/triposplat")
 def triposplat_health():
     return {**triposplat_config_status(), "queue": jobs.stats()}
+
+
+@app.websocket("/api/model-control")
+async def model_control(websocket: WebSocket):
+    role = websocket.query_params.get("role", "")
+    if role == "display":
+        await model_control_hub.connect_display(websocket)
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(websocket.receive_text(), timeout=8)
+                except asyncio.TimeoutError:
+                    await model_control_hub.send_heartbeat(websocket)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await model_control_hub.disconnect_display(websocket)
+        return
+
+    if role != "controller":
+        await websocket.close(code=1008, reason="invalid model-control role")
+        return
+
+    await websocket.accept()
+    last_message_at = 0.0
+    try:
+        while True:
+            payload = await websocket.receive_json()
+            now = perf_counter()
+            if now - last_message_at < 0.025 or not isinstance(payload, dict):
+                continue
+
+            artwork_id = payload.get("artworkId")
+            yaw = payload.get("yaw")
+            pitch = payload.get("pitch")
+            offset_x = payload.get("offsetX", 0)
+            offset_y = payload.get("offsetY", 0)
+            offset_z = payload.get("offsetZ", 0)
+            if (
+                not isinstance(artwork_id, str)
+                or not SUBMISSION_ID_PATTERN.fullmatch(artwork_id)
+                or not isinstance(yaw, (int, float))
+                or not isinstance(pitch, (int, float))
+                or not isinstance(offset_x, (int, float))
+                or not isinstance(offset_y, (int, float))
+                or not isinstance(offset_z, (int, float))
+                or not isfinite(yaw)
+                or not isfinite(pitch)
+                or not isfinite(offset_x)
+                or not isfinite(offset_y)
+                or not isfinite(offset_z)
+            ):
+                continue
+
+            last_message_at = now
+            await model_control_hub.broadcast_pose({
+                "type": "pose",
+                "artworkId": artwork_id,
+                "yaw": max(-pi, min(pi, float(yaw))),
+                "pitch": max(-pi / 2, min(pi / 2, float(pitch))),
+                "offsetX": max(-0.85, min(0.85, float(offset_x))),
+                "offsetY": max(-0.85, min(0.85, float(offset_y))),
+                "offsetZ": max(-0.85, min(0.85, float(offset_z))),
+                "active": bool(payload.get("active", False)),
+            })
+    except WebSocketDisconnect:
+        return
 
 
 @app.get("/api/artworks", response_model=list[PersistedArtwork])
@@ -102,6 +172,7 @@ def create_artwork_job(
     format: str = Form("splat"),
     features: str | None = Form(None),
     submissionId: str | None = Form(None),
+    name: str | None = Form(None, max_length=18),
 ):
     request_start = perf_counter()
     triposplat_status = triposplat_config_status()
@@ -164,6 +235,7 @@ def create_artwork_job(
             source_path=source_path,
             num_gaussians=numGaussians,
             export_format=export_format,
+            display_name=name,
             features=parsed_features,
         )
     except UploadTooLargeError as exc:

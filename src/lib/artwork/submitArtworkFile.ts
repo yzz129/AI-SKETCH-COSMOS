@@ -91,21 +91,23 @@ function progressMessage(result: ArtworkGaussianModelResult) {
   return result.message ?? 'TripoSplat 生成失败，正在回退到本地粒子生命...';
 }
 
-async function addLocalParticleArtwork(file: File) {
+async function addLocalParticleArtwork(file: File, requestedName?: string) {
   const [artwork, features] = await Promise.all([
     processArtworkImage(file),
     analyzeArtworkFeatures(file)
   ]);
-  const storedArtwork = useArtworkStore.getState().addArtwork(artwork, features);
+  const namedArtwork = requestedName ? { ...artwork, name: requestedName } : artwork;
+  const storedArtwork = useArtworkStore.getState().addArtwork(namedArtwork, features);
   useSketchStore.setState({
     status: 'ready',
-    message: localReadyMessage(artwork, features)
+    message: localReadyMessage(namedArtwork, features)
   });
   return storedArtwork;
 }
 
 export type SubmitArtworkFileOptions = {
   allowLocalFallback?: boolean;
+  name?: string;
   onGaussianProgress?: (result: ArtworkGaussianModelResult) => void;
   submissionId?: string;
   signal?: AbortSignal;
@@ -115,6 +117,7 @@ export async function submitArtworkFile(
   file: File,
   {
     allowLocalFallback = true,
+    name,
     onGaussianProgress,
     submissionId,
     signal
@@ -133,7 +136,7 @@ export async function submitArtworkFile(
       throw error;
     }
     sketchStore.setProcessing('正在本地去白底、提取主色并生成 3D 粒子生命...');
-    return addLocalParticleArtwork(file);
+    return addLocalParticleArtwork(file, name);
   }
 
   try {
@@ -161,6 +164,7 @@ export async function submitArtworkFile(
     // runs in parallel and can update motion after the intact Splat appears.
     const gaussianModel = await generateGaussianArtworkModel({
       file,
+      name,
       submissionId,
       signal,
       format: 'splat',
@@ -175,19 +179,23 @@ export async function submitArtworkFile(
     });
     logStage('triposplat ready');
 
+    const namedArtwork = {
+      ...artwork,
+      name: gaussianModel.artworkName ?? name ?? artwork.name
+    };
     const displayedFeatures = recognizedFeatures ?? fallbackFeatures;
-    const displayedArtwork = useArtworkStore.getState().addArtwork(artwork, displayedFeatures, undefined, gaussianModel);
+    const displayedArtwork = useArtworkStore.getState().addArtwork(namedArtwork, displayedFeatures, undefined, gaussianModel);
     logStage('artwork added to scene');
     useSketchStore.setState({
       status: 'ready',
-      message: `${artwork.name} 已进入星河：基础 .splat 已显示，GPU 骨骼将在后台热加载...`
+      message: `${namedArtwork.name} 已进入星河：基础 .splat 已显示，GPU 骨骼将在后台热加载...`
     });
 
     useArtworkStore.getState().updateArtworkFeatures(displayedArtwork.id, displayedFeatures);
-    void updateBackendArtworkMetadata(artwork, displayedFeatures, gaussianModel);
+    void updateBackendArtworkMetadata(namedArtwork, displayedFeatures, gaussianModel);
     useSketchStore.setState({
       status: 'ready',
-      message: splatReadyMessage(artwork, displayedFeatures)
+      message: splatReadyMessage(namedArtwork, displayedFeatures)
     });
     logStage(`scene motion updated / ${displayedFeatures.motionPreset}`);
 
@@ -195,7 +203,7 @@ export async function submitArtworkFile(
       void featuresPromise.then((lateFeatures) => {
         if (!lateFeatures) return;
         useArtworkStore.getState().updateArtworkFeatures(displayedArtwork.id, lateFeatures);
-        void updateBackendArtworkMetadata(artwork, lateFeatures, gaussianModel);
+        void updateBackendArtworkMetadata(namedArtwork, lateFeatures, gaussianModel);
         logStage(`late scene motion updated / ${lateFeatures.motionPreset}`);
       });
     }
@@ -213,6 +221,6 @@ export async function submitArtworkFile(
     }
     console.warn('[triposplat] backend-first generation failed; falling back to local particles:', error);
     useSketchStore.getState().setProcessing('TripoSplat 后端不可用或生成失败，正在回退到本地粒子生命...');
-    return addLocalParticleArtwork(file);
+    return addLocalParticleArtwork(file, name);
   }
 }

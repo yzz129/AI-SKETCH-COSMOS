@@ -25,6 +25,7 @@ class GenerationJob:
     source_path: Path
     num_gaussians: int
     export_format: str
+    display_name: str | None = None
     features: dict | None = None
     status: JobStatus = JobStatus.queued
     progress: float | None = 0
@@ -85,6 +86,7 @@ class JobRegistry:
         source_path: Path,
         num_gaussians: int,
         export_format: str,
+        display_name: str | None = None,
         features: dict | None = None,
     ) -> GenerationJob:
         job = GenerationJob(
@@ -95,6 +97,7 @@ class JobRegistry:
             source_path=source_path,
             num_gaussians=num_gaussians,
             export_format=export_format,
+            display_name=display_name,
             features=features,
             created_at_perf=perf_counter(),
         )
@@ -207,7 +210,7 @@ class JobRegistry:
                 f"elapsed={perf_counter() - generate_start:.3f}s",
             )
             db_start = perf_counter()
-            upsert_generated_artwork(
+            display_name = upsert_generated_artwork(
                 artwork_id=job.artwork_id,
                 source_path=job.source_path,
                 source_url=asset_url(job.artwork_id, job.source_path.name),
@@ -219,6 +222,7 @@ class JobRegistry:
                 features=generated_features,
                 rig_url=assets.get("rigUrl"),
                 job_id=job.job_id,
+                display_name=job.display_name,
             )
             _log_perf(job.job_id, job.artwork_id, "db_upsert:end", f"elapsed={perf_counter() - db_start:.3f}s")
             self._update(
@@ -227,6 +231,7 @@ class JobRegistry:
                 progress=1,
                 message="ready",
                 artwork=ArtworkAssets(**assets),
+                display_name=display_name,
                 finished_at_perf=perf_counter(),
             )
             _log_perf(
@@ -251,6 +256,7 @@ def job_to_response(job: GenerationJob) -> JobResponse:
     return JobResponse(
         jobId=job.job_id,
         artworkId=job.artwork_id,
+        name=job.display_name,
         submissionId=job.submission_id,
         status=job.status,
         progress=job.progress,

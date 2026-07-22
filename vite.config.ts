@@ -7,13 +7,36 @@ const ARK_MODEL = 'doubao-seed-2-0-mini-260428';
 const ARK_3D_MODEL = 'hyper3d-gen2-260112';
 const ARK_3D_MAX_SEED = 65535;
 const DEFAULT_TRIPOSPLAT_API_TARGET = 'http://127.0.0.1:8000';
+const DEFAULT_DADAKIDO_API_TARGET = 'http://192.168.1.247:3000';
+const DEFAULT_DADAKIDO_CHECKIN_API_TARGET = 'http://192.168.1.247:3000';
 
 function createTripoSplatProxy(target: string) {
   return {
     '/triposplat': {
       target,
       changeOrigin: true,
+      ws: true,
       rewrite: (path: string) => path.replace(/^\/triposplat/, '')
+    }
+  };
+}
+
+function createDevProxy(
+  triposplatTarget: string,
+  dadakidoTarget: string,
+  dadakidoCheckInTarget: string
+) {
+  return {
+    ...createTripoSplatProxy(triposplatTarget),
+    '/dadakido-api': {
+      target: dadakidoTarget,
+      changeOrigin: true,
+      rewrite: (path: string) => path.replace(/^\/dadakido-api/, '')
+    },
+    '/dadakido-checkin-api': {
+      target: dadakidoCheckInTarget,
+      changeOrigin: true,
+      rewrite: (path: string) => path.replace(/^\/dadakido-checkin-api/, '')
     }
   };
 }
@@ -565,6 +588,10 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const triposplatApiTarget = env.TRIPOSPLAT_API_TARGET?.trim()
     || DEFAULT_TRIPOSPLAT_API_TARGET;
+  const dadakidoApiTarget = env.DADAKIDO_API_TARGET?.trim()
+    || DEFAULT_DADAKIDO_API_TARGET;
+  const dadakidoCheckInApiTarget = env.DADAKIDO_CHECKIN_API_TARGET?.trim()
+    || DEFAULT_DADAKIDO_CHECKIN_API_TARGET;
 
   return {
     plugins: [
@@ -576,11 +603,11 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       allowedHosts: ['.trycloudflare.com', '.yzzwnw.asia'],
-      proxy: createTripoSplatProxy(triposplatApiTarget)
+      proxy: createDevProxy(triposplatApiTarget, dadakidoApiTarget, dadakidoCheckInApiTarget)
     },
     preview: {
       allowedHosts: ['.trycloudflare.com', '.yzzwnw.asia'],
-      proxy: createTripoSplatProxy(triposplatApiTarget)
+      proxy: createDevProxy(triposplatApiTarget, dadakidoApiTarget, dadakidoCheckInApiTarget)
     }
   };
 });

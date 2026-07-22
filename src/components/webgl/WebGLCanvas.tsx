@@ -1,6 +1,7 @@
 import { Canvas } from '@react-three/fiber';
 import type { PointerEvent } from 'react';
 import { useEffect } from 'react';
+import { startRemoteModelControlReceiver } from '../../lib/artwork/modelControlSync';
 import { useSketchStore } from '../../stores/useSketchStore';
 import { CosmicControlPanel } from '../ui/CosmicControlPanel';
 import { TouchTrailCanvas } from '../ui/TouchTrailCanvas';
@@ -23,6 +24,8 @@ export function WebGLCanvas() {
       window.removeEventListener('blur', endCollapse);
     };
   }, [endCollapse]);
+
+  useEffect(() => startRemoteModelControlReceiver(), []);
 
   const pointToCollapseCenter = (event: PointerEvent<HTMLDivElement>): [number, number] => {
     const rect = event.currentTarget.getBoundingClientRect();

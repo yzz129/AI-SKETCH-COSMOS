@@ -22,6 +22,7 @@ class ArtworkAssets(BaseModel):
 class JobResponse(BaseModel):
     jobId: str
     artworkId: str
+    name: str | None = None
     submissionId: str | None = None
     status: JobStatus
     progress: float | None = None
@@ -31,7 +32,7 @@ class JobResponse(BaseModel):
 
 
 class ArtworkMetadataUpdate(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, max_length=18)
     width: int | None = None
     height: int | None = None
     aspect: float | None = None

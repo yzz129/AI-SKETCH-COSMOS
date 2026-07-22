@@ -13,6 +13,7 @@ type TripoSplatModelPayload = {
 type TripoSplatJobPayload = {
   jobId?: string;
   artworkId?: string;
+  name?: string;
   submissionId?: string;
   status?: ArtworkGaussianModelStatus;
   progress?: number;
@@ -24,6 +25,7 @@ type TripoSplatJobPayload = {
 
 type GenerateGaussianArtworkModelInput = {
   file: File;
+  name?: string;
   submissionId?: string;
   signal?: AbortSignal;
   gaussianCount?: number;
@@ -97,6 +99,7 @@ function toResult({
   return {
     jobId,
     sourceArtworkId: payload.artworkId,
+    artworkName: payload.name,
     source: 'triposplat',
     status: payload.status ?? fallbackStatus,
     format,
@@ -114,6 +117,7 @@ function toResult({
 
 export async function generateGaussianArtworkModel({
   file,
+  name,
   submissionId,
   signal,
   gaussianCount = DEFAULT_GAUSSIAN_COUNT,
@@ -130,6 +134,7 @@ export async function generateGaussianArtworkModel({
   formData.set('image', file);
   formData.set('numGaussians', String(gaussianCount));
   formData.set('format', format);
+  if (name) formData.set('name', name);
   if (submissionId) formData.set('submissionId', submissionId);
   if (features) formData.set('features', JSON.stringify(features));
 

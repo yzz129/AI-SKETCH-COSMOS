@@ -31,7 +31,20 @@ $settings = New-ScheduledTaskSettingsSet `
 $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 
 $task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $taskPrincipal `
-  -Description 'Keeps the AI Sketch Cosmos Vite development server and FastAPI backend running.'
+  -Description 'Keeps the AI Sketch Cosmos frontend, backend, and Cloudflare Tunnel healthy with guarded reconnects.'
+
+$watchdogPattern = [regex]::Escape($watchdogPath)
+$existingWatchdogs = @(
+  Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.Name -in @('powershell.exe', 'pwsh.exe') -and
+      $_.CommandLine -match $watchdogPattern
+    }
+)
+foreach ($watchdogProcess in $existingWatchdogs) {
+  Stop-Process -Id $watchdogProcess.ProcessId -Force -ErrorAction SilentlyContinue
+}
+
 Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
 

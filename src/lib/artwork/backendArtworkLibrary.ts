@@ -34,6 +34,7 @@ export type BackendArtworkLibraryRevision = {
   revision: string;
   total: number;
   latestCreatedAt?: string | null;
+  latestUpdatedAt?: string | null;
 };
 
 export async function fetchBackendArtworkLibraryRevision(
@@ -46,9 +47,10 @@ export async function fetchBackendArtworkLibraryRevision(
   const page = await fetchBackendArtworkPage(1, 0, status);
   const latest = page.records[0];
   return {
-    revision: [page.total, latest?.id ?? '', latest?.createdAt ?? ''].join(':'),
+    revision: [page.total, latest?.id ?? '', latest?.createdAt ?? '', latest?.updatedAt ?? ''].join(':'),
     total: page.total,
-    latestCreatedAt: latest?.createdAt ?? null
+    latestCreatedAt: latest?.createdAt ?? null,
+    latestUpdatedAt: latest?.updatedAt ?? null
   };
 }
 
@@ -81,6 +83,19 @@ export async function fetchBackendArtworkPage(limit = 50, offset = 0, status: Ba
 export async function fetchBackendArtworks(limit = 50): Promise<BackendArtworkRecord[]> {
   const page = await fetchBackendArtworkPage(limit, 0, 'active');
   return page.records;
+}
+
+export async function fetchBackendArtworkById(artworkId: string): Promise<BackendArtworkRecord> {
+  const baseUrl = apiBase();
+  if (!baseUrl) throw new Error('VITE_TRIPOSPLAT_API_BASE is not configured.');
+
+  const response = await fetch(`${baseUrl}/api/artworks/${encodeURIComponent(artworkId)}`, {
+    cache: 'no-store'
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to load backend artwork: ${response.status}`);
+  }
+  return normalizeRecord(baseUrl, await response.json() as BackendArtworkRecord);
 }
 
 export async function fetchAllBackendArtworks(pageSize = 200): Promise<BackendArtworkRecord[]> {
