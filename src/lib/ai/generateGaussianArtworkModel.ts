@@ -1,4 +1,10 @@
 import type { ArtworkFeatureResult, ArtworkGaussianModelResult, ArtworkGaussianModelStatus } from '../../types/artwork';
+import {
+  CONTENT_MODERATION_REJECTED,
+  CONTENT_MODERATION_UNAVAILABLE,
+  moderationErrorFromPayload,
+  type ArtworkModerationCategory
+} from '../../utils/contentModeration';
 import { toClientAssetUrl } from '../artwork/triposplatAssetUrl';
 
 type TripoSplatModelPayload = {
@@ -19,6 +25,12 @@ type TripoSplatJobPayload = {
   progress?: number;
   message?: string;
   error?: string;
+  detail?: string | {
+    code?: string;
+    message?: string;
+    category?: string;
+    confidence?: number;
+  };
   artwork?: TripoSplatModelPayload;
   model?: TripoSplatModelPayload;
 };
@@ -77,6 +89,32 @@ async function readJson(response: Response): Promise<TripoSplatJobPayload> {
   } catch {
     return { error: text || response.statusText };
   }
+}
+
+function asModerationCategory(value: unknown): ArtworkModerationCategory | undefined {
+  return value === 'safe'
+    || value === 'graphic_violence'
+    || value === 'sexual_explicit'
+    || value === 'sexual_minors'
+    ? value
+    : undefined;
+}
+
+function apiError(payload: TripoSplatJobPayload, fallback: string) {
+  if (payload.detail && typeof payload.detail === 'object') {
+    const code = payload.detail.code;
+    if (code === CONTENT_MODERATION_REJECTED || code === CONTENT_MODERATION_UNAVAILABLE) {
+      return moderationErrorFromPayload({
+        code,
+        message: payload.detail.message,
+        category: asModerationCategory(payload.detail.category),
+        confidence: payload.detail.confidence
+      });
+    }
+    if (payload.detail.message) return new Error(payload.detail.message);
+  }
+  if (typeof payload.detail === 'string' && payload.detail) return new Error(payload.detail);
+  return new Error(payload.error ?? fallback);
 }
 
 function toResult({
@@ -149,7 +187,7 @@ export async function generateGaussianArtworkModel({
     if (createResponse.status === 429) {
       throw new Error('当前上传人数较多，生成队列已满，请稍后再试。');
     }
-    throw new Error(created.error ?? `TripoSplat task creation failed with ${createResponse.status}.`);
+    throw apiError(created, `TripoSplat task creation failed with ${createResponse.status}.`);
   }
   const validatesSubmissionIdentity = Boolean(
     submissionId && typeof created.submissionId === 'string'

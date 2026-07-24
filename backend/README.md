@@ -11,6 +11,8 @@ when a GPU machine has TripoSplat and the model weights installed.
 ```bash
 VITE_TRIPOSPLAT_ENABLED=true
 VITE_TRIPOSPLAT_API_BASE=http://127.0.0.1:8000
+VITE_CONTENT_MODERATION_ENABLED=true
+VITE_CONTENT_MODERATION_REQUIRED=true
 ```
 
 If either value is missing, uploads keep using the existing local particle
@@ -39,7 +41,18 @@ set TRIPOSPLAT_DEVICE=cuda
 set TRIPOSPLAT_MAX_WORKERS=2
 set TRIPOSPLAT_MAX_ACTIVE_JOBS=24
 set TRIPOSPLAT_MAX_UPLOAD_BYTES=15728640
+set ARK_API_KEY=your-ark-api-key
+set CONTENT_MODERATION_ENABLED=true
+set CONTENT_MODERATION_REQUIRED=true
+set CONTENT_MODERATION_THRESHOLD=0.82
 ```
+
+The local-only Vite upload preflight and the FastAPI generation endpoint each
+use the Ark vision model to reject high-confidence explicit sexual or graphic violent imagery.
+`CONTENT_MODERATION_THRESHOLD` is clamped to `0.50`-`0.99`; the default `0.82`
+is intentionally conservative to reduce false positives. Set
+`CONTENT_MODERATION_REQUIRED=false` only when a temporary fail-open mode is
+explicitly acceptable.
 
 Run the service:
 

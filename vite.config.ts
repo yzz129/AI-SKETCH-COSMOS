@@ -305,14 +305,81 @@ function createLegacyRecognitionPrompt() {
 actionTypes 请选择 3 到 5 个，必须来自上面列表。优先描述动作和形态，不要出现具体动物、植物、人物或物种名称。`;
 }
 
-function arkRecognitionPlugin(apiKey?: string): Plugin {
+type ModerationCategory = 'safe' | 'graphic_violence' | 'sexual_explicit' | 'sexual_minors';
+
+function createContentModerationPrompt() {
+  return `你是画作上传的内容安全审核器。只识别下列高风险类别，并只输出一个 JSON 对象：
+{
+  "decision": "allow" | "block",
+  "category": "safe" | "graphic_violence" | "sexual_explicit" | "sexual_minors",
+  "confidence": 0.0,
+  "reason": "一句简短中文理由"
+}
+
+仅在画面有明确证据时拦截：
+1. graphic_violence：清晰可见的大量流血、开放性创伤、器官、肢解、断头、严重尸体损伤或以虐杀为主体的血腥场景。
+2. sexual_explicit：清晰可见的性行为、性器官特写、色情展示或明显为性刺激而呈现的裸露。
+3. sexual_minors：任何涉及未成年人的性化、裸露或性行为内容。
+
+为减少误判，以下应 allow：普通泳装、无性暗示的日常露肤、医学/艺术人体但无露骨性展示、红色颜料/番茄酱、奇幻战斗、持有武器、轻微擦伤、威胁或打斗但没有上述明显血腥伤害。
+不要因为题材、颜色或模糊联想拦截。不确定时 decision=allow，confidence 应低于 0.82。`;
+}
+
+function moderationMessage(category: ModerationCategory) {
+  if (category === 'graphic_violence') {
+    return '检测到图片含有明显血腥或严重暴力内容，请重新上传健康、非血腥的作品。';
+  }
+  if (category === 'sexual_explicit' || category === 'sexual_minors') {
+    return '检测到图片含有色情或不适宜内容，请重新上传合适的作品。';
+  }
+  return '这张图片未通过内容安全检测，请重新上传其他作品。';
+}
+
+function normalizeModerationResult(parsed: unknown, configuredThreshold?: string) {
+  const record = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+  const validCategories = new Set<ModerationCategory>([
+    'safe',
+    'graphic_violence',
+    'sexual_explicit',
+    'sexual_minors'
+  ]);
+  const rawCategory = typeof record.category === 'string' ? record.category.trim().toLowerCase() : 'safe';
+  const category = validCategories.has(rawCategory as ModerationCategory)
+    ? rawCategory as ModerationCategory
+    : 'safe';
+  const decision = typeof record.decision === 'string' ? record.decision.trim().toLowerCase() : 'allow';
+  const numericConfidence = typeof record.confidence === 'number'
+    ? record.confidence
+    : Number(record.confidence ?? 0);
+  const confidence = Number.isFinite(numericConfidence)
+    ? Math.max(0, Math.min(1, numericConfidence))
+    : 0;
+  const rawThreshold = Number(configuredThreshold ?? 0.82);
+  const threshold = Number.isFinite(rawThreshold)
+    ? Math.max(0.5, Math.min(0.99, rawThreshold))
+    : 0.82;
+  const effectiveThreshold = category === 'sexual_minors' ? Math.min(threshold, 0.65) : threshold;
+  const allowed = !(
+    decision === 'block'
+    && category !== 'safe'
+    && confidence >= effectiveThreshold
+  );
+
+  return { allowed, category, confidence };
+}
+
+function arkRecognitionPlugin(apiKey?: string, moderationThreshold?: string): Plugin {
   const routeHandler = (
     request: import('node:http').IncomingMessage,
     response: import('node:http').ServerResponse,
     next: () => void
   ) => {
     const pathname = request.url?.split('?')[0];
-    if (pathname !== '/api/artwork-features' && pathname !== '/api/ai-recognize') {
+    if (
+      pathname !== '/api/artwork-features'
+      && pathname !== '/api/ai-recognize'
+      && pathname !== '/api/content-moderation'
+    ) {
       next();
       return;
     }
@@ -350,6 +417,7 @@ function arkRecognitionPlugin(apiKey?: string): Plugin {
       const imageDataUrl = body.imageDataUrl as string;
 
       const isFeatureRequest = pathname === '/api/artwork-features';
+      const isModerationRequest = pathname === '/api/content-moderation';
       const arkResponse = await fetch(ARK_RESPONSES_URL, {
         method: 'POST',
         headers: {
@@ -368,7 +436,11 @@ function arkRecognitionPlugin(apiKey?: string): Plugin {
                 },
                 {
                   type: 'input_text',
-                  text: isFeatureRequest ? createArtworkFeaturePrompt() : createLegacyRecognitionPrompt()
+                  text: isModerationRequest
+                    ? createContentModerationPrompt()
+                    : isFeatureRequest
+                      ? createArtworkFeaturePrompt()
+                      : createLegacyRecognitionPrompt()
                 }
               ]
             }
@@ -387,6 +459,20 @@ function arkRecognitionPlugin(apiKey?: string): Plugin {
 
       const outputText = extractTextFromArkResponse(arkPayload);
       const parsed = parseJsonFromModelText(outputText);
+
+      if (isModerationRequest) {
+        const result = normalizeModerationResult(parsed, moderationThreshold);
+        if (!result.allowed) {
+          writeJson(response, 422, {
+            ...result,
+            code: 'CONTENT_MODERATION_REJECTED',
+            message: moderationMessage(result.category)
+          });
+          return;
+        }
+        writeJson(response, 200, result);
+        return;
+      }
 
       response.setHeader('Content-Type', 'application/json');
       response.end(JSON.stringify(isFeatureRequest ? { features: parsed } : { analysis: parsed }));
@@ -596,7 +682,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [
       react(),
-      arkRecognitionPlugin(env.ARK_API_KEY)
+      arkRecognitionPlugin(env.ARK_API_KEY, env.CONTENT_MODERATION_THRESHOLD)
     ],
     resolve: {
       dedupe: ['react', 'react-dom']

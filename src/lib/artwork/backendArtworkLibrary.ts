@@ -54,7 +54,14 @@ export async function fetchBackendArtworkLibraryRevision(
   };
 }
 
-export async function fetchBackendArtworkPage(limit = 50, offset = 0, status: BackendArtworkStatus = 'active'): Promise<{
+export type BackendArtworkSort = 'created_desc' | 'level_desc';
+
+export async function fetchBackendArtworkPage(
+  limit = 50,
+  offset = 0,
+  status: BackendArtworkStatus = 'active',
+  sort: BackendArtworkSort = 'created_desc'
+): Promise<{
   records: BackendArtworkRecord[];
   total: number;
 }> {
@@ -64,7 +71,8 @@ export async function fetchBackendArtworkPage(limit = 50, offset = 0, status: Ba
   const params = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
-    status
+    status,
+    sort
   });
   const response = await fetch(`${baseUrl}/api/artworks?${params}`, {
     cache: 'no-store'

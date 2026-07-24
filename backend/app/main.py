@@ -26,6 +26,15 @@ from .artwork_db import (
 from .jobs import JobQueueFullError, job_to_response, jobs
 from .model_control import model_control_hub
 from .perf_logger import log_perf
+from .content_moderation import (
+    CONTENT_MODERATION_REJECTED,
+    CONTENT_MODERATION_UNAVAILABLE,
+    ContentModerationRejectedError,
+    ContentModerationUnavailableError,
+    InvalidArtworkImageError,
+    mask_sensitive_text,
+    moderate_image_file,
+)
 from .schemas import (
     ArtworkEvolutionBatchUpdate,
     ArtworkMetadataUpdate,
@@ -152,9 +161,10 @@ def get_artworks(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     status: str = Query("active", pattern="^(active|deleted|all)$"),
+    sort: str = Query("created_desc", pattern="^(created_desc|level_desc)$"),
 ):
     response.headers["X-Total-Count"] = str(count_artworks(status=status))
-    return list_artworks(limit=limit, offset=offset, status=status)
+    return list_artworks(limit=limit, offset=offset, status=status, sort=sort)
 
 
 @app.get("/api/artworks/{artwork_id}", response_model=PersistedArtwork)
@@ -189,6 +199,33 @@ def create_artwork_job(
     client_submission_id = submissionId.strip() if submissionId else None
     if client_submission_id and not SUBMISSION_ID_PATTERN.fullmatch(client_submission_id):
         raise HTTPException(status_code=400, detail="submissionId contains invalid characters")
+
+    try:
+        moderate_image_file(image.file)
+    except ContentModerationRejectedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": CONTENT_MODERATION_REJECTED,
+                "message": str(exc),
+                "category": exc.result.category,
+                "confidence": exc.result.confidence,
+            },
+        ) from exc
+    except ContentModerationUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": CONTENT_MODERATION_UNAVAILABLE,
+                "message": str(exc),
+            },
+        ) from exc
+    except InvalidArtworkImageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    safe_name = mask_sensitive_text(name).strip() if name else None
+    if not safe_name:
+        safe_name = None
 
     queue = jobs.stats()
     if queue["active"] >= queue["capacity"]:
@@ -235,7 +272,7 @@ def create_artwork_job(
             source_path=source_path,
             num_gaussians=numGaussians,
             export_format=export_format,
-            display_name=name,
+            display_name=safe_name,
             features=parsed_features,
         )
     except UploadTooLargeError as exc:
@@ -264,9 +301,10 @@ def create_artwork_job(
 
 @app.patch("/api/artworks/{artwork_id}/metadata")
 def patch_artwork_metadata(artwork_id: str, payload: ArtworkMetadataUpdate):
+    safe_name = mask_sensitive_text(payload.name).strip() if payload.name is not None else None
     updated = update_artwork_metadata(
         artwork_id,
-        name=payload.name,
+        name=safe_name,
         width=payload.width,
         height=payload.height,
         aspect=payload.aspect,

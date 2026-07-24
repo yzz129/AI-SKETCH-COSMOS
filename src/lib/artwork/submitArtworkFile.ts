@@ -8,6 +8,11 @@ import { useSketchStore } from '../../stores/useSketchStore';
 import type { ArtworkFeatureResult, ArtworkGaussianModelResult } from '../../types/artwork';
 import { processArtworkImage } from '../../utils/artworkImage';
 import type { ProcessedArtworkImage } from '../../utils/artworkImage';
+import {
+  isArtworkModerationError,
+  maskSensitiveText,
+  moderateArtworkImage
+} from '../../utils/contentModeration';
 import { updateBackendArtworkMetadata } from './backendArtworkLibrary';
 
 function localReadyMessage(artwork: ProcessedArtworkImage, features: ArtworkFeatureResult) {
@@ -124,19 +129,36 @@ export async function submitArtworkFile(
   }: SubmitArtworkFileOptions = {}
 ) {
   const sketchStore = useSketchStore.getState();
+  const safeName = name ? maskSensitiveText(name).trim() || undefined : undefined;
   const flowStartedAt = performance.now();
   const logStage = (stage: string) => {
     console.info(`[artwork-submit] ${stage} +${((performance.now() - flowStartedAt) / 1000).toFixed(2)}s`);
   };
+  const backendGenerationEnabled = isTripoSplatGenerationEnabled();
 
-  if (!isTripoSplatGenerationEnabled()) {
+  // The FastAPI generation endpoint performs its own moderation before queueing.
+  // Local-only mode needs the Vite preflight because it never reaches FastAPI.
+  if (!backendGenerationEnabled) {
+    sketchStore.setProcessing('正在进行内容安全检测...');
+    try {
+      await moderateArtworkImage(file, signal);
+      logStage('content moderation passed');
+    } catch (error) {
+      if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw error;
+      const message = error instanceof Error ? error.message : '内容安全检测失败，请稍后重试。';
+      sketchStore.setError(message);
+      throw error;
+    }
+  }
+
+  if (!backendGenerationEnabled) {
     if (!allowLocalFallback) {
       const error = new Error('TripoSplat 服务尚未配置，当前作品无法发送到大屏。');
       sketchStore.setError(error.message);
       throw error;
     }
     sketchStore.setProcessing('正在本地去白底、提取主色并生成 3D 粒子生命...');
-    return addLocalParticleArtwork(file, name);
+    return addLocalParticleArtwork(file, safeName);
   }
 
   try {
@@ -164,7 +186,7 @@ export async function submitArtworkFile(
     // runs in parallel and can update motion after the intact Splat appears.
     const gaussianModel = await generateGaussianArtworkModel({
       file,
-      name,
+      name: safeName,
       submissionId,
       signal,
       format: 'splat',
@@ -181,7 +203,7 @@ export async function submitArtworkFile(
 
     const namedArtwork = {
       ...artwork,
-      name: gaussianModel.artworkName ?? name ?? artwork.name
+      name: gaussianModel.artworkName ?? safeName ?? artwork.name
     };
     const displayedFeatures = recognizedFeatures ?? fallbackFeatures;
     const displayedArtwork = useArtworkStore.getState().addArtwork(namedArtwork, displayedFeatures, undefined, gaussianModel);
@@ -212,6 +234,10 @@ export async function submitArtworkFile(
     if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
       throw error;
     }
+    if (isArtworkModerationError(error)) {
+      useSketchStore.getState().setError(error.message);
+      throw error;
+    }
     if (!allowLocalFallback) {
       const message = error instanceof Error
         ? error.message
@@ -221,6 +247,6 @@ export async function submitArtworkFile(
     }
     console.warn('[triposplat] backend-first generation failed; falling back to local particles:', error);
     useSketchStore.getState().setProcessing('TripoSplat 后端不可用或生成失败，正在回退到本地粒子生命...');
-    return addLocalParticleArtwork(file, name);
+    return addLocalParticleArtwork(file, safeName);
   }
 }

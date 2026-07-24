@@ -1,6 +1,6 @@
-const DEFAULT_API_BASE = '/dadakido-api';
+const DEFAULT_API_BASE = 'https://test.dadakido.com';
 const SUBMIT_SESSION_STORAGE_KEY = 'ai-sketch-cosmos:submit-session';
-const CHECK_IN_BY_CODE_URL = '/dadakido-checkin-api/api/v1/users/me/visit-bookings/check-in-by-code';
+const CHECK_IN_BY_CODE_URL = `${DEFAULT_API_BASE}/api/v1/users/me/visit-bookings/check-in-by-code`;
 
 type JsonRecord = Record<string, unknown>;
 

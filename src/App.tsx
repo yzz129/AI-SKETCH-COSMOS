@@ -7,12 +7,17 @@ import {
   fetchAllBackendArtworks,
   fetchBackendArtworkLibraryRevision
 } from './lib/artwork/backendArtworkLibrary';
+import { readSubmitLaunchContext } from './lib/dadakido/submitSession';
 import { type BackendArtworkRecord, useArtworkStore } from './stores/artworkStore';
 import { useSketchStore } from './stores/useSketchStore';
 import { deleteLegacyArtworkIndexedDB } from './utils/storage';
 
 const ARTWORK_LIBRARY_CHANGED_EVENT = 'artwork-library-changed';
 const ARTWORK_LIBRARY_POLL_MS = 2_500;
+const INITIAL_PATHNAME = window.location.pathname.replace(/\/+$/, '') || '/';
+const INITIAL_SUBMIT_LAUNCH_CONTEXT = INITIAL_PATHNAME === '/submit'
+  ? readSubmitLaunchContext()
+  : null;
 
 const ArtworkAdminPage = lazy(() => import('./components/admin/ArtworkAdminPage').then((module) => ({
   default: module.ArtworkAdminPage
@@ -49,7 +54,7 @@ function RouteLoading() {
 }
 
 export default function App() {
-  const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+  const pathname = INITIAL_PATHNAME;
   const isAdminRoute = pathname === '/admin';
   const isSubmitRoute = pathname === '/submit';
   const isDisplayRoute = !isAdminRoute && !isSubmitRoute;
@@ -176,7 +181,7 @@ export default function App() {
   if (isSubmitRoute) {
     return (
       <Suspense fallback={<RouteLoading />}>
-        <MobileUploadPage />
+        <MobileUploadPage launchContext={INITIAL_SUBMIT_LAUNCH_CONTEXT} />
       </Suspense>
     );
   }

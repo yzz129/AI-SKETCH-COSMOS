@@ -170,6 +170,12 @@
   padding: 12px;
 }
 
+.admin-list-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
 .admin-search {
   display: flex;
   align-items: center;
@@ -177,6 +183,33 @@
   height: 42px;
   border-radius: 8px;
   padding: 0 12px;
+}
+
+.admin-sort-button {
+  height: 42px;
+  border: 1px solid rgba(21, 156, 147, 0.22);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.84);
+  color: #456477;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 900;
+  white-space: nowrap;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.admin-sort-button:hover {
+  border-color: rgba(21, 156, 147, 0.48);
+  color: #0c675f;
+}
+
+.admin-sort-button.is-active {
+  border-color: rgba(21, 156, 147, 0.52);
+  background: #e4f7f4;
+  color: #08665e;
+  box-shadow: inset 0 0 0 1px rgba(21, 156, 147, 0.08);
 }
 
 .admin-search svg {

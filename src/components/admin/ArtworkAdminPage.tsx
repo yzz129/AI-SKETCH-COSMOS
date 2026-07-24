@@ -147,6 +147,7 @@ export function ArtworkAdminPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [status, setStatus] = useState<BackendArtworkStatus>('active');
+  const [sortByLevel, setSortByLevel] = useState(false);
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
@@ -187,11 +188,20 @@ export function ArtworkAdminPage() {
   const allVisibleSelected = filteredRecords.length > 0
     && filteredRecords.every((record) => selectedIds.has(record.id));
 
-  const loadRecords = async (targetPage = page, targetStatus = status) => {
+  const loadRecords = async (
+    targetPage = page,
+    targetStatus = status,
+    targetSortByLevel = sortByLevel
+  ) => {
     setIsLoading(true);
     setMessage('');
     try {
-      const result = await fetchBackendArtworkPage(PAGE_SIZE, targetPage * PAGE_SIZE, targetStatus);
+      const result = await fetchBackendArtworkPage(
+        PAGE_SIZE,
+        targetPage * PAGE_SIZE,
+        targetStatus,
+        targetSortByLevel ? 'level_desc' : 'created_desc'
+      );
       const nextRecords = result.records;
       setRecords(nextRecords);
       setTotal(result.total);
@@ -234,8 +244,8 @@ export function ArtworkAdminPage() {
   };
 
   useEffect(() => {
-    void loadRecords(page, status);
-  }, [page, status]);
+    void loadRecords(page, status, sortByLevel);
+  }, [page, status, sortByLevel]);
 
   useEffect(() => {
     if (!selected) {
@@ -299,6 +309,16 @@ export function ArtworkAdminPage() {
     setSelectedId(null);
     setRecords([]);
     setQuery('');
+    if (page !== 0) {
+      setPage(0);
+    }
+  };
+
+  const toggleLevelSort = () => {
+    setSortByLevel((current) => !current);
+    setSelectedIds(new Set());
+    setSelectedId(null);
+    setRecords([]);
     if (page !== 0) {
       setPage(0);
     }
@@ -465,14 +485,25 @@ export function ArtworkAdminPage() {
 
       <section className="admin-workspace">
         <aside className="admin-list-pane">
-          <label className="admin-search">
-            <Search size={17} />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索名称 / ID / 动作"
-            />
-          </label>
+          <div className="admin-list-tools">
+            <label className="admin-search">
+              <Search size={17} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索名称 / ID / 动作"
+              />
+            </label>
+            <button
+              className={`admin-sort-button ${sortByLevel ? 'is-active' : ''}`}
+              type="button"
+              onClick={toggleLevelSort}
+              aria-pressed={sortByLevel}
+              title="按等级从高到低排序"
+            >
+              等级降序
+            </button>
+          </div>
 
           <div className="admin-status-tabs" role="tablist" aria-label="作品状态">
             <button

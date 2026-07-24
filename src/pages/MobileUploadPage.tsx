@@ -54,13 +54,17 @@ import {
   fetchVisitBookingByCode,
   isSixDigitCode,
   isTokenExpired,
-  readSubmitLaunchContext,
   type CourseBooking,
-  type DadakidoUser
+  type DadakidoUser,
+  type SubmitLaunchContext
 } from '../lib/dadakido/submitSession';
 import { useArtworkStore, type StoredArtwork } from '../stores/artworkStore';
 import type { ArtworkGaussianModelResult } from '../types/artwork';
 import { useSketchStore } from '../stores/useSketchStore';
+import {
+  isArtworkModerationRejection,
+  maskSensitiveText
+} from '../utils/contentModeration';
 import '../styles/mobile-upload.css';
 
 const MobileSplatResultViewer = lazy(() => import('../components/mobile/MobileSplatResultViewer')
@@ -221,7 +225,7 @@ function MobileGenerationHistoryDialog({
 }
 
 function fitArtworkName(value: string) {
-  const characters = Array.from(value.trim());
+  const characters = Array.from(maskSensitiveText(value).trim());
   if (characters.length <= MAX_ARTWORK_NAME_LENGTH) return characters.join('');
   return `${characters.slice(0, MAX_ARTWORK_NAME_LENGTH - 3).join('')}...`;
 }
@@ -257,8 +261,8 @@ function ArtworkNameConfirmationDialog({
           <h2 id="mobile-artwork-name-dialog-title">确认作品名</h2>
           <p>
             {usesReservationNickname
-              ? '已将预约昵称填入作品名，你可以直接使用，也可以在下面修改。'
-              : '请确认这件作品的名字，也可以修改；留空将自动生成 dada+编号。'}
+              ? '已将预约昵称填入作品名，你可以直接使用，也可以在下面修改。明显敏感词会自动替换为 *。'
+              : '请确认这件作品的名字，也可以修改；留空将自动生成 dada+编号。明显敏感词会自动替换为 *。'}
           </p>
         </div>
         <label className="mobile-artwork-name-dialog__field">
@@ -271,7 +275,7 @@ function ArtworkNameConfirmationDialog({
             aria-label="确认或修改作品名"
             autoComplete="off"
             enterKeyHint="done"
-            onChange={(event) => onChange(event.target.value)}
+            onChange={(event) => onChange(maskSensitiveText(event.target.value))}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.nativeEvent.isComposing) onConfirm();
             }}
@@ -431,12 +435,16 @@ function mergeCheckedInBooking(booking: CourseBooking, checkedInBooking: CourseB
   };
 }
 
-export function MobileUploadPage() {
+type MobileUploadPageProps = {
+  launchContext: SubmitLaunchContext | null;
+};
+
+export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
   const isWeChat = isWeChatBrowser();
-  const [launchContext] = useState(readSubmitLaunchContext);
   const [accessStatus, setAccessStatus] = useState<SubmitAccessStatus>('loading');
   const [accessError, setAccessError] = useState('');
   const [accessReloadKey, setAccessReloadKey] = useState(0);
+  const [testAccessEnabled, setTestAccessEnabled] = useState(false);
   const [copiedNotice, setCopiedNotice] = useState(false);
   const [currentUser, setCurrentUser] = useState<DadakidoUser | null>(null);
   const [activeBooking, setActiveBooking] = useState<CourseBooking | null>(null);
@@ -494,6 +502,7 @@ export function MobileUploadPage() {
   const reservationArtworkName = activeBooking ? fitArtworkName(currentUser?.name ?? '') : '';
 
   useEffect(() => {
+    if (testAccessEnabled) return undefined;
     let cancelled = false;
     const loadSubmitAccess = async () => {
       setAccessStatus('loading');
@@ -532,7 +541,7 @@ export function MobileUploadPage() {
     return () => {
       cancelled = true;
     };
-  }, [accessReloadKey, launchContext]);
+  }, [accessReloadKey, launchContext, testAccessEnabled]);
 
   useEffect(() => {
     if (!reservationArtworkName) return;
@@ -785,18 +794,22 @@ export function MobileUploadPage() {
     }
   };
 
-  const clearUpload = () => {
+  const discardUpload = (preserveStatus = false) => {
     closeCropEditor();
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
     previewUrlRef.current = '';
     setPreviewUrl('');
     setFile(null);
     setUploadSourceFile(null);
-    useSketchStore.setState({
-      status: 'idle',
-      message: '拍摄纸上画作，或从手机相册选择一张图片。'
-    });
+    if (!preserveStatus) {
+      useSketchStore.setState({
+        status: 'idle',
+        message: '拍摄纸上画作，或从手机相册选择一张图片。'
+      });
+    }
   };
+
+  const clearUpload = () => discardUpload();
 
   const handleDrawingChange = (nextHasDrawing: boolean, snapshot: string | null) => {
     const nextDraft = nextHasDrawing ? snapshot : null;
@@ -866,6 +879,14 @@ export function MobileUploadPage() {
       setHistoryEntries(rememberMobileGeneration(generatedArtwork));
     } catch (error) {
       if (controller.signal.aborted || activeSubmissionRef.current?.id !== submissionId) return;
+      if (isArtworkModerationRejection(error)) {
+        if (mode === 'drawing') handleDrawingChange(false, null);
+        discardUpload(true);
+        setArtworkNamePrompt(null);
+        setArtworkNameConfirmed(false);
+        setError(error.message);
+        return;
+      }
       if (useSketchStore.getState().status !== 'error') {
         setError(error instanceof Error ? error.message : '作品生成失败，请稍后重试。');
       }
@@ -968,6 +989,25 @@ export function MobileUploadPage() {
     window.setTimeout(() => setCopiedNotice(false), 2500);
   };
 
+  const enterSubmitTestMode = () => {
+    setTestAccessEnabled(true);
+    setAccessError('');
+    setCurrentUser({
+      id: 'submit-dev-user',
+      name: '测试创作者',
+      raw: { testMode: true }
+    });
+    setActiveBooking({
+      id: 'submit-dev-booking',
+      code: '000000',
+      status: 'checked_in',
+      slotLabel: '开发测试模式',
+      raw: { testMode: true }
+    });
+    setAccessStatus('ready');
+    useSketchStore.setState({ status: 'idle', message: '开发测试模式已开启，已跳过身份与预约检测。' });
+  };
+
   if (accessStatus !== 'ready') {
     const failed = accessStatus === 'error';
     return (
@@ -1002,6 +1042,10 @@ export function MobileUploadPage() {
               </button>
             ) : null}
           </div>
+          <button type="button" className="mobile-submit-test-bypass" onClick={enterSubmitTestMode}>
+            <ShieldCheck size={16} />
+            测试进入：跳过身份检测
+          </button>
         </section>
       </main>
     );
@@ -1017,6 +1061,7 @@ export function MobileUploadPage() {
   const generationProgress = Math.min(96, Math.max(explicitProgress, estimatedProgress));
   const canGenerate = mode === 'drawing' ? hasDrawing : Boolean(file) && !cropSourceFile;
   const isVisitor = !activeBooking;
+  const accessCodeLabel = testAccessEnabled ? 'TEST' : launchContext?.code ?? '未知';
 
   const progressiveEffectUrl = result?.gaussianModel?.previewUrl ?? generationPreview?.previewUrl;
 
@@ -1289,7 +1334,7 @@ export function MobileUploadPage() {
 
   return (
     <main
-      className={`mobile-upload-page mobile-upload-page--${mode}${isWeChat ? ' mobile-upload-page--wechat' : ''}`}
+      className={`mobile-upload-page mobile-upload-page--${mode}${cropSourceFile ? ' mobile-upload-page--cropping' : ''}${isWeChat ? ' mobile-upload-page--wechat' : ''}`}
       translate="no"
     >
       <div className="mobile-cosmos-backdrop" aria-hidden="true" />
@@ -1312,8 +1357,8 @@ export function MobileUploadPage() {
             <span className="mobile-submit-session-card__copy">
               <strong>{currentUser?.name ?? '星河创作者'}</strong>
               <small>{isVisitor
-                ? `活动码 ${launchContext?.code} 未匹配预约，本次为游客体验`
-                : `活动码 ${launchContext?.code} · ${activeBooking?.slotLabel ?? `预约号 ${activeBooking?.id}`}`}</small>
+                ? `活动码 ${accessCodeLabel} 未匹配预约，本次为游客体验`
+                : `活动码 ${accessCodeLabel} · ${activeBooking?.slotLabel ?? `预约号 ${activeBooking?.id}`}`}</small>
             </span>
             <span className="mobile-submit-session-card__badge">
               {isVisitor ? <UserRound size={13} /> : <TicketCheck size={13} />}

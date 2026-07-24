@@ -94,6 +94,10 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_artworks_created_at ON artworks(created_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_artworks_deleted_created_at ON artworks(is_deleted, created_at DESC)")
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_artworks_deleted_level "
+        "ON artworks(is_deleted, evolution_level DESC, created_at DESC)"
+    )
+    conn.execute(
         """
         CREATE TABLE IF NOT EXISTS app_metadata (
             key TEXT PRIMARY KEY,
@@ -374,7 +378,19 @@ def _status_filter(status: str) -> str:
     return "AND is_deleted = 0"
 
 
-def list_artworks(*, limit: int = 50, offset: int = 0, status: str = "active") -> list[dict[str, Any]]:
+def _sort_clause(sort: str) -> str:
+    if sort == "level_desc":
+        return "evolution_level DESC, created_at DESC, id DESC"
+    return "created_at DESC, id DESC"
+
+
+def list_artworks(
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    status: str = "active",
+    sort: str = "created_desc",
+) -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
             f"""
@@ -382,7 +398,7 @@ def list_artworks(*, limit: int = 50, offset: int = 0, status: str = "active") -
             FROM artworks
             WHERE (splat_url IS NOT NULL OR ply_url IS NOT NULL)
             {_status_filter(status)}
-            ORDER BY created_at DESC
+            ORDER BY {_sort_clause(sort)}
             LIMIT ? OFFSET ?
             """,
             (limit, offset),
