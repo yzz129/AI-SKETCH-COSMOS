@@ -104,7 +104,7 @@ export function isArtworkModerationError(error: unknown): error is ArtworkModera
   return error instanceof ArtworkModerationError;
 }
 
-export function isArtworkModerationRejection(error: unknown) {
+export function isArtworkModerationRejection(error: unknown): error is ArtworkModerationError {
   return isArtworkModerationError(error) && error.code === CONTENT_MODERATION_REJECTED;
 }
 

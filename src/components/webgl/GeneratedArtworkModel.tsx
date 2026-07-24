@@ -6,6 +6,8 @@ import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.j
 import { isFlyingPreset, isPlantPreset, isSwimmingPreset } from '../../lib/motion/motionPresetGroups';
 import type { MotionPreset } from '../../types/artwork';
 
+type CompiledMaterialShader = Parameters<THREE.Material['onBeforeCompile']>[0];
+
 type GeneratedArtworkModelProps = {
   modelUrl: string;
   colors: string[];
@@ -57,7 +59,7 @@ export function GeneratedArtworkModel({
   onReady
 }: GeneratedArtworkModelProps) {
   const groupRef = useRef<THREE.Group>(null);
-  const shaderRefs = useRef<THREE.Shader[]>([]);
+  const shaderRefs = useRef<CompiledMaterialShader[]>([]);
   const gltf = useGLTF(modelUrl) as any;
   const scene = useMemo(() => normalizeGeneratedScene(cloneSkeleton(gltf.scene)), [gltf.scene]);
   const glowColor = useMemo(() => new THREE.Color(colors[1] ?? colors[0] ?? '#64d9ff'), [colors]);
@@ -172,7 +174,7 @@ function enhanceMaterialForSpace({
   sourceMaterial: THREE.Material | undefined;
   fallbackColor: string;
   glowColor: THREE.Color;
-  shaderRefs: MutableRefObject<THREE.Shader[]>;
+  shaderRefs: MutableRefObject<CompiledMaterialShader[]>;
 }) {
   const material = sourceMaterial?.clone?.() ?? new THREE.MeshStandardMaterial({
     color: new THREE.Color(fallbackColor)
@@ -189,11 +191,9 @@ function enhanceMaterialForSpace({
   if ('emissiveIntensity' in material) {
     material.emissiveIntensity = 0.14;
   }
-  if ('roughness' in material) {
-    material.roughness = Math.min(0.86, Math.max(0.48, material.roughness ?? 0.58));
-  }
-  if ('metalness' in material) {
-    material.metalness = Math.min(0.08, material.metalness ?? 0.02);
+  if (material instanceof THREE.MeshStandardMaterial) {
+    material.roughness = Math.min(0.86, Math.max(0.48, material.roughness));
+    material.metalness = Math.min(0.08, material.metalness);
   }
 
   material.onBeforeCompile = (shader) => {

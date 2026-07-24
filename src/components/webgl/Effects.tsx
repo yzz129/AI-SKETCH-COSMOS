@@ -171,7 +171,7 @@ export function Effects() {
         return;
       }
 
-      window.setTimeout(reveal, 1);
+      globalThis.setTimeout(reveal, 1);
     }, 700);
 
     return () => window.clearTimeout(timeoutId);

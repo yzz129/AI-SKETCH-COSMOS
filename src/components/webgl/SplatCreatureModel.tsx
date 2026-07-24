@@ -232,7 +232,7 @@ function StaticSplatCreatureModel({
             if ('requestIdleCallback' in window) {
               proxyIdleId = window.requestIdleCallback(createParticleProxy, { timeout: 1_500 });
             } else {
-              proxyTimerId = window.setTimeout(createParticleProxy, 320);
+              proxyTimerId = globalThis.setTimeout(createParticleProxy, 320);
             }
           })
           .catch((error) => {

@@ -970,9 +970,10 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
   const handleOpenMiniProgram = async () => {
     if (typeof window !== 'undefined') {
       const wx = (window as unknown as { wx?: { miniProgram?: { navigateTo?: (opts: { url: string }) => void; navigateBack?: () => void } } }).wx;
-      if (wx?.miniProgram) {
+      const navigateBack = wx?.miniProgram?.navigateBack;
+      if (navigateBack) {
         try {
-          wx.miniProgram.navigateBack();
+          navigateBack.call(wx.miniProgram);
           return;
         } catch {
           // fallback to copy or link

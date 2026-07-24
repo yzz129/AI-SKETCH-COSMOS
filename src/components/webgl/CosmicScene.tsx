@@ -22,6 +22,8 @@ function ResponsiveCamera() {
   const { camera, size } = useThree();
 
   useEffect(() => {
+    if (!(camera instanceof THREE.PerspectiveCamera)) return;
+
     const baseFov = 60;
     const baseAspect = 16 / 10;
     const aspect = Math.max(0.35, size.width / Math.max(size.height, 1));

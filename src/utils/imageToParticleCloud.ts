@@ -339,9 +339,7 @@ export function imageDataToParticleCloud(
         const layerSeed = seededJitter(x, y, 20 + layer);
         const shell = edge
           ? -1 + (layer / Math.max(1, layerCount - 1)) * 2 + signedSeededJitter(x, y, 24 + layer) * 0.18
-          : layerCount === 1
-            ? 0
-            : -1 + (layer / (layerCount - 1)) * 2 + signedSeededJitter(x, y, 25 + layer) * 0.28;
+          : -1 + (layer / (layerCount - 1)) * 2 + signedSeededJitter(x, y, 25 + layer) * 0.28;
         const shellAbs = Math.min(1, Math.abs(shell));
         const crossSectionShrink = 1 - shellAbs * volume * (edge ? 0.22 : 0.34);
         const sidePush = signedSeededJitter(x, y, 30 + layer) * volume * scale * 0.44;

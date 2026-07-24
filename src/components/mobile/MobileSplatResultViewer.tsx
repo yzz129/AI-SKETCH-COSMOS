@@ -391,8 +391,6 @@ export const MobileSplatResultViewer = forwardRef<
           screenSpacePanning
           minDistance={2.6}
           maxDistance={7}
-          minTargetRadius={0}
-          maxTargetRadius={1.2}
           autoRotate={state === 'ready' && autoRotateEnabled}
           autoRotateSpeed={0.55}
           onStart={() => {

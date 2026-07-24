@@ -657,7 +657,9 @@ export function SpaceCreature({
   const lastInteractionSequenceRef = useRef(0);
   const lastInteractionBeatRef = useRef(0);
   const effectSignalRef = useRef<CreatureEffectSignal>({ id: 0, kind: 'entry', startedAt: -100 });
-  const partActionRef = useRef<CreaturePartActionPose>(createCreaturePartAction());
+  const partActionRef = useRef<CreaturePartActionPose>(
+    createCreaturePartAction() as CreaturePartActionPose
+  );
   const interactionAnchorRef = useRef(new THREE.Vector3());
   const interactionOriginRef = useRef(new THREE.Vector3());
   const planetPositionRef = useRef(new THREE.Vector3());
