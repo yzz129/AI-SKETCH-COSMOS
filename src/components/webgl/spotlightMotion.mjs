@@ -71,6 +71,18 @@ export function spotlightApproachEased(elapsed) {
   return smootherstep01(spotlightApproachProgress(elapsed));
 }
 
+export function spotlightCreatureReveal(state, creatureId, elapsed) {
+  if (
+    state.requestedCreatureId === creatureId
+    || state.pendingCreatureId === creatureId
+  ) {
+    return 0;
+  }
+  if (state.creatureId !== creatureId) return 1;
+  if (state.phase === 'fly-in') return spotlightApproachEased(elapsed);
+  return 1;
+}
+
 export function spotlightReleaseProgress(elapsed) {
   return clamp01((elapsed - SPOTLIGHT_RELEASE_START) / SPOTLIGHT_RELEASE_DURATION);
 }

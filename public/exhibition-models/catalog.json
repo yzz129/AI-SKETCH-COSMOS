@@ -1,0 +1,165 @@
+{
+  "generatedAt": "2026-08-12T13:34:53.185135+00:00",
+  "items": [
+    {
+      "id": "award-01",
+      "name": "稻香亭",
+      "sourceFolder": "《稻香亭》细弱稻杆，撑起华夏文明 + kimple",
+      "sourceImage": "01_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-01.glb"
+    },
+    {
+      "id": "award-02",
+      "name": "穗穗",
+      "sourceFolder": "《穗禾仙羊—穗穗》 + 鼻涕泡01",
+      "sourceImage": "02_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-02.glb"
+    },
+    {
+      "id": "award-03",
+      "name": "稻禾三生",
+      "sourceFolder": "「稻禾三生」水稻治愈系桌面器物 + 噶嘞叽",
+      "sourceImage": "02_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-03.glb"
+    },
+    {
+      "id": "award-04",
+      "name": "三畴禾序",
+      "sourceFolder": "三畴禾序 【旋转多宝盒】 + 小八宝",
+      "sourceImage": "04_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-04.glb"
+    },
+    {
+      "id": "award-05",
+      "name": "播种文明",
+      "sourceFolder": "手作饰品——播种文明系列 + 赵恩哲",
+      "sourceImage": "02_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-05.glb"
+    },
+    {
+      "id": "award-06",
+      "name": "春华秋实",
+      "sourceFolder": "春华秋实系列冰箱贴 + 模友kw0727201315",
+      "sourceImage": "02_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-06.glb"
+    },
+    {
+      "id": "award-07",
+      "name": "稻生五态",
+      "sourceFolder": "来自晚辈的纪念与感激 ---“稻生五态”IP创作和周边开发 + 小蔡社长",
+      "sourceImage": "03_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-07.glb"
+    },
+    {
+      "id": "award-08",
+      "name": "GSA-6种植机",
+      "sourceFolder": "泓稼生态 GSA-6空投型自动种植机 + 腾云驾雾陈先森",
+      "sourceImage": "04_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-08.glb"
+    },
+    {
+      "id": "award-09",
+      "name": "环水稻居图",
+      "sourceFolder": "环水稻居图【模块化任意拼装】 + 黑日S",
+      "sourceImage": "01_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-09.glb"
+    },
+    {
+      "id": "award-10",
+      "name": "岁登",
+      "sourceFolder": "界魅集-秋分水稻之灵-岁登 + poyin747",
+      "sourceImage": "00_封面.webp",
+      "referenceMode": "single",
+      "modelFile": "award-10.glb"
+    },
+    {
+      "id": "award-11",
+      "name": "禾下星球",
+      "sourceFolder": "禾下星球 + 极印科技",
+      "sourceImage": "04_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-11.glb"
+    },
+    {
+      "id": "award-12",
+      "name": "禾小满",
+      "sourceFolder": "禾小满系列IP形象 + Rickky",
+      "sourceImage": "02_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-12.glb"
+    },
+    {
+      "id": "award-13",
+      "name": "禾穗折扇",
+      "sourceFolder": "禾穗折扇文创冰箱贴 + 三悦聚良",
+      "sourceImage": "04_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-13.glb"
+    },
+    {
+      "id": "award-14",
+      "name": "稻乡集",
+      "sourceFolder": "稻乡集—水稻主题摆件冰箱贴 + 一雕造物",
+      "sourceImage": "02_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-14.glb"
+    },
+    {
+      "id": "award-15",
+      "name": "稻护云台",
+      "sourceFolder": "稻护・稻田激光除虫云台 + 乌拉草",
+      "sourceImage": "01_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-15.glb"
+    },
+    {
+      "id": "award-16",
+      "name": "稻舞四季",
+      "sourceFolder": "稻舞四季 + 鹊羽鸦头",
+      "sourceImage": "01_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-16.glb"
+    },
+    {
+      "id": "award-17",
+      "name": "稻韵金饰",
+      "sourceFolder": "稻韵金饰系列 + 模友hd0803224338",
+      "sourceImage": "02_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-17.glb"
+    },
+    {
+      "id": "award-18",
+      "name": "米团团",
+      "sourceFolder": "米团团诞生记 + 滨城七中3D打印社",
+      "sourceImage": "00_封面.webp",
+      "referenceMode": "single",
+      "modelFile": "award-18.glb"
+    },
+    {
+      "id": "award-19",
+      "name": "米多多",
+      "sourceFolder": "隆平水稻博物馆文创IP形象-米多多 + 一只大从",
+      "sourceImage": "02_作品图.webp",
+      "referenceMode": "three-view-board",
+      "modelFile": "award-19.glb"
+    },
+    {
+      "id": "award-20",
+      "name": "口口米",
+      "sourceFolder": "隆平水稻博物馆文创产品IP 〈口口米〉 + 小仓鼠阅阅",
+      "sourceImage": "03_作品图.webp",
+      "referenceMode": "single",
+      "modelFile": "award-20.glb"
+    }
+  ]
+}

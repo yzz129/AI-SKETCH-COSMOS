@@ -13,7 +13,9 @@ const CinematicPass = {
   uniforms: {
     tDiffuse: { value: null },
     uTime: { value: 0 },
-    uVignette: { value: 0.85 },
+    // Keep the cosmic frame, but do not crush edge-placed GLB exhibits to 15%
+    // brightness. At 0.46 the edge retains enough light for authored PBR color.
+    uVignette: { value: 0.46 },
     uNoise: { value: 0.004 },
     uResolution: { value: new THREE.Vector2(1280, 720) },
     uSharpness: { value: 0.14 }

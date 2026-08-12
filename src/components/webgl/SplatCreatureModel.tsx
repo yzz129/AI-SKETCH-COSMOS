@@ -3,20 +3,11 @@ import { type MutableRefObject, type RefObject, useEffect, useMemo, useRef, useS
 import * as THREE from 'three';
 import type { SplatMesh as SparkSplatMesh } from '@sparkjsdev/spark';
 import type { ArtworkFeatureResult } from '../../types/artwork';
-import type { CreaturePartActionPose } from './creaturePartActions';
 import { DADAKIDO_RENDER_ORDER } from './dadakidoOcclusion';
-import {
-  disposeCpuSplatPartMotion,
-  installCpuSplatPartMotion,
-  isCpuSplatPartRig,
-  updateCpuSplatPartMotion,
-  type CpuSplatPartMotionRuntime,
-  type CpuSplatPartRig
-} from './CpuSplatPartMotion';
+import { acquireSplatLoadSlot, refreshSplatLoadQueue } from './splatLoadQueue';
 
 type SplatCreatureModelProps = {
   url: string;
-  rigUrl?: string;
   colors: string[];
   features: ArtworkFeatureResult;
   scale?: number;
@@ -26,11 +17,11 @@ type SplatCreatureModelProps = {
   reappearRef?: MutableRefObject<number>;
   loadVisibilityRef?: MutableRefObject<number>;
   renderOrderRef?: MutableRefObject<number>;
-  partActionRef?: MutableRefObject<CreaturePartActionPose>;
   internalMotionStrengthRef?: MutableRefObject<number>;
   allowDistanceCulling?: boolean;
   flightWorldPositionRef?: MutableRefObject<THREE.Vector3>;
   flightOpacityRef?: MutableRefObject<number>;
+  loadPriority?: number;
   onReady?: () => void;
   onError?: (error: unknown) => void;
 };
@@ -52,98 +43,14 @@ type SplatParticleProxy = {
   material: THREE.ShaderMaterial;
 };
 
-const RIG_POLL_FAST_INTERVAL_MS = 900;
-const RIG_POLL_SLOW_INTERVAL_MS = 1_800;
-const RIG_POLL_TIMEOUT_MS = 8 * 60_000;
-
-function isPendingPartMap(value: unknown) {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as { strategy?: unknown; status?: unknown };
-  return ['cpu-rigid-parts', 'gpu-splat-skinning', 'cpu-splat-bone-mapping'].includes(String(candidate.strategy))
-    && candidate.status === 'processing';
-}
-
-function isOutdatedPartMap(value: unknown) {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as { strategy?: unknown; version?: unknown };
-  return ['cpu-rigid-parts', 'gpu-splat-skinning', 'cpu-splat-bone-mapping'].includes(String(candidate.strategy))
-    && Number(candidate.version ?? 0) < 14;
-}
-
-function isUnavailablePartMap(value: unknown) {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as { enabled?: unknown; status?: unknown };
-  return candidate.enabled === false
-    || ['failed', 'unavailable', 'disabled'].includes(String(candidate.status));
-}
-
 export function SplatCreatureModel(props: SplatCreatureModelProps) {
-  const { rigUrl } = props;
-  const [rig, setRig] = useState<CpuSplatPartRig | null>(null);
-
-  useEffect(() => {
-    if (!rigUrl) {
-      setRig(null);
-      return;
-    }
-    const controller = new AbortController();
-    const startedAt = performance.now();
-    let retryTimer: number | undefined;
-    let disposed = false;
-    setRig(null);
-
-    const scheduleRetry = () => {
-      if (disposed || performance.now() - startedAt >= RIG_POLL_TIMEOUT_MS) return false;
-      const elapsed = performance.now() - startedAt;
-      const delay = elapsed < 90_000 ? RIG_POLL_FAST_INTERVAL_MS : RIG_POLL_SLOW_INTERVAL_MS;
-      retryTimer = window.setTimeout(pollRig, delay);
-      return true;
-    };
-
-    const pollRig = async () => {
-      try {
-        const response = await fetch(rigUrl, { signal: controller.signal, cache: 'no-store' });
-        if (!response.ok) {
-          if (response.status === 404) {
-            scheduleRetry();
-            return;
-          }
-          throw new Error(`Splat rig request failed with ${response.status}.`);
-        }
-        const payload = await response.json() as unknown;
-        if (disposed) return;
-        if (isCpuSplatPartRig(payload)) {
-          setRig(payload);
-          return;
-        }
-        if ((isPendingPartMap(payload) || isOutdatedPartMap(payload)) && scheduleRetry()) return;
-        if (isUnavailablePartMap(payload)) return;
-        console.warn('[splat-part-motion] Background analysis finished without a usable part map:', payload);
-      } catch (error) {
-        if (controller.signal.aborted || disposed) return;
-        if (scheduleRetry()) return;
-        console.warn('[splat-part-motion] Intact model will remain static:', error);
-      }
-    };
-
-    void pollRig();
-    return () => {
-      disposed = true;
-      controller.abort();
-      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
-    };
-  }, [rigUrl]);
-
-  // The intact Splat starts loading immediately. CPU part motion is installed later
-  // when its tiny manifest and part map are ready, so analysis never blocks
-  // first display and never starts duplicate part-model requests.
-  return <StaticSplatCreatureModel {...props} rig={rig} />;
+  // Crowd models stay rigid at the splat level. Whole-model motion is driven
+  // by the parent scene transforms, avoiding CPU point deformation and rig work.
+  return <StaticSplatCreatureModel {...props} />;
 }
 
 function StaticSplatCreatureModel({
   url,
-  rigUrl,
-  rig,
   features,
   scale = 0.58,
   spotlightFocusRef,
@@ -152,25 +59,24 @@ function StaticSplatCreatureModel({
   reappearRef,
   loadVisibilityRef,
   renderOrderRef,
-  partActionRef,
   internalMotionStrengthRef,
   allowDistanceCulling = true,
   flightWorldPositionRef,
   flightOpacityRef,
+  loadPriority = 100,
   onReady,
   onError
-}: SplatCreatureModelProps & { rig: CpuSplatPartRig | null }) {
+}: SplatCreatureModelProps) {
   const meshRef = useRef<SparkSplatMesh | null>(null);
   const particleProxyGroupRef = useRef<THREE.Group>(null);
   const particleProxyRef = useRef<THREE.Points>(null);
-  const cpuPartMotionRef = useRef<CpuSplatPartMotionRuntime | null>(null);
-  const idlePartMotionStartedAtRef = useRef<number | null>(null);
   const baseScaleRef = useRef(scale);
   const basePositionRef = useRef(new THREE.Vector3());
   const flightLocalPositionRef = useRef(new THREE.Vector3());
   const cameraDistancePositionRef = useRef(new THREE.Vector3());
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
+  const loadPriorityRef = useRef(loadPriority);
   const whiteColorRef = useRef(new THREE.Color('#ffffff'));
   const [failed, setFailed] = useState(false);
   const [splat, setSplat] = useState<SparkSplatMesh | null>(null);
@@ -187,10 +93,17 @@ function StaticSplatCreatureModel({
   }, [onError, onReady]);
 
   useEffect(() => {
+    loadPriorityRef.current = loadPriority;
+    refreshSplatLoadQueue();
+  }, [loadPriority]);
+
+  useEffect(() => {
     let disposed = false;
     let loadedMesh: SparkSplatMesh | null = null;
     let proxyIdleId: number | undefined;
     let proxyTimerId: number | undefined;
+    let releaseLoadSlot: (() => void) | null = null;
+    const loadController = new AbortController();
     setFailed(false);
     setSplat(null);
     setParticleProxy((proxy) => {
@@ -199,12 +112,17 @@ function StaticSplatCreatureModel({
       return null;
     });
     meshRef.current = null;
-    disposeCpuSplatPartMotion(cpuPartMotionRef.current);
-    cpuPartMotionRef.current = null;
-
     import('@sparkjsdev/spark')
-      .then(({ SplatMesh }) => {
-        if (disposed) return;
+      .then(async ({ SplatMesh }) => {
+        releaseLoadSlot = await acquireSplatLoadSlot(
+          () => loadPriorityRef.current,
+          loadController.signal
+        );
+        if (disposed) {
+          releaseLoadSlot();
+          releaseLoadSlot = null;
+          return;
+        }
         const mesh = new SplatMesh({ url });
 
         loadedMesh = mesh;
@@ -219,6 +137,11 @@ function StaticSplatCreatureModel({
             // White is Spark's neutral recolor multiplier, so the authored
             // Gaussian colors remain unchanged throughout the animation.
             initializedMesh.recolor.copy(whiteColorRef.current);
+            // The mesh is inserted only after it is fully initialized. Force a
+            // hidden first frame so a slow GPU upload can never flash at full
+            // opacity before the parent's frame-rate-independent reveal begins.
+            initializedMesh.opacity = 0;
+            initializedMesh.scale.setScalar(baseScaleRef.current * 0.84);
             setSplat(initializedMesh);
             onReadyRef.current?.();
             const createParticleProxy = () => {
@@ -230,29 +153,34 @@ function StaticSplatCreatureModel({
               });
             };
             if ('requestIdleCallback' in window) {
-              proxyIdleId = window.requestIdleCallback(createParticleProxy, { timeout: 1_500 });
+              proxyIdleId = window.requestIdleCallback(createParticleProxy, { timeout: 4_000 });
             } else {
-              proxyTimerId = globalThis.setTimeout(createParticleProxy, 320);
+              proxyTimerId = globalThis.setTimeout(createParticleProxy, 2_800);
             }
           })
           .catch((error) => {
             if (disposed || meshRef.current !== mesh) return;
             setFailed(true);
             onErrorRef.current?.(error);
+          })
+          .finally(() => {
+            releaseLoadSlot?.();
+            releaseLoadSlot = null;
           });
       })
       .catch((error) => {
-        if (disposed) return;
+        if (disposed || loadController.signal.aborted) return;
         setFailed(true);
         onErrorRef.current?.(error);
       });
 
     return () => {
       disposed = true;
+      loadController.abort();
+      releaseLoadSlot?.();
+      releaseLoadSlot = null;
       if (proxyIdleId !== undefined) window.cancelIdleCallback(proxyIdleId);
       if (proxyTimerId !== undefined) window.clearTimeout(proxyTimerId);
-      disposeCpuSplatPartMotion(cpuPartMotionRef.current);
-      cpuPartMotionRef.current = null;
       meshRef.current = null;
       loadedMesh?.dispose();
       setParticleProxy((proxy) => {
@@ -262,38 +190,6 @@ function StaticSplatCreatureModel({
       });
     };
   }, [motionPhase, scale, url]);
-
-  useEffect(() => {
-    const mesh = splat;
-    disposeCpuSplatPartMotion(cpuPartMotionRef.current);
-    cpuPartMotionRef.current = null;
-    if (!mesh || !rig || !isCpuSplatPartRig(rig) || !rigUrl || failed) return;
-    const controller = new AbortController();
-    // Mapping tens of thousands of splats is intentionally staggered across
-    // models. The intact model is already visible while this work hot-loads.
-    const installTimer = window.setTimeout(() => {
-      installCpuSplatPartMotion({ mesh, rig, rigUrl, signal: controller.signal })
-        .then((runtime) => {
-          if (controller.signal.aborted || meshRef.current !== mesh) {
-            disposeCpuSplatPartMotion(runtime);
-            return;
-          }
-          cpuPartMotionRef.current = runtime;
-        })
-        .catch((error) => {
-          if (error instanceof DOMException && error.name === 'AbortError') return;
-          console.warn('[splat-part-motion] CPU part map was rejected; keeping the intact model:', error);
-        });
-    }, 80 + Math.abs(hashString(url)) % 620);
-    return () => {
-      window.clearTimeout(installTimer);
-      controller.abort();
-      if (cpuPartMotionRef.current?.mesh === mesh) {
-        disposeCpuSplatPartMotion(cpuPartMotionRef.current);
-        cpuPartMotionRef.current = null;
-      }
-    };
-  }, [failed, rig, rigUrl, splat]);
 
   useFrame(({ clock, camera }) => {
     const mesh = meshRef.current;
@@ -313,9 +209,14 @@ function StaticSplatCreatureModel({
     const isBursting = burstPhase < 0.995;
     const showFlightModel = flightOpacity > 0.01;
     const baseScale = baseScaleRef.current * breath;
+    const revealProgress = THREE.MathUtils.smootherstep(loadVisibility, 0, 1);
     mesh.renderOrder = renderOrderRef?.current ?? 0;
     const burstScale = 1 + burstShock * 0.055;
-    mesh.scale.setScalar(baseScale * burstScale);
+    mesh.scale.setScalar(
+      baseScale
+      * burstScale
+      * THREE.MathUtils.lerp(0.84, 1, revealProgress)
+    );
     const locomotion = features.behaviorTraits.locomotionType;
     const swimming = locomotion === 'swimming';
     const flying = locomotion === 'flying';
@@ -349,36 +250,10 @@ function StaticSplatCreatureModel({
       : baseModelOpacity;
     mesh.opacity = modelOpacity
       * Math.max(reappear, flightOpacity, burstModelOpacity)
-      * loadVisibility;
-    mesh.visible = (!isBursting || burstModelOpacity > 0.01 || showFlightModel) && !distanceCulled;
-
-    const cpuPartMotion = cpuPartMotionRef.current;
-    if (cpuPartMotion && mesh.visible && Math.max(reappear, flightOpacity) > 0.2) {
-      // Resting creatures return to their authored neutral pose. Internal joint
-      // motion is enabled only by an explicit active state supplied by the parent.
-      const motionEnergy = 0.18
-        * internalMotionStrength
-        * (1 - focus * 0.82)
-        * (1 - burstShock);
-      const partAction = partActionRef?.current;
-      const actionActive = Boolean(partAction && partAction.kind !== 'idle');
-      if (motionEnergy > 0.002 || actionActive) {
-        idlePartMotionStartedAtRef.current = null;
-      } else if (idlePartMotionStartedAtRef.current === null) {
-        idlePartMotionStartedAtRef.current = t;
-      }
-      const settling = idlePartMotionStartedAtRef.current !== null
-        && t - idlePartMotionStartedAtRef.current < 1.1;
-      if (motionEnergy > 0.002 || actionActive || settling) {
-        updateCpuSplatPartMotion(
-          cpuPartMotion,
-          t,
-          motionEnergy,
-          locomotion,
-          partAction
-        );
-      }
-    }
+      * revealProgress;
+    mesh.visible = revealProgress > 0.001
+      && (!isBursting || burstModelOpacity > 0.01 || showFlightModel)
+      && !distanceCulled;
 
     const proxyGroup = particleProxyGroupRef.current;
     const proxyPoints = particleProxyRef.current;

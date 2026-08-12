@@ -6,6 +6,7 @@ import {
   completeSpotlight,
   markSpotlightRenderReady,
   requestSpotlight,
+  spotlightCreatureReveal,
   spotlightApproachProgress
 } from '../src/components/webgl/spotlightMotion.mjs';
 import {
@@ -45,6 +46,28 @@ test('spotlight waits for render readiness before starting its clock', () => {
   assert.equal(ready.requestedCreatureId, null);
   assert.equal(ready.phase, 'fly-in');
   assert.equal(ready.startedAt, 1234);
+});
+
+test('requested model stays hidden until the close-up lead has finished', () => {
+  const requested = requestSpotlight({ ...IDLE_SPOTLIGHT }, 'first');
+  assert.equal(spotlightCreatureReveal(requested, 'first', 99), 0);
+
+  const ready = markSpotlightRenderReady(requested, 'first', 1234);
+  assert.equal(spotlightCreatureReveal(ready, 'first', SPOTLIGHT_EFFECT_LEAD), 0);
+  assert.ok(spotlightCreatureReveal(ready, 'first', 1.16) > 0);
+  assert.equal(spotlightCreatureReveal(ready, 'first', SPOTLIGHT_ENTRY_EFFECT_DURATION), 1);
+});
+
+test('pending model cannot leak into the normal scene before its close-up', () => {
+  const active = markSpotlightRenderReady(
+    requestSpotlight({ ...IDLE_SPOTLIGHT }, 'first'),
+    'first',
+    100
+  );
+  const pending = markSpotlightRenderReady(requestSpotlight(active, 'second'), 'second', 200);
+
+  assert.equal(spotlightCreatureReveal(pending, 'second', 99), 0);
+  assert.equal(spotlightCreatureReveal(pending, 'unrelated', 99), 1);
 });
 
 test('active spotlight is non-preemptible and keeps only the latest pending request', () => {

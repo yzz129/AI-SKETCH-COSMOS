@@ -5,7 +5,7 @@ import { useArtworkStore, type StoredArtwork } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
 
 const LOCAL_STRESS_ARTWORK_PREFIX = 'local-stress:';
-const MAX_LOCAL_STRESS_TOTAL = 1_000;
+const MAX_LOCAL_STRESS_TOTAL = 4_000;
 
 function isLocalStressArtwork(artwork: Pick<StoredArtwork, 'id'>) {
   return artwork.id.startsWith(LOCAL_STRESS_ARTWORK_PREFIX);
@@ -34,7 +34,7 @@ function createLocalStressArtwork(source: StoredArtwork, index: number, createdA
 }
 
 function renderModeLabel(hasSplat: boolean) {
-  return hasSplat ? 'TripoSplat .splat' : '图片 3D 粒子化';
+  return hasSplat ? '3D 模型' : '图片 3D 粒子化';
 }
 
 function formatCount(value: number | undefined) {
@@ -88,7 +88,7 @@ type WindowWithFilePicker = Window & {
 export function CosmicControlPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isHidden, setIsHidden] = useState(true);
-  const [stressTarget, setStressTarget] = useState('60');
+  const [stressTarget, setStressTarget] = useState('27');
   const artworks = useArtworkStore((state) => state.artworks);
   const latestArtwork = useArtworkStore((state) => state.latestArtwork);
   const clearArtworks = useArtworkStore((state) => state.clearArtworks);
@@ -277,7 +277,7 @@ export function CosmicControlPanel() {
           <EyeOff size={18} strokeWidth={2.2} aria-hidden="true" />
         </button>
         <h1>星河画境</h1>
-        <p>上传画纸，后端生成 .splat 模型后进入星河；失败时自动回退为本地 3D 星光粒子生命。</p>
+              <p>上传画纸，生成 3D 模型后进入星河；失败时自动展示备用的星光粒子生命。</p>
       </div>
 
       <div className="cosmic-panel__stat" aria-label="当前星河作品数量">

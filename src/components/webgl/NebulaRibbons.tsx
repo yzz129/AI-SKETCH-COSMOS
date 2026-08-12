@@ -480,7 +480,11 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
   const nebulaPulse = useAutoCosmicInteractionStore((state) => state.nebulaPulse);
   const { width, height } = useThree((s) => s.size);
   const aspect = width / Math.max(height, 1);
-  const scale = Math.max(0.3, Math.min(0.4, aspect / 1.32));
+  // Keep the wordmark at roughly three quarters of the visible canvas width.
+  // The perspective camera's horizontal field of view follows the canvas
+  // aspect ratio, so scaling from aspect keeps the mark proportional on
+  // exhibition screens and phones alike.
+  const scale = THREE.MathUtils.clamp(aspect * 0.38, 0.18, 0.74);
   const xOffset = 0;
   const yOffset = 0;
 

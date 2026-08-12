@@ -14,6 +14,8 @@ type GeneratedArtworkModelProps = {
   motionPreset: MotionPreset;
   scale?: number;
   onReady?: () => void;
+  /** Render a stable opaque GLB without animation or vertex displacement. */
+  staticModel?: boolean;
 };
 
 function resolveAnimationName(
@@ -56,14 +58,18 @@ export function GeneratedArtworkModel({
   colors,
   motionPreset,
   scale = 1,
-  onReady
+  onReady,
+  staticModel = false
 }: GeneratedArtworkModelProps) {
   const groupRef = useRef<THREE.Group>(null);
   const shaderRefs = useRef<CompiledMaterialShader[]>([]);
   const gltf = useGLTF(modelUrl) as any;
-  const scene = useMemo(() => normalizeGeneratedScene(cloneSkeleton(gltf.scene)), [gltf.scene]);
+  const scene = useMemo(
+    () => normalizeGeneratedScene(cloneSkeleton(gltf.scene), staticModel ? 1.75 : 1.55),
+    [gltf.scene, staticModel]
+  );
   const glowColor = useMemo(() => new THREE.Color(colors[1] ?? colors[0] ?? '#64d9ff'), [colors]);
-  const { actions } = useAnimations(gltf.animations ?? [], scene);
+  const { actions } = useAnimations(staticModel ? [] : (gltf.animations ?? []), scene);
 
   useEffect(() => {
     shaderRefs.current = [];
@@ -73,30 +79,41 @@ export function GeneratedArtworkModel({
       if (!mesh.isMesh) return;
 
       if (Array.isArray(mesh.material)) {
-        mesh.material = mesh.material.map((sourceMaterial) => enhanceMaterialForSpace({
-          sourceMaterial,
-          fallbackColor: colors[0] ?? '#ffffff',
-          glowColor,
-          shaderRefs
-        }));
+        mesh.material = mesh.material.map((sourceMaterial) => staticModel
+          ? prepareStableMaterial(sourceMaterial, colors[0] ?? '#ffffff')
+          : enhanceMaterialForSpace({
+            sourceMaterial,
+            fallbackColor: colors[0] ?? '#ffffff',
+            glowColor,
+            shaderRefs
+          }));
       } else {
-        mesh.material = enhanceMaterialForSpace({
-          sourceMaterial: mesh.material,
-          fallbackColor: colors[0] ?? '#ffffff',
-          glowColor,
-          shaderRefs
-        });
+        mesh.material = staticModel
+          ? prepareStableMaterial(mesh.material, colors[0] ?? '#ffffff')
+          : enhanceMaterialForSpace({
+            sourceMaterial: mesh.material,
+            fallbackColor: colors[0] ?? '#ffffff',
+            glowColor,
+            shaderRefs
+          });
       }
 
       mesh.visible = true;
+      // Keep culling enabled for permanent exhibits; they are still kept in
+      // the scene, but off-screen cards do not consume draw time. Dynamic
+      // generated creatures retain the legacy no-cull behavior for entry and
+      // spotlight choreography.
+      mesh.frustumCulled = staticModel;
       mesh.castShadow = false;
       mesh.receiveShadow = false;
     });
 
     onReady?.();
-  }, [colors, glowColor, scene]);
+  }, [colors, glowColor, scene, staticModel]);
 
   useEffect(() => {
+    if (staticModel) return;
+
     const animationName = resolveAnimationName(motionPreset, actions);
     const action = animationName ? actions[animationName] : undefined;
 
@@ -107,18 +124,24 @@ export function GeneratedArtworkModel({
     return () => {
       action?.fadeOut(0.25);
     };
-  }, [actions, motionPreset]);
+  }, [actions, motionPreset, staticModel]);
 
   useFrame(({ clock }) => {
     const group = groupRef.current;
     if (!group) return;
 
     const t = clock.elapsedTime;
-    const breath = 1 + Math.sin(t * 1.05) * 0.045;
-
     shaderRefs.current.forEach((shader, index) => {
       shader.uniforms.uTime.value = t + index * 0.37;
     });
+
+    if (staticModel) {
+      group.scale.setScalar(scale);
+      group.rotation.set(0, 0, 0);
+      return;
+    }
+
+    const breath = 1 + Math.sin(t * 1.05) * 0.045;
 
     group.scale.set(
       scale * (breath + Math.sin(t * 1.72) * 0.018),
@@ -146,7 +169,33 @@ export function GeneratedArtworkModel({
   );
 }
 
-function normalizeGeneratedScene(scene: THREE.Object3D) {
+function prepareStableMaterial(sourceMaterial: THREE.Material | undefined, fallbackColor: string) {
+  const material = sourceMaterial?.clone?.() ?? new THREE.MeshStandardMaterial({ color: fallbackColor });
+  // Preserve every authored GLB texture, tint, emissive value, roughness and
+  // metalness exactly. The title color belongs to the label only and must
+  // never leak into the model material.
+  material.transparent = false;
+  material.opacity = 1;
+  material.alphaTest = 0;
+  material.depthWrite = true;
+  material.depthTest = true;
+  material.blending = THREE.NormalBlending;
+  if (material instanceof THREE.MeshStandardMaterial) {
+    // The exhibition sits in a dark space scene. Reuse the authored base-color
+    // texture as a subtle emissive source so its exact colors remain readable
+    // without replacing or tinting the original material.
+    if (material.map && !material.emissiveMap) material.emissiveMap = material.map;
+    if (material.emissiveMap) {
+      material.emissive.set('#ffffff');
+      material.emissiveIntensity = Math.max(material.emissiveIntensity, 0.28);
+    }
+    material.envMapIntensity = Math.max(material.envMapIntensity, 1.15);
+  }
+  material.needsUpdate = true;
+  return material;
+}
+
+function normalizeGeneratedScene(scene: THREE.Object3D, targetSize: number) {
   scene.updateMatrixWorld(true);
 
   const box = new THREE.Box3().setFromObject(scene);
@@ -157,7 +206,6 @@ function normalizeGeneratedScene(scene: THREE.Object3D) {
 
   const maxDimension = Math.max(size.x, size.y, size.z);
   if (Number.isFinite(maxDimension) && maxDimension > 0.0001) {
-    const targetSize = 1.55;
     scene.position.sub(center);
     scene.scale.setScalar(targetSize / maxDimension);
   }

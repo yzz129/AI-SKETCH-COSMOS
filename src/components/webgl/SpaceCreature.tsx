@@ -28,6 +28,7 @@ import {
 } from './spotlightConfig';
 import {
   spotlightApproachEased,
+  spotlightCreatureReveal,
   spotlightReleaseEased,
   spotlightReleaseProgress
 } from './spotlightMotion';
@@ -69,6 +70,10 @@ import {
   getCreatureBubbleScreenAnchor,
   writeCreatureBubbleWorldPosition
 } from './creatureActivity';
+import {
+  clearExhibitionCollisionReaction,
+  getExhibitionCollisionReaction
+} from './exhibitionCollision';
 
 const SPOTLIGHT_FEATURED_HOLD_DURATION = 20;
 const SPOTLIGHT_FEATURED_RETURN_DURATION = 5;
@@ -104,6 +109,10 @@ const REMOTE_SCREEN_PADDING = 0.06;
 const CREATURE_DEPTH_SCALE_MIN = 0.54;
 const CREATURE_DEPTH_SCALE_MAX = 1.38;
 const CREATURE_DEPTH_SCALE_BASE = 1.07;
+// Keep a moving creature far enough from the camera that its normalized
+// splat cannot expand into a full-screen foreground layer.
+const MIN_CREATURE_CAMERA_DISTANCE = 7.5;
+const nearCameraOffsetScratch = new THREE.Vector3();
 
 function dampAngle(current: number, target: number, lambda: number, delta: number) {
   const shortestDelta = THREE.MathUtils.euclideanModulo(
@@ -797,6 +806,7 @@ export function SpaceCreature({
 
   useEffect(() => () => {
     removeDadakidoOccluder(artwork.id);
+    clearExhibitionCollisionReaction(artwork.id);
   }, [artwork.id]);
 
   useEffect(() => {
@@ -923,7 +933,7 @@ export function SpaceCreature({
     splatRevealRef.current = THREE.MathUtils.damp(
       splatRevealRef.current,
       splatUrl && splatReadyUrl === splatUrl ? 1 : 0,
-      2.8,
+      1.8,
       Math.min(delta, 1 / 30)
     );
     if (wasActiveRef.current && !active) {
@@ -1196,6 +1206,15 @@ export function SpaceCreature({
         orbitY + Math.sin(time * 0.061 + orbitParams.wanderPhase * 0.83) * 0.38,
         orbitZ + Math.cos(time * 0.039 + orbitParams.wanderPhase * 1.31) * 0.62
       ));
+    // The outer orbit can otherwise pass very close to the camera. Clamp the
+    // generated target to a spherical safety boundary while retaining the
+    // same direction, so the model never fills the entire viewport.
+    nearCameraOffsetScratch.subVectors(pathPosition, camera.position);
+    const nearCameraDistance = nearCameraOffsetScratch.length();
+    if (nearCameraDistance < MIN_CREATURE_CAMERA_DISTANCE) {
+      nearCameraOffsetScratch.normalize().multiplyScalar(MIN_CREATURE_CAMERA_DISTANCE);
+      pathPosition.copy(camera.position).add(nearCameraOffsetScratch);
+    }
     if (!pathPositionInitializedRef.current) {
       previousPathPositionRef.current.copy(pathPosition);
       pathDirectionRef.current.set(
@@ -1616,7 +1635,11 @@ export function SpaceCreature({
       * SPOTLIGHT_ROLL_ANGLE
       * spotlightDanceEnvelope;
 
-    let spotlightReveal = 1;
+    const spotlightReveal = spotlightCreatureReveal(
+      spotlight,
+      artwork.id,
+      spotlightElapsed
+    );
     if (isSpotlight && (spotlight.phase === 'fly-in' || spotlight.phase === 'showcase')) {
       if (!spotlightAnchorRef.current) spotlightAnchorRef.current = new THREE.Vector3();
       camera.getWorldDirection(spotlightAnchorRef.current)
@@ -1681,9 +1704,6 @@ export function SpaceCreature({
         ? spotlightApproachEased(spotlightElapsed)
         : 1;
       spotlightFocusRef.current = focusProgress;
-      spotlightReveal = spotlight.phase === 'showcase'
-        ? 1
-        : spotlightApproachEased(spotlightElapsed);
       const spotlightDisplayScale = motion.baseScale * 1.08;
       // Entry particles render above this group. Starting smaller makes the
       // creature read as emerging from behind the blast instead of popping on.
@@ -1919,12 +1939,13 @@ export function SpaceCreature({
     }
 
     if (visual) {
+      const exhibitionReaction = getExhibitionCollisionReaction(artwork.id, wallTime);
       const splatFocus = splatUrl ? spotlightFocusRef.current : 0;
       const freeSplatMotion = splatUrl ? 1 - splatFocus : 0;
       const internalMotionStrength = internalMotionStrengthRef.current;
       visual.position.set(
-        splatUrl ? 0 : Math.sin(time * 0.34 + motion.phase * 0.9) * 0.08 * freeSplatMotion * internalMotionStrength,
-        Math.sin(time * 0.48 + motion.phase) * 0.18 * freeSplatMotion * internalMotionStrength,
+        (splatUrl ? 0 : Math.sin(time * 0.34 + motion.phase * 0.9) * 0.08 * freeSplatMotion * internalMotionStrength) + exhibitionReaction * 0.1,
+        Math.sin(time * 0.48 + motion.phase) * 0.18 * freeSplatMotion * internalMotionStrength + Math.abs(exhibitionReaction) * 0.12,
         Math.sin(time * 0.28 + motion.phase * 1.4) * 0.23 * freeSplatMotion * internalMotionStrength
       );
 
@@ -1982,6 +2003,8 @@ export function SpaceCreature({
           THREE.MathUtils.lerp(readableRoll + overallRoll, 0, splatPoseLock) + spotlightTwistRoll
         );
       }
+      visual.rotation.z += exhibitionReaction * 0.2;
+      visual.rotation.y += exhibitionReaction * 0.1;
 
       const breathAmount = THREE.MathUtils.lerp(0.018, 0.006, focusAmount);
       const breath = 1 + Math.sin(time * 1.35 + motion.phase)
@@ -2001,8 +2024,17 @@ export function SpaceCreature({
     const foregroundOpacity = creatureRenderOrderRef.current === CREATURE_FRONT_RENDER_ORDER
       ? 0.9
       : 0.72;
+    const splatPending = Boolean(splatUrl && splatReadyUrl !== splatUrl);
+    const splatReveal = THREE.MathUtils.smootherstep(splatRevealRef.current, 0, 1);
+    const loadingPreviewOpacity = THREE.MathUtils.lerp(
+      0.48,
+      foregroundOpacity,
+      spotlightFocusRef.current
+    );
     previewMaterial.uniforms.uOpacity.value = previewReadyUrl === artwork.url
-      ? (splatUrl ? 0 : spotlightFocusRef.current * foregroundOpacity)
+      ? (splatUrl
+        ? loadingPreviewOpacity * (splatPending ? 1 : 1 - splatReveal)
+        : spotlightFocusRef.current * foregroundOpacity)
       : 0;
     spotlightPreviousPhaseRef.current = spotlight.phase;
   });
@@ -2052,7 +2084,6 @@ export function SpaceCreature({
         {splatUrl ? (
           <SplatCreatureModel
             url={splatUrl}
-            rigUrl={artwork.gaussianModel?.rigUrl}
             colors={artwork.features.visualTraits.dominantColors}
             features={artwork.features}
             scale={1.1}
@@ -2062,9 +2093,9 @@ export function SpaceCreature({
             reappearRef={reappearRef}
             loadVisibilityRef={splatRevealRef}
             renderOrderRef={creatureRenderOrderRef}
-            partActionRef={partActionRef}
             internalMotionStrengthRef={internalMotionStrengthRef}
             allowDistanceCulling={false}
+            loadPriority={spotlightEnabled ? 200 : spotlightRequested ? 100 : 0}
             onReady={() => {
               setSplatReadyUrl(splatUrl);
             }}

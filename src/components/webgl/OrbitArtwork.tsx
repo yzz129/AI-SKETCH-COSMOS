@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useArtworkStore } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
 import { ArtworkEntity } from './ArtworkEntity';
+import { PersistentExhibitionModels } from './PersistentExhibitionModels';
 import { RestingCreatureBubbleField } from './RestingCreatureBubbleField';
 import {
   CREATURE_BUBBLE_ROTATION_MS,
@@ -16,9 +17,9 @@ import {
 } from './creatureActivity';
 import { useCreatureEvolutionStore } from './creatureEvolutionStore';
 
-const ACTIVITY_HANDOFF_DURATION_MS = 4_800;
 const ACTIVITY_REPLACEMENTS_PER_CYCLE = 2;
-const INITIAL_ACTIVE_ADMISSION_INTERVAL_MS = 3_200;
+// Keep the 27-model foreground admission spread over a short startup window.
+const INITIAL_ACTIVE_ADMISSION_INTERVAL_MS = 1_600;
 const INITIAL_ACTIVE_ENTRY_SETTLE_MS = 3_000;
 const RECENT_UPLOAD_MIN_VISIBLE_MS = 120_000;
 const LOCAL_STRESS_ARTWORK_PREFIX = 'local-stress:';
@@ -40,7 +41,7 @@ export function OrbitArtwork() {
   const lastBubbleSlotsRef = useRef(new Map<string, number>());
   const nextStableIndexRef = useRef(0);
   const [activityOffset, setActivityOffset] = useState(0);
-  const [renderedEntityIds, setRenderedEntityIds] = useState<Set<string>>(() => new Set());
+  const [exhibitionReady, setExhibitionReady] = useState(false);
   const [admittedActiveIds, setAdmittedActiveIds] = useState<Set<string>>(() => new Set());
   const [initialAdmissionSettled, setInitialAdmissionSettled] = useState(false);
   const [recentUploadProtectedUntilById, setRecentUploadProtectedUntilById] = useState<Map<string, number>>(
@@ -49,9 +50,6 @@ export function OrbitArtwork() {
   const [restAnchorsById, setRestAnchorsById] = useState<Map<string, CreatureBubbleScreenAnchor>>(
     () => new Map()
   );
-  const retirementTimersRef = useRef(new Map<string, number>());
-  const previousActiveIdsRef = useRef(new Set<string>());
-  const activeIdsRef = useRef(new Set<string>());
   const everActiveIdsRef = useRef(new Set<string>());
   const knownArtworkIdsRef = useRef(new Set<string>());
   const pendingRecentUploadIdsRef = useRef(new Set<string>());
@@ -174,10 +172,10 @@ export function OrbitArtwork() {
     }
     return next;
   }, [bubbleOrderById, bubbledIds.length, restAnchorsById, visibleArtworks]);
-  const entityIdSet = useMemo(() => new Set([
-    ...renderedEntityIds,
-    ...renderActiveIds
-  ]), [renderActiveIds, renderedEntityIds]);
+  // The activity budget is strict: only admitted active IDs get a full
+  // SpaceCreature update/render path. Retired entries go straight back to the
+  // lightweight resting bubble atlas instead of lingering through a handoff.
+  const entityIdSet = renderActiveIds;
   const crowdScale = getCreatureCrowdScale(visibleArtworks.length);
   const restingBubbleEntries = useMemo(() => visibleArtworks
     .filter(({ artwork }) => (
@@ -221,7 +219,16 @@ export function OrbitArtwork() {
     });
   }, []);
 
+  const handleExhibitionReady = useCallback(() => {
+    setExhibitionReady(true);
+  }, []);
+
   useEffect(() => {
+    if (!exhibitionReady) {
+      activeAdmissionStartedRef.current = false;
+      setAdmittedActiveIds((current) => current.size === 0 ? current : new Set());
+      return;
+    }
     const targetIds = [...activeIds];
     if (targetIds.length === 0) {
       activeAdmissionStartedRef.current = false;
@@ -250,11 +257,10 @@ export function OrbitArtwork() {
       });
     }, delay);
     return () => window.clearTimeout(timeoutId);
-  }, [activeIds, admittedActiveIds]);
+  }, [activeIds, admittedActiveIds, exhibitionReady]);
 
   useEffect(() => {
     replaceActiveCreatureIds(renderActiveIds);
-    activeIdsRef.current = renderActiveIds;
     for (const id of renderActiveIds) everActiveIdsRef.current.add(id);
     const newlyVisibleUploadIds = [...renderActiveIds].filter((id) => (
       pendingRecentUploadIdsRef.current.has(id)
@@ -284,46 +290,6 @@ export function OrbitArtwork() {
 
   useEffect(() => () => {
     setInitialCreatureAdmissionSettled(false);
-  }, []);
-
-  useEffect(() => {
-    const nextActiveIds = new Set(renderActiveIds);
-    const previousActiveIds = previousActiveIdsRef.current;
-    for (const id of nextActiveIds) {
-      const timerId = retirementTimersRef.current.get(id);
-      if (timerId !== undefined) {
-        window.clearTimeout(timerId);
-        retirementTimersRef.current.delete(id);
-      }
-    }
-
-    setRenderedEntityIds((current) => {
-      const next = new Set(current);
-      for (const id of nextActiveIds) next.add(id);
-      return next;
-    });
-
-    for (const id of previousActiveIds) {
-      if (nextActiveIds.has(id) || retirementTimersRef.current.has(id)) continue;
-      const timerId = window.setTimeout(() => {
-        retirementTimersRef.current.delete(id);
-        if (activeIdsRef.current.has(id)) return;
-        setRenderedEntityIds((current) => {
-          if (!current.has(id)) return current;
-          const next = new Set(current);
-          next.delete(id);
-          return next;
-        });
-      }, ACTIVITY_HANDOFF_DURATION_MS);
-      retirementTimersRef.current.set(id, timerId);
-    }
-
-    previousActiveIdsRef.current = nextActiveIds;
-  }, [renderActiveIds]);
-
-  useEffect(() => () => {
-    for (const timerId of retirementTimersRef.current.values()) window.clearTimeout(timerId);
-    retirementTimersRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -382,14 +348,15 @@ export function OrbitArtwork() {
 
   return (
     <>
-      {initialAdmissionSettled ? (
+      <PersistentExhibitionModels onAllReady={handleExhibitionReady} />
+      {exhibitionReady && initialAdmissionSettled ? (
         <RestingCreatureBubbleField
           entries={restingBubbleEntries}
           atlasSources={bubbleAtlasSources}
           bubbleCount={restingBubbleEntries.length}
         />
       ) : null}
-      {visibleArtworks.filter(({ artwork }) => entityIdSet.has(artwork.id)).map(({ artwork, globalIndex }) => (
+      {exhibitionReady ? visibleArtworks.filter(({ artwork }) => entityIdSet.has(artwork.id)).map(({ artwork, globalIndex }) => (
         <ArtworkEntity
           key={artwork.id}
           artwork={artwork}
@@ -407,7 +374,7 @@ export function OrbitArtwork() {
           onRestAnchorCapture={captureRestAnchor}
           showEntryTrail={false}
         />
-      ))}
+      )) : null}
     </>
   );
 }

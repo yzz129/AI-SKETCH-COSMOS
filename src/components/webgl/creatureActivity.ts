@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export const MAX_ACTIVE_CREATURES = 20;
+export const MAX_ACTIVE_CREATURES = 27;
 export const CREATURE_BUBBLE_ROTATION_MS = 5_000;
 
 const activeCreatureIds = new Set<string>();

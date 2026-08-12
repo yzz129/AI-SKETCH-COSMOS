@@ -38,6 +38,11 @@ export const spotlightApproachProgress = implementation.spotlightApproachProgres
 export const spotlightApproachEased = implementation.spotlightApproachEased as (
   elapsed: number
 ) => number;
+export const spotlightCreatureReveal = implementation.spotlightCreatureReveal as (
+  state: SpotlightState,
+  creatureId: string,
+  elapsed: number
+) => number;
 export const spotlightReleaseProgress = implementation.spotlightReleaseProgress as (
   elapsed: number
 ) => number;
