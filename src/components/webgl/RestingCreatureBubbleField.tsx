@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useEffect, useMemo } from 'react';
+import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
   type CreatureBubbleScreenAnchor,
@@ -180,7 +180,6 @@ export function RestingCreatureBubbleField({
   atlasSources,
   bubbleCount
 }: RestingCreatureBubbleFieldProps) {
-  const materialRef = useRef<THREE.ShaderMaterial>(null);
   const pixelRatio = useThree((state) => state.gl.getPixelRatio());
   const viewportAspect = useThree((state) => state.size.width / Math.max(1, state.size.height));
   const atlasKey = useMemo(
@@ -288,16 +287,6 @@ export function RestingCreatureBubbleField({
     uTanHalfFov: { value: Math.tan(THREE.MathUtils.degToRad(25)) }
   }), [atlasGrid, atlasTexture, pointSize, viewportAspect]);
 
-  useFrame(({ camera }) => {
-    if (!materialRef.current) return;
-    if (camera instanceof THREE.PerspectiveCamera) {
-      materialRef.current.uniforms.uAspect.value = camera.aspect;
-      materialRef.current.uniforms.uTanHalfFov.value = Math.tan(
-        THREE.MathUtils.degToRad(camera.getEffectiveFOV() * 0.5)
-      );
-    }
-  });
-
   if (entries.length === 0) return null;
 
   return (
@@ -310,7 +299,6 @@ export function RestingCreatureBubbleField({
         <bufferAttribute attach="attributes-aPointSize" args={[geometryData.pointSizes, 1]} />
       </bufferGeometry>
       <shaderMaterial
-        ref={materialRef}
         uniforms={uniforms}
         vertexShader={BUBBLE_VERTEX_SHADER}
         fragmentShader={BUBBLE_FRAGMENT_SHADER}

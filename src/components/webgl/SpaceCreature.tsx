@@ -22,15 +22,21 @@ import { ParticleCreature } from './ParticleCreature';
 import { ParticleCreatureTrail } from './ParticleCreatureTrail';
 import { SplatCreatureModel } from './SplatCreatureModel';
 import {
+  isModelPresentationVisible,
+  resolveModelPresentationVisibility
+} from './modelPresentationVisibility';
+import {
   SPOTLIGHT_FLY_IN_DURATION,
   SPOTLIGHT_OUTER_LAYER_DISTANCE,
-  SPOTLIGHT_RELEASE_DURATION
+  SPOTLIGHT_RELEASE_DURATION,
+  SPOTLIGHT_USES_CAMERA_CLOSE_UP
 } from './spotlightConfig';
 import {
   spotlightApproachEased,
   spotlightCreatureReveal,
   spotlightReleaseEased,
-  spotlightReleaseProgress
+  spotlightReleaseProgress,
+  spotlightShowcaseTurn
 } from './spotlightMotion';
 import { useAutoCosmicInteractionStore } from './autoCosmicInteractionStore';
 import {
@@ -64,6 +70,7 @@ import {
 } from './dadakidoOcclusionRegistry';
 import { getPlanetWorldPosition, PLANETS } from './OrbitalPlanets';
 import { getGalaxyPortal } from './galaxyPortalRegistry';
+import { portalSuctionProgress } from './galaxyPortalRouting';
 import { markCreaturePriorityHit } from './pointerPriority';
 import {
   type CreatureBubbleScreenAnchor,
@@ -581,14 +588,16 @@ export function SpaceCreature({
   showEntryTrail = false
 }: SpaceCreatureProps) {
   const startsFromRest = Boolean(restAnchor);
-  const spotlightCreatureId = useSketchStore((state) => state.spotlight.creatureId);
-  const spotlightRequestedCreatureId = useSketchStore((state) => state.spotlight.requestedCreatureId);
-  const spotlightPendingCreatureId = useSketchStore((state) => state.spotlight.pendingCreatureId);
-  const spotlightPhase = useSketchStore((state) => state.spotlight.phase);
+  const spotlight = useSketchStore((state) => state.spotlight);
+  const spotlightCreatureId = spotlight.creatureId;
+  const spotlightRequestedCreatureId = spotlight.requestedCreatureId;
+  const spotlightPendingCreatureId = spotlight.pendingCreatureId;
+  const spotlightPhase = spotlight.phase;
+  const spotlightStartedAt = spotlight.startedAt;
+  const interactionEvent = useCreatureInteractionStore((state) => state.events[artwork.id]);
   const autoCreaturePulse = useAutoCosmicInteractionStore((state) => state.creaturePulse);
   const groupRef = useRef<THREE.Group>(null);
   const visualRef = useRef<THREE.Group>(null);
-  const previewMeshRef = useRef<THREE.Mesh>(null);
   const interactionMeshRef = useRef<THREE.Mesh>(null);
   const startTimeRef = useRef<number | null>(null);
   const entryTrailStartRef = useRef<THREE.Vector3 | null>(null);
@@ -654,6 +663,7 @@ export function SpaceCreature({
   const restRightRef = useRef(new THREE.Vector3());
   const restUpRef = useRef(new THREE.Vector3());
   const smoothedOffsetRef = useRef(new THREE.Vector3());
+  const crowdAvoidanceRef = useRef(new THREE.Vector3());
   const previousPathPositionRef = useRef(new THREE.Vector3());
   const currentPathPositionRef = useRef(new THREE.Vector3());
   const targetPathPositionRef = useRef(new THREE.Vector3());
@@ -670,6 +680,9 @@ export function SpaceCreature({
     createCreaturePartAction() as CreaturePartActionPose
   );
   const interactionAnchorRef = useRef(new THREE.Vector3());
+  const portalApproachRef = useRef(new THREE.Vector3());
+  const portalTangentRef = useRef(new THREE.Vector3());
+  const portalNormalRef = useRef(new THREE.Vector3());
   const interactionOriginRef = useRef(new THREE.Vector3());
   const planetPositionRef = useRef(new THREE.Vector3());
   const preset = useMemo(
@@ -726,83 +739,8 @@ export function SpaceCreature({
     depthTest: false
   }), []);
 
-  // ── Preview image plane material (visible during spotlight) ──
-  const [previewTexture, setPreviewTexture] = useState<THREE.Texture | null>(null);
-  const previewTextureRef = useRef<THREE.Texture | null>(null);
-  const [previewReadyUrl, setPreviewReadyUrl] = useState<string | null>(null);
-  const [previewFailedUrl, setPreviewFailedUrl] = useState<string | null>(null);
   const [splatReadyUrl, setSplatReadyUrl] = useState<string | null>(null);
   const splatRevealRef = useRef(0);
-  const previewMaterial = useMemo(() => new THREE.ShaderMaterial({
-    uniforms: {
-      uMap: { value: previewTexture },
-      uOpacity: { value: 0 }
-    },
-    vertexShader: `
-      varying vec2 vUv;
-      void main() {
-        vUv = uv;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      precision highp float;
-      uniform sampler2D uMap;
-      uniform float uOpacity;
-      varying vec2 vUv;
-      void main() {
-        vec4 sampleColor = texture2D(uMap, vUv);
-        float brightness = max(sampleColor.r, max(sampleColor.g, sampleColor.b));
-        float foreground = smoothstep(0.045, 0.16, brightness);
-        float alpha = sampleColor.a * foreground * uOpacity;
-        if (alpha < 0.012) discard;
-        gl_FragColor = vec4(sampleColor.rgb, alpha);
-      }
-    `,
-    transparent: true,
-    depthWrite: false,
-    depthTest: true,
-    side: THREE.DoubleSide,
-    blending: THREE.NormalBlending,
-    toneMapped: false
-  }), [previewTexture]);
-
-  useEffect(() => () => previewMaterial.dispose(), [previewMaterial]);
-
-  useEffect(() => {
-    let disposed = false;
-    previewTextureRef.current?.dispose();
-    previewTextureRef.current = null;
-    setPreviewTexture(null);
-    setPreviewReadyUrl(null);
-    setPreviewFailedUrl(null);
-    useSketchStore.getState().invalidateSpotlightReady(artwork.id);
-    const img = new Image();
-    img.onload = () => {
-      if (disposed) return;
-      const tex = new THREE.Texture(img);
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      tex.colorSpace = THREE.SRGBColorSpace;
-      tex.needsUpdate = true;
-      previewTextureRef.current = tex;
-      setPreviewTexture(tex);
-      setPreviewReadyUrl(artwork.url);
-    };
-    img.onerror = () => {
-      if (disposed) return;
-      setPreviewFailedUrl(artwork.url);
-    };
-    img.src = artwork.url;
-    return () => {
-      disposed = true;
-      const texture = previewTextureRef.current;
-      if (!texture) return;
-      texture.dispose();
-      previewTextureRef.current = null;
-      setPreviewTexture((current) => current === texture ? null : current);
-    };
-  }, [artwork.id, artwork.url]);
 
   useEffect(() => () => {
     removeDadakidoOccluder(artwork.id);
@@ -866,15 +804,11 @@ export function SpaceCreature({
   }, [artwork.id, splatUrl]);
 
   useEffect(() => {
-    const previewReady = previewReadyUrl === artwork.url || previewFailedUrl === artwork.url;
     const splatReady = Boolean(splatUrl && splatReadyUrl === splatUrl);
-    if (!spotlightRequested || (splatUrl ? !splatReady : !previewReady)) return;
+    if (!spotlightRequested || (splatUrl && !splatReady)) return;
     useSketchStore.getState().markSpotlightReady(artwork.id);
   }, [
     artwork.id,
-    artwork.url,
-    previewFailedUrl,
-    previewReadyUrl,
     splatReadyUrl,
     splatUrl,
     spotlightRequested
@@ -936,6 +870,14 @@ export function SpaceCreature({
       1.8,
       Math.min(delta, 1 / 30)
     );
+    const presentationVisibility = resolveModelPresentationVisibility(
+      Boolean(splatUrl),
+      splatRevealRef.current
+    );
+    const presentationVisible = isModelPresentationVisible(
+      Boolean(splatUrl),
+      splatRevealRef.current
+    );
     if (wasActiveRef.current && !active) {
       activationStartedAtRef.current = -100;
       retirementPositionRef.current = group.position.clone();
@@ -992,7 +934,6 @@ export function SpaceCreature({
         restUpRef.current
       )
       : restPositionRef.current;
-    const interactionEvent = useCreatureInteractionStore.getState().events[artwork.id];
     // Interaction events are scheduled on the R3F clock. Using performance.now
     // here made events appear to skip phases after a slow first load.
     const interactionAge = interactionEvent ? time - interactionEvent.startedAt : Number.POSITIVE_INFINITY;
@@ -1030,10 +971,9 @@ export function SpaceCreature({
     );
 
     // ── spotlight showcase mode ──
-    const spotlight = useSketchStore.getState().spotlight;
-    const isSpotlight = spotlight.creatureId === artwork.id && spotlight.phase !== 'idle';
-    const spotlightElapsed = isSpotlight ? (Date.now() - spotlight.startedAt) / 1000 : 0;
-    if (isSpotlight && spotlight.phase === 'fly-in' && !wasSpotlightRef.current) {
+    const isSpotlight = spotlightCreatureId === artwork.id && spotlightPhase !== 'idle';
+    const spotlightElapsed = isSpotlight ? (Date.now() - spotlightStartedAt) / 1000 : 0;
+    if (isSpotlight && spotlightPhase === 'fly-in' && !wasSpotlightRef.current) {
       spotlightLandingRef.current = null;
       spotlightHoldStartedAtRef.current = -100;
       spotlightReleaseTrailHeadRef.current = null;
@@ -1131,14 +1071,15 @@ export function SpaceCreature({
         visual.scale.setScalar(1);
       }
       if (interactionMeshRef.current) interactionMeshRef.current.visible = false;
-      previewMaterial.uniforms.uOpacity.value = 0;
       lastPositionRef.current.copy(group.position);
-      group.visible = true;
-      spotlightPreviousPhaseRef.current = spotlight.phase;
+      group.visible = presentationVisible;
+      spotlightPreviousPhaseRef.current = spotlightPhase;
       return;
     }
 
-    if (interactionMeshRef.current) interactionMeshRef.current.visible = true;
+    if (interactionMeshRef.current) {
+      interactionMeshRef.current.visible = presentationVisibility >= 0.12;
+    }
     const transitionDelta = Math.min(delta, 1 / 30);
     let activationScale = 1;
     if (activationStartedAtRef.current !== null && activationStartedAtRef.current >= 0) {
@@ -1235,7 +1176,11 @@ export function SpaceCreature({
       previousPathPositionRef.current.copy(pathPosition);
     }
     const tangent = pathDirectionRef.current;
-    const targetOffset = crowdAvoidance(artwork.id, pathPosition).multiplyScalar(0.55);
+    const targetOffset = crowdAvoidance(
+      artwork.id,
+      pathPosition,
+      crowdAvoidanceRef.current
+    ).multiplyScalar(0.55);
     const fullInternalMotion = interactionActive
       || isSpotlight
       || isSpotlightHold
@@ -1531,12 +1476,35 @@ export function SpaceCreature({
         const portalFitScale = Math.min(1, portal.entryRadius * 0.88 / localCreatureRadius);
         if (interactionAge < transitionAt) {
           const raw = THREE.MathUtils.clamp(interactionAge / transitionAt, 0, 1);
-          const smoothSuction = THREE.MathUtils.smootherstep(raw, 0, 1);
-          const suction = 1 - Math.pow(1 - smoothSuction, 1.45);
+          const suction = portalSuctionProgress(raw);
           interactionAnchorRef.current.set(...(interactionEvent.origin ?? pathWorldPosition.toArray()));
+          portalNormalRef.current.set(
+            ...(portal.entryNormal ?? [0, 0, 1] as [number, number, number])
+          ).normalize();
+          portalApproachRef.current
+            .subVectors(interactionAnchorRef.current, entryPosition);
+          portalTangentRef.current
+            .crossVectors(portalNormalRef.current, portalApproachRef.current);
+          if (portalTangentRef.current.lengthSq() < 0.0001) {
+            portalTangentRef.current.crossVectors(
+              portalNormalRef.current,
+              THREE.Object3D.DEFAULT_UP
+            );
+          }
+          portalTangentRef.current.normalize();
+          const suctionOrbitRadius = Math.min(
+            1.35,
+            Math.max(0.2, portalApproachRef.current.length() * 0.24)
+          );
+          const suctionOrbit = Math.sin(suction * Math.PI * 2.5)
+            * (1 - suction)
+            * suctionOrbitRadius;
           interactionOverride = interactionAnchorRef.current.clone().lerp(entryPosition, suction)
-            .addScaledVector(THREE.Object3D.DEFAULT_UP, Math.sin(suction * Math.PI) * 0.12);
+            .addScaledVector(portalTangentRef.current, suctionOrbit)
+            .addScaledVector(portalNormalRef.current, Math.sin(suction * Math.PI) * 0.18);
           interactionScale = THREE.MathUtils.lerp(1, portalFitScale * 0.08, suction);
+          interactionYaw = suction * Math.PI * 4.5;
+          interactionRoll = Math.sin(suction * Math.PI * 5) * 0.32 * (1 - suction);
           portalVisibilityRef.current = 1 - THREE.MathUtils.smootherstep(raw, 0.72, 1);
         } else {
           const emergeDuration = PORTAL_EMERGE_DURATION;
@@ -1613,14 +1581,14 @@ export function SpaceCreature({
         interactionScale = THREE.MathUtils.lerp(1, interactionScale, eventEnvelope);
       }
     }
-    const releaseProgress = isSpotlight && spotlight.phase === 'release'
+    const releaseProgress = isSpotlight && spotlightPhase === 'release'
       ? spotlightReleaseProgress(spotlightElapsed)
       : 0;
-    const releaseEased = isSpotlight && spotlight.phase === 'release'
+    const releaseEased = isSpotlight && spotlightPhase === 'release'
       ? spotlightReleaseEased(spotlightElapsed)
       : 0;
     const spotlightDanceEnvelope = isSpotlight
-      && spotlight.phase === 'showcase'
+      && spotlightPhase === 'showcase'
       ? THREE.MathUtils.smootherstep(
         THREE.MathUtils.clamp((spotlightElapsed - SPOTLIGHT_FLY_IN_DURATION) / 0.72, 0, 1),
         0,
@@ -1634,21 +1602,26 @@ export function SpaceCreature({
     const spotlightTwistRoll = Math.sin(spotlightDancePhase * 2)
       * SPOTLIGHT_ROLL_ANGLE
       * spotlightDanceEnvelope;
+    const spotlightTurn = isSpotlight ? spotlightShowcaseTurn(spotlightElapsed) : 0;
 
     const spotlightReveal = spotlightCreatureReveal(
       spotlight,
       artwork.id,
       spotlightElapsed
     );
-    if (isSpotlight && (spotlight.phase === 'fly-in' || spotlight.phase === 'showcase')) {
+    if (isSpotlight && (spotlightPhase === 'fly-in' || spotlightPhase === 'showcase')) {
       if (!spotlightAnchorRef.current) spotlightAnchorRef.current = new THREE.Vector3();
-      camera.getWorldDirection(spotlightAnchorRef.current)
-        .multiplyScalar(SPOTLIGHT_OUTER_LAYER_DISTANCE)
-        .add(camera.position);
+      if (SPOTLIGHT_USES_CAMERA_CLOSE_UP) {
+        if (!wasSpotlightRef.current) spotlightAnchorRef.current.copy(pathWorldPosition);
+      } else {
+        camera.getWorldDirection(spotlightAnchorRef.current)
+          .multiplyScalar(SPOTLIGHT_OUTER_LAYER_DISTANCE)
+          .add(camera.position);
+      }
       wasSpotlightRef.current = true;
       spotlightReleaseStartedRef.current = false;
       group.position.copy(spotlightAnchorRef.current);
-    } else if (isSpotlight && spotlight.phase === 'release' && spotlightAnchorRef.current) {
+    } else if (isSpotlight && spotlightPhase === 'release' && spotlightAnchorRef.current) {
       if (!spotlightReleaseStartedRef.current || spotlightPreviousPhaseRef.current !== 'release') {
         spotlightLandingRef.current = getSpotlightLandingPosition(index);
         spotlightReleaseTrailStartRef.current = spotlightAnchorRef.current.clone();
@@ -1697,10 +1670,10 @@ export function SpaceCreature({
     if (restBlendRef.current > 0.001) {
       group.position.lerp(restPosition, restTransition);
     }
-    group.visible = true;
+    group.visible = presentationVisible;
 
-    if (isSpotlight && (spotlight.phase === 'fly-in' || spotlight.phase === 'showcase')) {
-      const focusProgress = spotlight.phase === 'fly-in'
+    if (isSpotlight && (spotlightPhase === 'fly-in' || spotlightPhase === 'showcase')) {
+      const focusProgress = spotlightPhase === 'fly-in'
         ? spotlightApproachEased(spotlightElapsed)
         : 1;
       spotlightFocusRef.current = focusProgress;
@@ -1710,7 +1683,7 @@ export function SpaceCreature({
       group.scale.setScalar(
         spotlightDisplayScale * THREE.MathUtils.lerp(0.62, 1.015, spotlightReveal)
       );
-    } else if (isSpotlight && spotlight.phase === 'release') {
+    } else if (isSpotlight && spotlightPhase === 'release') {
       spotlightFocusRef.current = 1 - releaseProgress;
       const spotlightDisplayScale = motion.baseScale * 1.08 * 1.015;
       group.scale.setScalar(THREE.MathUtils.lerp(
@@ -1870,15 +1843,12 @@ export function SpaceCreature({
       occlusionStrength,
       occluderVisibility
     );
-    if (previewMeshRef.current) {
-      previewMeshRef.current.renderOrder = creatureRenderOrderRef.current + 3;
-    }
     visibleInteractionPositionRef.current.copy(group.position);
     if (showEntryTrail) {
       if (!entryTrailHeadRef.current) entryTrailHeadRef.current = group.position.clone();
       else entryTrailHeadRef.current.copy(group.position);
     }
-    if (isSpotlight && spotlight.phase === 'release') {
+    if (isSpotlight && spotlightPhase === 'release') {
       if (!spotlightReleaseTrailHeadRef.current) {
         spotlightReleaseTrailHeadRef.current = group.position.clone();
       } else {
@@ -1993,13 +1963,20 @@ export function SpaceCreature({
       if (splatUrl) {
         visual.rotation.set(
           interactionPitch * (1 - splatPoseLock) + remotePitchRef.current,
-          cameraFacingYawRef.current + readableInteractionYaw + spotlightTwistYaw + remoteYawRef.current,
+          cameraFacingYawRef.current
+            + readableInteractionYaw
+            + spotlightTwistYaw
+            + spotlightTurn
+            + remoteYawRef.current,
           overallRoll * (1 - splatPoseLock) + spotlightTwistRoll
         );
       } else {
         visual.rotation.set(
           THREE.MathUtils.lerp(truePitch + interactionPitch, 0, splatPoseLock),
-          cameraFacingYawRef.current + readableInteractionYaw + spotlightTwistYaw,
+          cameraFacingYawRef.current
+            + readableInteractionYaw
+            + spotlightTwistYaw
+            + spotlightTurn,
           THREE.MathUtils.lerp(readableRoll + overallRoll, 0, splatPoseLock) + spotlightTwistRoll
         );
       }
@@ -2024,19 +2001,7 @@ export function SpaceCreature({
     const foregroundOpacity = creatureRenderOrderRef.current === CREATURE_FRONT_RENDER_ORDER
       ? 0.9
       : 0.72;
-    const splatPending = Boolean(splatUrl && splatReadyUrl !== splatUrl);
-    const splatReveal = THREE.MathUtils.smootherstep(splatRevealRef.current, 0, 1);
-    const loadingPreviewOpacity = THREE.MathUtils.lerp(
-      0.48,
-      foregroundOpacity,
-      spotlightFocusRef.current
-    );
-    previewMaterial.uniforms.uOpacity.value = previewReadyUrl === artwork.url
-      ? (splatUrl
-        ? loadingPreviewOpacity * (splatPending ? 1 : 1 - splatReveal)
-        : spotlightFocusRef.current * foregroundOpacity)
-      : 0;
-    spotlightPreviousPhaseRef.current = spotlight.phase;
+    spotlightPreviousPhaseRef.current = spotlightPhase;
   });
 
   return (
@@ -2137,16 +2102,6 @@ export function SpaceCreature({
           />
         ) : null}
 
-        {/* Preview image plane — shows the original artwork during spotlight */}
-        <mesh
-          ref={previewMeshRef}
-          material={previewMaterial}
-          renderOrder={3}
-          position={[0, 0, -0.12]}
-          frustumCulled
-        >
-          <planeGeometry args={[planeWidth, planeHeight]} />
-        </mesh>
       </group>
       {active ? (
         <CreatureDustFeeding
@@ -2163,6 +2118,7 @@ export function SpaceCreature({
         height={planeHeight}
         renderOrderRef={creatureRenderOrderRef}
         reappearRef={reappearRef}
+        loadVisibilityRef={splatUrl ? splatRevealRef : undefined}
       />
       {active ? <CreatureEventParticles signalRef={effectSignalRef} /> : null}
       {active ? <CreatureSuctionVortex creatureId={artwork.id} /> : null}
@@ -2172,7 +2128,7 @@ export function SpaceCreature({
         material={interactionMaterial}
         userData={markCreaturePriorityHit()}
         onPointerDown={() => {
-          if (!active || spotlightEnabled || spotlightRequested || useCreatureInteractionStore.getState().events[artwork.id]) {
+          if (!active || spotlightEnabled || spotlightRequested || interactionEvent) {
             return;
           }
           const now = performance.now() * 0.001;

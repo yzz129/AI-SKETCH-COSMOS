@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import {
   hydrateCreatureEvolution,
   startCreatureEvolutionPersistence
@@ -7,23 +7,28 @@ import {
   fetchAllBackendArtworks,
   fetchBackendArtworkLibraryRevision
 } from './lib/artwork/backendArtworkLibrary';
-import { readSubmitLaunchContext } from './lib/dadakido/submitSession';
+import {
+  hasSubmitLaunchContextParams,
+  readSubmitLaunchContext
+} from './lib/dadakido/submitSession';
 import { type BackendArtworkRecord, useArtworkStore } from './stores/artworkStore';
-import { useSketchStore } from './stores/useSketchStore';
 import { deleteLegacyArtworkIndexedDB } from './utils/storage';
 
 const ARTWORK_LIBRARY_CHANGED_EVENT = 'artwork-library-changed';
-const ARTWORK_LIBRARY_POLL_MS = 2_500;
+const ARTWORK_LIBRARY_POLL_MS = 1_000;
 const INITIAL_PATHNAME = window.location.pathname.replace(/\/+$/, '') || '/';
 const INITIAL_SUBMIT_LAUNCH_CONTEXT = INITIAL_PATHNAME === '/submit'
   ? readSubmitLaunchContext()
   : null;
 
-const ArtworkAdminPage = lazy(() => import('./components/admin/ArtworkAdminPage').then((module) => ({
-  default: module.ArtworkAdminPage
+const AdminRoute = lazy(() => import('./components/admin/AdminRoute').then((module) => ({
+  default: module.AdminRoute
 })));
 const MobileUploadPage = lazy(() => import('./pages/MobileUploadPage').then((module) => ({
   default: module.MobileUploadPage
+})));
+const DesignerPage = lazy(() => import('./pages/DesignerPage').then((module) => ({
+  default: module.DesignerPage
 })));
 const WebGLCanvas = lazy(() => import('./components/webgl/WebGLCanvas').then((module) => ({
   default: module.WebGLCanvas
@@ -57,7 +62,31 @@ export default function App() {
   const pathname = INITIAL_PATHNAME;
   const isAdminRoute = pathname === '/admin';
   const isSubmitRoute = pathname === '/submit';
-  const isDisplayRoute = !isAdminRoute && !isSubmitRoute;
+  const isGuestSubmitRoute = pathname === '/guest-submit';
+  const isDesignerRoute = pathname === '/designer';
+  const isDisplayRoute = !isAdminRoute && !isSubmitRoute && !isGuestSubmitRoute && !isDesignerRoute;
+  const [submitLaunchContext, setSubmitLaunchContext] = useState(INITIAL_SUBMIT_LAUNCH_CONTEXT);
+
+  useEffect(() => {
+    if (!isSubmitRoute) return undefined;
+    const refreshSubmitLaunchContext = () => {
+      if (!hasSubmitLaunchContextParams()) return;
+      setSubmitLaunchContext(readSubmitLaunchContext());
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshSubmitLaunchContext();
+    };
+    window.addEventListener('pageshow', refreshSubmitLaunchContext);
+    window.addEventListener('popstate', refreshSubmitLaunchContext);
+    window.addEventListener('hashchange', refreshSubmitLaunchContext);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('pageshow', refreshSubmitLaunchContext);
+      window.removeEventListener('popstate', refreshSubmitLaunchContext);
+      window.removeEventListener('hashchange', refreshSubmitLaunchContext);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isSubmitRoute]);
 
   useEffect(() => {
     deleteLegacyArtworkIndexedDB();
@@ -68,22 +97,19 @@ export default function App() {
     let cancelled = false;
     let syncInFlight = false;
     let syncAgain = false;
-    let spotlightOnNextSync = false;
     let forceNextSync = false;
     let pollTimer = 0;
     let lastBackendRevision: string | null = null;
     let lastSignature: string | null = null;
-    let knownBackendIds: Set<string> | null = null;
     let stopEvolutionPersistence: (() => void) | null = null;
     const channel = 'BroadcastChannel' in window
       ? new BroadcastChannel(ARTWORK_LIBRARY_CHANGED_EVENT)
       : null;
 
-    const sync = async (spotlightNewArtwork: boolean, forceFullSync = false) => {
+    const sync = async (forceFullSync = false) => {
       if (cancelled) return;
       if (syncInFlight) {
         syncAgain = true;
-        spotlightOnNextSync ||= spotlightNewArtwork;
         forceNextSync ||= forceFullSync;
         return;
       }
@@ -97,10 +123,6 @@ export default function App() {
         if (cancelled) return;
 
         const nextSignature = backendLibrarySignature(records);
-        const newRecord = knownBackendIds
-          ? records.find((record) => !knownBackendIds?.has(record.id))
-          : undefined;
-
         // Polling only performs a network read. Zustand and React are updated
         // solely when the backend library really changed, keeping WebGL stable.
         if (nextSignature !== lastSignature) {
@@ -109,42 +131,31 @@ export default function App() {
           lastSignature = nextSignature;
         }
         lastBackendRevision = revision.revision;
-        knownBackendIds = new Set(records.map((record) => record.id));
-
-        if (spotlightNewArtwork && newRecord) {
-          const artwork = useArtworkStore.getState().artworks.find((candidate) => (
-            candidate.id === newRecord.id
-            || candidate.gaussianModel?.sourceArtworkId === newRecord.id
-          ));
-          if (artwork) useSketchStore.getState().beginSpotlight(artwork.id);
-        }
       } catch (error) {
         console.warn('[artwork-library] failed to hydrate backend artworks:', error);
       } finally {
         syncInFlight = false;
         if (syncAgain && !cancelled) {
-          const shouldSpotlight = spotlightOnNextSync;
           const shouldForce = forceNextSync;
           syncAgain = false;
-          spotlightOnNextSync = false;
           forceNextSync = false;
-          queueMicrotask(() => void sync(shouldSpotlight, shouldForce));
+          queueMicrotask(() => void sync(shouldForce));
         }
       }
     };
 
     const requestImmediateSync = () => {
-      if (!cancelled) void sync(true, true);
+      if (!cancelled) void sync(true);
     };
     const handleStorage = (event: StorageEvent) => {
       if (event.key === ARTWORK_LIBRARY_CHANGED_EVENT) requestImmediateSync();
     };
     const handleVisibilityChange = () => {
-      if (!document.hidden) void sync(true);
+      if (!document.hidden) void sync();
     };
     const schedulePoll = () => {
       pollTimer = window.setTimeout(async () => {
-        if (!document.hidden) await sync(true);
+        if (!document.hidden) await sync();
         if (!cancelled) schedulePoll();
       }, ARTWORK_LIBRARY_POLL_MS);
     };
@@ -153,7 +164,7 @@ export default function App() {
     window.addEventListener('storage', handleStorage);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    void sync(false).finally(() => {
+    void sync().finally(() => {
       if (cancelled) return;
       stopEvolutionPersistence = startCreatureEvolutionPersistence();
       schedulePoll();
@@ -173,7 +184,7 @@ export default function App() {
   if (isAdminRoute) {
     return (
       <Suspense fallback={<RouteLoading />}>
-        <ArtworkAdminPage />
+        <AdminRoute />
       </Suspense>
     );
   }
@@ -181,7 +192,26 @@ export default function App() {
   if (isSubmitRoute) {
     return (
       <Suspense fallback={<RouteLoading />}>
-        <MobileUploadPage launchContext={INITIAL_SUBMIT_LAUNCH_CONTEXT} />
+        <MobileUploadPage
+          key={submitLaunchContext?.code ?? 'missing-submit-context'}
+          launchContext={submitLaunchContext}
+        />
+      </Suspense>
+    );
+  }
+
+  if (isGuestSubmitRoute) {
+    return (
+      <Suspense fallback={<RouteLoading />}>
+        <MobileUploadPage launchContext={null} anonymousGuest />
+      </Suspense>
+    );
+  }
+
+  if (isDesignerRoute) {
+    return (
+      <Suspense fallback={<RouteLoading />}>
+        <DesignerPage />
       </Suspense>
     );
   }

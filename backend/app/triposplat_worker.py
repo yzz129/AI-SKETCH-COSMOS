@@ -182,18 +182,18 @@ def _generate_with_subprocess(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"TripoSplat CPU generation timed out after {timeout}s.") from exc
+        raise RuntimeError(f"3D model generation timed out after {timeout}s.") from exc
     except subprocess.CalledProcessError as exc:
         output = "\n".join(part for part in [exc.stdout, exc.stderr] if part).strip()
-        raise RuntimeError(output[-4000:] or f"TripoSplat subprocess failed with exit code {exc.returncode}.") from exc
+        raise RuntimeError(output[-4000:] or f"3D model subprocess failed with exit code {exc.returncode}.") from exc
 
     manifest_path = artwork_dir / "manifest.json"
     if not manifest_path.is_file():
-        raise RuntimeError("TripoSplat subprocess finished without writing manifest.json.")
+        raise RuntimeError("3D model subprocess finished without writing manifest.json.")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"TripoSplat subprocess wrote an invalid manifest: {exc}") from exc
+        raise RuntimeError(f"3D model subprocess wrote an invalid manifest: {exc}") from exc
 
     return {
         "splatUrl": asset_url(artwork_id, "model.splat") if (artwork_dir / "model.splat").is_file() else None,
@@ -326,8 +326,7 @@ def load_pipeline():
         from triposplat import TripoSplatPipeline
     except Exception as exc:
         raise RuntimeError(
-            "TripoSplat is not importable. Set TRIPOSPLAT_REPO_ROOT or install "
-            "the TripoSplat package in this Python environment."
+            "The 3D model generation package is unavailable. Check the model service configuration."
         ) from exc
 
     return TripoSplatPipeline(
@@ -370,7 +369,7 @@ def generate_triposplat_assets(
         ),
     )
     if progress_callback:
-        progress_callback(0.12, "正在生成 Seedream 3D 参考图")
+        progress_callback(0.12, "正在生成参考图")
 
     if os.getenv("TRIPOSPLAT_IN_SUBPROCESS"):
         seedream_preparation = SeedreamPreparation(
@@ -402,16 +401,11 @@ def generate_triposplat_assets(
             }
         progress_callback(
             0.45 if seedream_preparation.used else 0.28,
-            "Seedream 参考图已生成，正在加载 TripoSplat 管线"
+            "参考图已生成，正在准备 3D 模型"
             if seedream_preparation.used
-            else "正在使用原图加载 TripoSplat 管线",
+            else "正在使用原图准备 3D 模型",
             early_assets,
         )
-
-    # Part analysis now runs against views rendered from the completed 3D
-    # Gaussian model. Do not spend an Ark request on the source image here.
-    running_in_subprocess = bool(os.getenv("TRIPOSPLAT_IN_SUBPROCESS"))
-    articulation_future: Future[dict[str, Any]] | None = None
 
     if os.getenv("TRIPOSPLAT_DEVICE", "cuda").startswith("cpu"):
         cpu_cap = int(os.getenv("TRIPOSPLAT_CPU_NUM_GAUSSIANS_CAP", "32768"))
@@ -426,24 +420,19 @@ def generate_triposplat_assets(
                     export_format=export_format,
                     features=features,
                 )
-            if assets.get("rigUrl"):
-                _schedule_gpu_splat_skinning(
-                    artwork_id=artwork_id,
-                    artwork_dir=artwork_dir,
-                    splat_path=artwork_dir / "model.splat",
-                    articulation_future=articulation_future,
-                    fallback_features=features,
-                )
             return assets
 
-    with _timed_stage(artwork_id, "load_pipeline", timings):
-        pipeline = load_pipeline()
     if progress_callback:
-        progress_callback(0.5, "TripoSplat 管线已就绪，正在生成 Gaussian Splat")
+        progress_callback(0.5, "参考图已就绪，正在等待 3D 模型生成")
 
-    # The cached pipeline owns mutable model/GPU state. Queue callers may run
-    # Seedream concurrently, but only one inference may enter this instance.
+    # Seedream preparation may run at high concurrency. Loading and running the
+    # shared GPU pipeline stay inside the same lock so a cold start cannot load
+    # several model copies concurrently and exhaust VRAM.
     with _PIPELINE_RUN_LOCK:
+        with _timed_stage(artwork_id, "load_pipeline", timings):
+            pipeline = load_pipeline()
+        if progress_callback:
+            progress_callback(0.55, "正在生成 3D 模型")
         with _timed_stage(
             artwork_id,
             "pipeline_run",
@@ -467,7 +456,7 @@ def generate_triposplat_assets(
                 show_progress=True,
             )
     if progress_callback:
-        progress_callback(0.9, "Gaussian Splat 已生成，正在保存预览和模型")
+        progress_callback(0.9, "3D 模型已生成，正在保存预览和模型")
 
     preview_path = artwork_dir / "preprocessed_image.webp"
     with _timed_stage(artwork_id, "save_preview", timings):
@@ -496,22 +485,19 @@ def generate_triposplat_assets(
     if write_ply:
         with _timed_stage(artwork_id, "save_ply", timings, path=ply_path.name):
             gaussian.save_ply(ply_path)
-    rig_requested = (
-        write_splat
-        and _env_bool("SPLAT_GPU_SKINNING_ENABLED", True)
-    )
-    rig = _pending_rig(effective_num_gaussians) if rig_requested else {
+    # Internal deformation and skeletal movement are disabled on the display.
+    # Do not generate weights, proxy meshes or multiview articulation assets.
+    rig_requested = False
+    rig = {
         "version": 14,
         "revision": time.time_ns(),
         "enabled": False,
         "status": "unavailable",
-        "strategy": "cpu-splat-bone-mapping",
-        "reason": "splat-export-required",
+        "strategy": "none",
+        "reason": "internal-motion-disabled",
     }
-    if rig_requested:
-        write_json_atomic(artwork_dir / "rig.json", rig)
     if progress_callback:
-        progress_callback(0.97, "基础 .splat 已生成，正在立即发布；骨骼将在后台加载")
+        progress_callback(0.97, "基础 3D 模型已生成，正在发布")
 
     manifest = {
         "id": artwork_id,
@@ -551,15 +537,6 @@ def generate_triposplat_assets(
     with _timed_stage(artwork_id, "write_manifest", timings):
         write_manifest(artwork_dir, manifest)
 
-    if rig_requested and not running_in_subprocess:
-        _schedule_gpu_splat_skinning(
-            artwork_id=artwork_id,
-            artwork_dir=artwork_dir,
-            splat_path=splat_path,
-            articulation_future=articulation_future,
-            fallback_features=features,
-        )
-
     total_elapsed = time.perf_counter() - total_start
     _log_perf(
         artwork_id,
@@ -573,6 +550,6 @@ def generate_triposplat_assets(
         "previewUrl": manifest["assets"]["preview"],
         "manifestUrl": asset_url(artwork_id, "manifest.json"),
         "gaussianCount": effective_num_gaussians,
-        "rigUrl": asset_url(artwork_id, "rig.json") if rig_requested else None,
+        "rigUrl": None,
         "features": features,
     }

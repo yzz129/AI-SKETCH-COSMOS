@@ -62,15 +62,7 @@ body {
 }
 
 .webgl-stage::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at 50% 52%, transparent 0, transparent 36%, rgba(0, 0, 0, 0.38) 100%),
-    linear-gradient(115deg, rgba(183, 96, 255, 0.06), transparent 32%, rgba(81, 218, 255, 0.05) 68%, transparent);
-  mix-blend-mode: screen;
+  content: none;
 }
 
 .webgl-canvas {
@@ -90,7 +82,10 @@ body {
   height: 100%;
   display: block;
   pointer-events: none;
-  mix-blend-mode: screen;
+  /* The trail canvas is genuinely transparent now, so normal alpha blending
+     produces the same bright particles without forcing a separate full-screen
+     screen-blend compositor pass. */
+  mix-blend-mode: normal;
 }
 
 /* ================================================================== */

@@ -1,0 +1,343 @@
+{
+  "items": [
+    {
+      "id": "civilization-seeder",
+      "name": "文明播种者",
+      "modelUrl": "/exhibition-models/civilization-seeder.glb",
+      "color": "#63e6be",
+      "position": [
+        -5.7,
+        2.8,
+        2.6
+      ],
+      "scale": 0.46,
+      "referenceMode": "single"
+    },
+    {
+      "id": "suiqi-new-life",
+      "name": "穗启•新生",
+      "modelUrl": "/exhibition-models/suiqi-new-life.glb",
+      "color": "#ffc857",
+      "position": [
+        -3.5,
+        3.1,
+        3.0
+      ],
+      "scale": 0.46,
+      "referenceMode": "single"
+    },
+    {
+      "id": "rice-cup-creative",
+      "name": "水稻杯文创",
+      "modelUrl": "/exhibition-models/rice-cup-creative.glb",
+      "color": "#b794ff",
+      "position": [
+        -1.2,
+        3.0,
+        3.2
+      ],
+      "scale": 0.46,
+      "referenceMode": "single"
+    },
+    {
+      "id": "award-01",
+      "name": "稻香亭",
+      "modelUrl": "/exhibition-models/award-01.glb",
+      "color": "#63b3ed",
+      "position": [
+        1.2,
+        3.0,
+        3.2
+      ],
+      "scale": 0.42,
+      "referenceMode": "single",
+      "sourceFolder": "《稻香亭》细弱稻杆，撑起华夏文明 + kimple",
+      "sourceImage": "01_作品图.webp"
+    },
+    {
+      "id": "award-02",
+      "name": "穗穗",
+      "modelUrl": "/exhibition-models/award-02.glb",
+      "color": "#ff8fab",
+      "position": [
+        3.6,
+        3.0,
+        3.0
+      ],
+      "scale": 0.42,
+      "referenceMode": "single",
+      "sourceFolder": "《穗禾仙羊—穗穗》 + 鼻涕泡01",
+      "sourceImage": "02_作品图.webp"
+    },
+    {
+      "id": "award-03",
+      "name": "稻禾三生",
+      "modelUrl": "/exhibition-models/award-03.glb",
+      "color": "#7ee7ff",
+      "position": [
+        5.7,
+        2.6,
+        2.5
+      ],
+      "scale": 0.42,
+      "referenceMode": "single",
+      "sourceFolder": "「稻禾三生」水稻治愈系桌面器物 + 噶嘞叽",
+      "sourceImage": "02_作品图.webp"
+    },
+    {
+      "id": "award-04",
+      "name": "三畴禾序",
+      "modelUrl": "/exhibition-models/award-04.glb",
+      "color": "#a7f3d0",
+      "position": [
+        -5.6,
+        1.0,
+        3.3
+      ],
+      "scale": 0.42,
+      "referenceMode": "single",
+      "sourceFolder": "三畴禾序 【旋转多宝盒】 + 小八宝",
+      "sourceImage": "04_作品图.webp"
+    },
+    {
+      "id": "award-05",
+      "name": "播种文明",
+      "modelUrl": "/exhibition-models/award-05.glb",
+      "color": "#ffb86b",
+      "position": [
+        -3.4,
+        1.1,
+        3.8
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "手作饰品——播种文明系列 + 赵恩哲",
+      "sourceImage": "02_作品图.webp"
+    },
+    {
+      "id": "award-06",
+      "name": "春华秋实",
+      "modelUrl": "/exhibition-models/award-06.glb",
+      "color": "#c4b5fd",
+      "position": [
+        -1.1,
+        1.0,
+        4.1
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "春华秋实系列冰箱贴 + 模友kw0727201315",
+      "sourceImage": "02_作品图.webp"
+    },
+    {
+      "id": "award-07",
+      "name": "稻生五态",
+      "modelUrl": "/exhibition-models/award-07.glb",
+      "color": "#67e8f9",
+      "position": [
+        1.2,
+        1.1,
+        4.0
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "来自晚辈的纪念与感激 ---“稻生五态”IP创作和周边开发 + 小蔡社长",
+      "sourceImage": "03_作品图.webp"
+    },
+    {
+      "id": "award-08",
+      "name": "GSA-6种植机",
+      "modelUrl": "/exhibition-models/award-08.glb",
+      "color": "#fda4af",
+      "position": [
+        3.5,
+        1.0,
+        3.7
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "泓稼生态 GSA-6空投型自动种植机 + 腾云驾雾陈先森",
+      "sourceImage": "04_作品图.webp"
+    },
+    {
+      "id": "award-09",
+      "name": "环水稻居图",
+      "modelUrl": "/exhibition-models/award-09.glb",
+      "color": "#bef264",
+      "position": [
+        5.7,
+        0.8,
+        3.1
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "环水稻居图【模块化任意拼装】 + 黑日S",
+      "sourceImage": "01_作品图.webp"
+    },
+    {
+      "id": "award-10",
+      "name": "岁登",
+      "modelUrl": "/exhibition-models/award-10.glb",
+      "color": "#f9a8d4",
+      "position": [
+        -5.6,
+        -1.0,
+        3.0
+      ],
+      "scale": 0.42,
+      "referenceMode": "single",
+      "sourceFolder": "界魅集-秋分水稻之灵-岁登 + poyin747",
+      "sourceImage": "00_封面.webp"
+    },
+    {
+      "id": "award-11",
+      "name": "禾下星球",
+      "modelUrl": "/exhibition-models/award-11.glb",
+      "color": "#93c5fd",
+      "position": [
+        -3.3,
+        -1.0,
+        3.6
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "禾下星球 + 极印科技",
+      "sourceImage": "04_作品图.webp"
+    },
+    {
+      "id": "award-12",
+      "name": "禾小满",
+      "modelUrl": "/exhibition-models/award-12.glb",
+      "color": "#fcd34d",
+      "position": [
+        -1.0,
+        -1.1,
+        4.2
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "禾小满系列IP形象 + Rickky",
+      "sourceImage": "02_作品图.webp"
+    },
+    {
+      "id": "award-13",
+      "name": "禾穗折扇",
+      "modelUrl": "/exhibition-models/award-13.glb",
+      "color": "#86efac",
+      "position": [
+        1.3,
+        -1.0,
+        4.0
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "禾穗折扇文创冰箱贴 + 三悦聚良",
+      "sourceImage": "04_作品图.webp"
+    },
+    {
+      "id": "award-14",
+      "name": "稻乡集",
+      "modelUrl": "/exhibition-models/award-14.glb",
+      "color": "#d8b4fe",
+      "position": [
+        3.6,
+        -1.0,
+        3.5
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "稻乡集—水稻主题摆件冰箱贴 + 一雕造物",
+      "sourceImage": "02_作品图.webp"
+    },
+    {
+      "id": "award-15",
+      "name": "稻护云台",
+      "modelUrl": "/exhibition-models/award-15.glb",
+      "color": "#fdba74",
+      "position": [
+        5.7,
+        -1.0,
+        2.8
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "稻护・稻田激光除虫云台 + 乌拉草",
+      "sourceImage": "01_作品图.webp"
+    },
+    {
+      "id": "award-16",
+      "name": "稻舞四季",
+      "modelUrl": "/exhibition-models/award-16.glb",
+      "color": "#5eead4",
+      "position": [
+        -4.6,
+        -2.8,
+        2.5
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "稻舞四季 + 鹊羽鸦头",
+      "sourceImage": "01_作品图.webp"
+    },
+    {
+      "id": "award-17",
+      "name": "稻韵金饰",
+      "modelUrl": "/exhibition-models/award-17.glb",
+      "color": "#f0abfc",
+      "position": [
+        -2.2,
+        -2.8,
+        3.1
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "稻韵金饰系列 + 模友hd0803224338",
+      "sourceImage": "02_作品图.webp"
+    },
+    {
+      "id": "award-18",
+      "name": "米团团",
+      "modelUrl": "/exhibition-models/award-18.glb",
+      "color": "#fde68a",
+      "position": [
+        0.2,
+        -2.8,
+        3.7
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "米团团诞生记 + 滨城七中3D打印社",
+      "sourceImage": "00_封面.webp"
+    },
+    {
+      "id": "award-19",
+      "name": "米多多",
+      "modelUrl": "/exhibition-models/award-19.glb",
+      "color": "#a5b4fc",
+      "position": [
+        2.6,
+        -2.7,
+        3.2
+      ],
+      "scale": 0.4,
+      "referenceMode": "three-view-board",
+      "sourceFolder": "隆平水稻博物馆文创IP形象-米多多 + 一只大从",
+      "sourceImage": "02_作品图.webp"
+    },
+    {
+      "id": "award-20",
+      "name": "口口米",
+      "modelUrl": "/exhibition-models/award-20.glb",
+      "color": "#fca5a5",
+      "position": [
+        4.8,
+        -2.6,
+        2.6
+      ],
+      "scale": 0.4,
+      "referenceMode": "single",
+      "sourceFolder": "隆平水稻博物馆文创产品IP 〈口口米〉 + 小仓鼠阅阅",
+      "sourceImage": "03_作品图.webp"
+    }
+  ]
+}

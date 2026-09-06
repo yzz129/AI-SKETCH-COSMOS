@@ -41,6 +41,21 @@ def _create_job(registry: JobRegistry, base: Path, index: int):
 
 
 class SubmissionIsolationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # JobRegistry records telemetry as part of admission. Keep synthetic
+        # queue jobs out of the dashboard's production SQLite database.
+        self._telemetry_write_patches = [
+            patch("app.jobs.record_submission_created"),
+            patch("app.jobs.record_submission_started"),
+            patch("app.jobs.record_submission_finished"),
+        ]
+        for telemetry_patch in self._telemetry_write_patches:
+            telemetry_patch.start()
+
+    def tearDown(self) -> None:
+        for telemetry_patch in reversed(self._telemetry_write_patches):
+            telemetry_patch.stop()
+
     def test_concurrent_artwork_directories_are_unique(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output_root = Path(temporary)
@@ -91,6 +106,63 @@ class SubmissionIsolationTest(unittest.TestCase):
             self.assertEqual(results.count("full"), 12)
             self.assertEqual(registry.stats()["active"], 4)
             self.assertEqual(len(deferred.submissions), 4)
+
+    def test_reservations_protect_capacity_before_expensive_work(self) -> None:
+        deferred = _DeferredExecutor()
+        with (
+            patch.dict(
+                os.environ,
+                {"TRIPOSPLAT_MAX_WORKERS": "1", "TRIPOSPLAT_MAX_ACTIVE_JOBS": "2"},
+                clear=False,
+            ),
+            patch("app.jobs.ThreadPoolExecutor", return_value=deferred),
+        ):
+            registry = JobRegistry()
+            first = registry.reserve()
+            second = registry.reserve()
+
+            self.assertEqual(registry.stats()["reserved"], 2)
+            self.assertEqual(registry.stats()["slotsAvailable"], 0)
+            with self.assertRaises(JobQueueFullError):
+                registry.reserve()
+
+            registry.release(first)
+            self.assertEqual(registry.stats()["slotsAvailable"], 1)
+            registry.release(second)
+
+    def test_reserved_slot_is_consumed_and_reports_queue_position(self) -> None:
+        deferred = _DeferredExecutor()
+        environment = {
+            "TRIPOSPLAT_MAX_WORKERS": "1",
+            "TRIPOSPLAT_MAX_ACTIVE_JOBS": "4",
+            "TRIPOSPLAT_ESTIMATED_JOB_SECONDS": "50",
+            "TRIPOSPLAT_EFFECTIVE_PARALLEL_JOBS": "1",
+        }
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.dict(os.environ, environment, clear=False),
+            patch("app.jobs.ThreadPoolExecutor", return_value=deferred),
+        ):
+            registry = JobRegistry()
+            base = Path(temporary)
+            reservation = registry.reserve()
+            first = registry.create(
+                job_id="job_1",
+                artwork_id="artwork_1",
+                submission_id="submission_1",
+                artwork_dir=base,
+                source_path=base / "source.png",
+                num_gaussians=65_536,
+                export_format="splat",
+                reservation_id=reservation,
+            )
+            second = _create_job(registry, base, 2)
+
+            self.assertEqual(registry.stats()["reserved"], 0)
+            self.assertEqual(registry.queue_info(first.job_id)["queuePosition"], 1)
+            self.assertEqual(registry.queue_info(first.job_id)["estimatedWaitSeconds"], 0)
+            self.assertEqual(registry.queue_info(second.job_id)["queuePosition"], 2)
+            self.assertEqual(registry.queue_info(second.job_id)["estimatedWaitSeconds"], 50)
 
     def test_partial_preview_and_submission_id_are_published_while_processing(self) -> None:
         deferred = _DeferredExecutor()

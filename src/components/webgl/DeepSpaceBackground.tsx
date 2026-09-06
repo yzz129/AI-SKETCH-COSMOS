@@ -1,4 +1,5 @@
 import { DeferredMount } from './DeferredMount';
+import { CosmicUndertow } from './CosmicUndertow';
 import { DeepStarField } from './DeepStarField';
 import { ForegroundBokehDust } from './ForegroundBokehDust';
 import { ForegroundDust } from './ForegroundDust';
@@ -32,6 +33,10 @@ export function DeepSpaceBackground() {
       {/* Phase 3 — idle or 1500ms: nebula layers */}
       <DeferredMount timeout={1500}>
         <NebulaLayer />
+      </DeferredMount>
+
+      <DeferredMount timeout={1800}>
+        <CosmicUndertow />
       </DeferredMount>
 
       <DeferredMount timeout={3000}>

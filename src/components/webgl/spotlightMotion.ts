@@ -49,6 +49,12 @@ export const spotlightReleaseProgress = implementation.spotlightReleaseProgress 
 export const spotlightReleaseEased = implementation.spotlightReleaseEased as (
   elapsed: number
 ) => number;
+export const spotlightShowcaseTurnProgress = implementation.spotlightShowcaseTurnProgress as (
+  elapsed: number
+) => number;
+export const spotlightShowcaseTurn = implementation.spotlightShowcaseTurn as (
+  elapsed: number
+) => number;
 export const cappedDampStep = implementation.cappedDampStep as (
   current: number,
   target: number,

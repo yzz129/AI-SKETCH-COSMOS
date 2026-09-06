@@ -13,6 +13,8 @@ from typing import Any
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageOps
 
+from .ai_model_registry import complete_vision, complete_vision_images
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -273,32 +275,12 @@ def _save_debug_overlay(image_path: Path, output_dir: Path, articulation: dict[s
 
 
 def analyse_articulation_regions(image_path: Path, output_dir: Path) -> dict[str, Any]:
-    api_key = os.getenv("ARK_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("ARK_API_KEY is not configured for articulation analysis.")
-    from volcenginesdkarkruntime import Ark
-
-    client = Ark(
-        base_url=os.getenv("ARK_BASE_URL", ARK_BASE_URL),
-        api_key=api_key,
-        timeout=float(os.getenv("ARK_ARTICULATION_TIMEOUT", "120")),
-    )
-    response = client.responses.create(
-        model=os.getenv("ARK_ARTICULATION_MODEL", ARK_MODEL),
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_image", "image_url": _image_data_url(image_path)},
-                    {"type": "input_text", "text": ARTICULATION_PROMPT},
-                ],
-            }
-        ],
-    )
-    response_payload = _response_payload(response)
-    articulation = _normalise_articulation(_parse_json(_extract_text(response_payload)))
+    completion = complete_vision(_image_data_url(image_path), ARTICULATION_PROMPT)
+    articulation = _normalise_articulation(_parse_json(completion.text))
     articulation["sourceImage"] = image_path.name
-    articulation["usage"] = _usage_summary(response_payload)
+    articulation["usage"] = {}
+    articulation["provider"] = completion.provider
+    articulation["model"] = completion.model
     _save_debug_overlay(image_path, output_dir, articulation)
     return articulation
 
@@ -314,38 +296,16 @@ def analyse_articulation_multiview_regions(
     """
     if not views:
         raise ValueError("At least one articulation view is required.")
-    api_key = os.getenv("ARK_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("ARK_API_KEY is not configured for articulation analysis.")
-    from volcenginesdkarkruntime import Ark
-
     names = [name for name, _, _ in views]
     if len(names) != len(set(names)):
         raise ValueError("Articulation VIEW_ID values must be unique.")
     order = ", ".join(names)
-    content: list[dict[str, str]] = [
-        {
-            "type": "input_text",
-            "text": f"VIEW_ID 顺序：{order}\n{MULTIVIEW_ARTICULATION_PROMPT}",
-        }
-    ]
-    content.extend(
-        {"type": "input_image", "image_url": _image_data_url(image_path)}
-        for _, image_path, _ in views
+    completion = complete_vision_images(
+        (_image_data_url(image_path) for _, image_path, _ in views),
+        f"VIEW_ID 顺序：{order}\n{MULTIVIEW_ARTICULATION_PROMPT}",
     )
-    client = Ark(
-        base_url=os.getenv("ARK_BASE_URL", ARK_BASE_URL),
-        api_key=api_key,
-        timeout=float(os.getenv("ARK_MULTIVIEW_TIMEOUT", os.getenv("ARK_ARTICULATION_TIMEOUT", "180"))),
-    )
-    response = client.responses.create(
-        model=os.getenv("ARK_ARTICULATION_MODEL", ARK_MODEL),
-        input=[{"role": "user", "content": content}],
-        max_output_tokens=max(1200, int(os.getenv("ARK_MULTIVIEW_MAX_OUTPUT_TOKENS", "5000"))),
-    )
-    payload = _response_payload(response)
     articulations = _normalise_multiview_articulation(
-        _parse_json(_extract_text(payload)),
+        _parse_json(completion.text),
         names,
     )
     for name, image_path, output_dir in views:
@@ -356,7 +316,9 @@ def analyse_articulation_multiview_regions(
         _save_debug_overlay(image_path, output_dir, articulation)
     return {
         "articulations": articulations,
-        "usage": _usage_summary(payload),
+        "usage": {},
+        "provider": completion.provider,
+        "model": completion.model,
         "viewCount": len(views),
         "promptCharacters": len(MULTIVIEW_ARTICULATION_PROMPT),
     }

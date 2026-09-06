@@ -9,6 +9,7 @@ import {
 } from './dadakidoOcclusionRegistry';
 import { hasCreaturePriorityHit } from './pointerPriority';
 import { useAutoCosmicInteractionStore } from './autoCosmicInteractionStore';
+import { DadakidoChineseMark } from './DadakidoChineseMark';
 
 type DadakidoNebulaLayer = {
   geometry: THREE.BufferGeometry;
@@ -559,7 +560,18 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
     layer.material.uniforms.uFrontOccluderCount.value = occluderCount;
 
     if (groupRef.current) {
-      groupRef.current.rotation.set(0, 0, 0);
+      const sharedFloatX = Math.sin(time * 0.34) * 0.18;
+      const sharedFloatY = Math.sin(time * 0.52 + 0.7) * 0.13;
+      const sharedScale = scale * (1 + Math.sin(time * 0.46) * 0.014);
+      groupRef.current.position.set(
+        DADAKIDO_WORLD_POSITION[0] + xOffset + sharedFloatX,
+        DADAKIDO_WORLD_POSITION[1] + yOffset + sharedFloatY,
+        DADAKIDO_WORLD_POSITION[2]
+      );
+      groupRef.current.scale.setScalar(sharedScale);
+      // Brand marks may float and breathe, but must remain parallel to the
+      // screen even while the camera follows other foreground activity.
+      groupRef.current.quaternion.copy(camera.quaternion);
     }
   });
 
@@ -574,6 +586,7 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
         DADAKIDO_WORLD_POSITION[2]
       ]}
       scale={[scale, scale, scale]}
+      rotation={[0, 0, 0]}
       renderOrder={DADAKIDO_RENDER_ORDER}
     >
       <points
@@ -583,6 +596,7 @@ function DadakidoNebula({ reveal }: { reveal: number }) {
         frustumCulled={false}
         raycast={() => null}
       />
+      <DadakidoChineseMark />
       {GLYPH_CENTERS.map((center, glyph) => (
         <mesh
           key={`${GLYPHS[glyph]}-${glyph}`}

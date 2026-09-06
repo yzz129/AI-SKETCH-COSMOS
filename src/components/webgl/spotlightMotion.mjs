@@ -1,8 +1,10 @@
 import {
   SPOTLIGHT_APPROACH_DURATION,
   SPOTLIGHT_EFFECT_LEAD,
+  SPOTLIGHT_FLY_IN_DURATION,
   SPOTLIGHT_RELEASE_DURATION,
-  SPOTLIGHT_RELEASE_START
+  SPOTLIGHT_RELEASE_START,
+  SPOTLIGHT_SHOWCASE_DURATION
 } from './spotlightConfig.mjs';
 
 export const IDLE_SPOTLIGHT = {
@@ -89,6 +91,14 @@ export function spotlightReleaseProgress(elapsed) {
 
 export function spotlightReleaseEased(elapsed) {
   return smootherstep01(spotlightReleaseProgress(elapsed));
+}
+
+export function spotlightShowcaseTurnProgress(elapsed) {
+  return clamp01((elapsed - SPOTLIGHT_FLY_IN_DURATION) / SPOTLIGHT_SHOWCASE_DURATION);
+}
+
+export function spotlightShowcaseTurn(elapsed) {
+  return spotlightShowcaseTurnProgress(elapsed) * Math.PI * 2;
 }
 
 export function cappedDampStep(current, target, smoothing, maxSpeed, delta) {

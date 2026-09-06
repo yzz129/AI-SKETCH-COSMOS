@@ -30,7 +30,8 @@ const CHINESE_SENSITIVE_PHRASES = [
 
 // English terms use word boundaries so names such as "Essex" are not masked.
 const LATIN_SENSITIVE_PHRASES = ['porn', 'porno', 'hentai', 'rape', 'gangbang'] as const;
-const MODERATION_ENDPOINT = '/api/content-moderation';
+const AI_API_BASE = (import.meta.env.VITE_TRIPOSPLAT_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '/triposplat';
+const MODERATION_ENDPOINT = `${AI_API_BASE}/api/ai/content-moderation`;
 const MODERATION_REQUIRED = import.meta.env.VITE_CONTENT_MODERATION_REQUIRED !== 'false';
 const MODERATION_ENABLED = import.meta.env.VITE_CONTENT_MODERATION_ENABLED !== 'false';
 

@@ -7,7 +7,9 @@ import {
   markSpotlightRenderReady,
   requestSpotlight,
   spotlightCreatureReveal,
-  spotlightApproachProgress
+  spotlightApproachProgress,
+  spotlightShowcaseTurn,
+  spotlightShowcaseTurnProgress
 } from '../src/components/webgl/spotlightMotion.mjs';
 import {
   SPOTLIGHT_APPROACH_DURATION,
@@ -17,12 +19,14 @@ import {
   SPOTLIGHT_OUTER_LAYER_DISTANCE,
   SPOTLIGHT_RELEASE_START,
   SPOTLIGHT_SHOWCASE_DURATION,
-  SPOTLIGHT_TOTAL_DURATION
+  SPOTLIGHT_TOTAL_DURATION,
+  SPOTLIGHT_USES_CAMERA_CLOSE_UP
 } from '../src/components/webgl/spotlightConfig.mjs';
 
 test('timeline blends the reveal through the entry effect and showcases for five seconds', () => {
   assert.equal(SPOTLIGHT_ENTRY_EFFECT_DURATION, 1.6);
   assert.equal(SPOTLIGHT_OUTER_LAYER_DISTANCE, 4);
+  assert.equal(SPOTLIGHT_USES_CAMERA_CLOSE_UP, false);
   assert.equal(SPOTLIGHT_EFFECT_LEAD, 0.72);
   assert.ok(Math.abs(SPOTLIGHT_APPROACH_DURATION - 0.88) < 1e-9);
   assert.equal(SPOTLIGHT_FLY_IN_DURATION, SPOTLIGHT_ENTRY_EFFECT_DURATION);
@@ -33,6 +37,21 @@ test('timeline blends the reveal through the entry effect and showcases for five
   assert.equal(spotlightApproachProgress(SPOTLIGHT_EFFECT_LEAD), 0);
   assert.ok(Math.abs(spotlightApproachProgress(1.16) - 0.5) < 1e-9);
   assert.equal(spotlightApproachProgress(SPOTLIGHT_ENTRY_EFFECT_DURATION), 1);
+});
+
+test('the showcase performs exactly one full turn while the model is at the front', () => {
+  assert.equal(spotlightShowcaseTurnProgress(SPOTLIGHT_FLY_IN_DURATION), 0);
+  assert.ok(Math.abs(
+    spotlightShowcaseTurnProgress(SPOTLIGHT_FLY_IN_DURATION + SPOTLIGHT_SHOWCASE_DURATION / 2) - 0.5
+  ) < 1e-9);
+  assert.equal(
+    spotlightShowcaseTurnProgress(SPOTLIGHT_FLY_IN_DURATION + SPOTLIGHT_SHOWCASE_DURATION),
+    1
+  );
+  assert.equal(spotlightShowcaseTurn(SPOTLIGHT_FLY_IN_DURATION), 0);
+  assert.ok(Math.abs(
+    spotlightShowcaseTurn(SPOTLIGHT_FLY_IN_DURATION + SPOTLIGHT_SHOWCASE_DURATION) - Math.PI * 2
+  ) < 1e-9);
 });
 
 test('spotlight waits for render readiness before starting its clock', () => {

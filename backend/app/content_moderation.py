@@ -1,4 +1,5 @@
 import base64
+import binascii
 import io
 import json
 import os
@@ -9,6 +10,8 @@ from typing import BinaryIO
 
 from dotenv import load_dotenv
 from PIL import Image, ImageOps, UnidentifiedImageError
+
+from .ai_model_registry import ai_model_status, complete_vision
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -237,36 +240,17 @@ def moderate_image_file(file_obj: BinaryIO) -> ModerationResult:
     if not _env_bool("CONTENT_MODERATION_ENABLED", True):
         return ModerationResult(True, "safe", 1.0, "moderation disabled by configuration")
 
-    api_key = os.getenv("ARK_API_KEY", "").strip()
     required = _env_bool("CONTENT_MODERATION_REQUIRED", True)
-    if not api_key:
+    if not ai_model_status()["ready"]:
         if not required:
             return ModerationResult(True, "safe", 0.0, "moderation unavailable")
         raise ContentModerationUnavailableError("内容安全检测暂时不可用，请稍后重试。")
 
     try:
-        from volcenginesdkarkruntime import Ark
-
-        client = Ark(
-            base_url=os.getenv("ARK_BASE_URL", ARK_BASE_URL),
-            api_key=api_key,
-            timeout=float(os.getenv("CONTENT_MODERATION_TIMEOUT", "60")),
-        )
-        response = client.responses.create(
-            model=os.getenv("CONTENT_MODERATION_MODEL", ARK_MODEL),
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_image", "image_url": _image_data_url(file_obj)},
-                        {"type": "input_text", "text": MODERATION_PROMPT},
-                    ],
-                }
-            ],
-        )
+        completion = complete_vision(_image_data_url(file_obj), MODERATION_PROMPT)
         threshold = float(os.getenv("CONTENT_MODERATION_THRESHOLD", "0.82"))
         result = normalise_moderation_result(
-            _parse_json(_extract_text(_response_payload(response))),
+            _parse_json(completion.text),
             threshold=threshold,
         )
     except InvalidArtworkImageError:
@@ -279,3 +263,15 @@ def moderate_image_file(file_obj: BinaryIO) -> ModerationResult:
     if not result.allowed:
         raise ContentModerationRejectedError(result)
     return result
+
+
+def moderate_image_data_url(image_data_url: str) -> ModerationResult:
+    if not image_data_url.startswith("data:image/") or ";base64," not in image_data_url[:100]:
+        raise InvalidArtworkImageError("无法识别这张图片，请重新上传 JPG、PNG 或 WebP 图片。")
+    try:
+        payload = base64.b64decode(image_data_url.split(",", 1)[1], validate=True)
+    except (binascii.Error, ValueError, IndexError) as exc:
+        raise InvalidArtworkImageError("无法识别这张图片，请重新上传 JPG、PNG 或 WebP 图片。") from exc
+    if len(payload) > 16 * 1024 * 1024:
+        raise InvalidArtworkImageError("图片过大，请上传不超过 16MB 的图片。")
+    return moderate_image_file(io.BytesIO(payload))

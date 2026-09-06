@@ -305,8 +305,7 @@
 .mobile-secondary-button,
 .mobile-submit-button,
 .mobile-reset-button,
-.mobile-inline-action,
-.mobile-text-download {
+.mobile-inline-action {
   font: inherit;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
@@ -885,6 +884,34 @@
   text-align: right;
 }
 
+.mobile-generation-visit-notice {
+  margin: 16px 0 6px;
+  padding: 20px 18px;
+  border: 2px solid rgba(22, 137, 238, 0.28);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(232, 246, 255, 0.98), rgba(244, 239, 255, 0.98));
+  color: #17243d;
+  text-align: center;
+  box-shadow: 0 12px 28px rgba(38, 79, 126, 0.12);
+}
+
+.mobile-generation-visit-notice strong {
+  display: block;
+  font-size: clamp(21px, 5.8vw, 28px);
+  font-weight: 950;
+  line-height: 1.35;
+  text-wrap: balance;
+}
+
+.mobile-generation-visit-notice p {
+  margin: 9px auto 0;
+  color: #405a78;
+  font-size: clamp(16px, 4.4vw, 20px);
+  font-weight: 750;
+  line-height: 1.55;
+  text-wrap: balance;
+}
+
 .mobile-generation-steps,
 .mobile-result-steps {
   position: relative;
@@ -1084,18 +1111,6 @@
   animation: mobile-sparkle-turn 2.2s linear infinite;
 }
 
-.mobile-text-download {
-  display: inline-flex;
-  min-height: 42px;
-  align-items: center;
-  gap: 7px;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: rgba(194, 222, 255, 0.72);
-  font-size: 12px;
-}
-
 .mobile-result-heading--model {
   align-items: center;
 }
@@ -1152,7 +1167,7 @@
 }
 
 .mobile-model-pending strong {
-  color: #f4f8ff;
+  color: #173b5f;
   font-size: 14px;
 }
 
@@ -1735,11 +1750,6 @@
     bottom: 8px;
     padding: 7px 9px;
     font-size: 9px;
-  }
-
-  .mobile-text-download {
-    min-height: 28px;
-    font-size: 10px;
   }
 
   .mobile-model-actions {
@@ -2443,8 +2453,7 @@
 }
 
 .mobile-secondary-button,
-.mobile-inline-action,
-.mobile-text-download {
+.mobile-inline-action {
   border: 1px solid #cbdcf0;
   border-radius: 8px;
   background: #ffffff;
@@ -2453,8 +2462,7 @@
 }
 
 .mobile-secondary-button:active,
-.mobile-inline-action:active,
-.mobile-text-download:active {
+.mobile-inline-action:active {
   background: #edf6ff;
 }
 
@@ -2888,7 +2896,6 @@
 
 .mobile-secondary-button,
 .mobile-inline-action,
-.mobile-text-download,
 .mobile-submit-button,
 .cosmic-brush-grid button,
 .cosmic-drawing-utilities button {
@@ -4251,8 +4258,33 @@ html.mobile-soft-keyboard-open .mobile-artwork-name-dialog-backdrop {
   box-shadow: 0 6px 18px rgba(22, 137, 238, 0.12);
 }
 
-.mobile-submit-access-card:not(.is-error) .mobile-submit-access-card__icon svg {
+.mobile-submit-access-card.is-loading .mobile-submit-access-card__icon svg {
   animation: mobile-submit-spin 1.2s linear infinite;
+}
+
+.mobile-submit-access-card.is-success {
+  border-color: rgba(67, 183, 125, 0.32);
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.98), rgba(236, 255, 246, 0.96));
+}
+
+.mobile-submit-access-card.is-success .mobile-submit-access-card__icon {
+  border-color: rgba(67, 183, 125, 0.28);
+  background: linear-gradient(135deg, rgba(67, 183, 125, 0.15), rgba(22, 137, 238, 0.1));
+  color: #188858;
+}
+
+.mobile-creation-back {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 32px;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  padding: 0 4px;
+  background: transparent;
+  color: #39709f;
+  font: 750 11px/1 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  cursor: pointer;
 }
 
 .mobile-submit-access-card strong {
@@ -4267,6 +4299,43 @@ html.mobile-soft-keyboard-open .mobile-artwork-name-dialog-backdrop {
   margin: 0;
   color: #516075;
   font: 500 13px/1.6 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.mobile-submit-access-card__success-label {
+  color: #188858;
+  font: 800 14px/1.2 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0.12em;
+}
+
+.mobile-submit-access-card .mobile-submit-access-card__guest-title {
+  max-width: 350px;
+  color: #13243a;
+  font: 900 clamp(25px, 7vw, 32px)/1.42 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0.01em;
+  text-wrap: balance;
+}
+
+.mobile-submit-access-page[data-access-kind="channel-guest"] .mobile-submit-access-card {
+  gap: 14px;
+  padding-top: 28px;
+}
+
+.mobile-submit-access-page[data-access-kind="channel-guest"] .mobile-generation-header h1,
+.mobile-submit-access-page[data-access-kind="channel-guest"] .mobile-generation-header p {
+  font-size: 0;
+}
+
+.mobile-submit-access-page[data-access-kind="channel-guest"] .mobile-generation-header h1::after {
+  content: "欢迎嘉宾观展";
+  color: #17243d;
+  -webkit-text-fill-color: currentColor;
+  font: 900 clamp(26px, 7.5vw, 36px)/1.15 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.mobile-submit-access-page[data-access-kind="channel-guest"] .mobile-generation-header p::after {
+  content: "请去前台领取礼品";
+  color: #188858;
+  font: 800 15px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 .mobile-submit-access-card .mobile-submit-access-actions {
@@ -4341,6 +4410,15 @@ html.mobile-soft-keyboard-open .mobile-artwork-name-dialog-backdrop {
 
 .mobile-submit-context .mobile-creation-meta-row {
   margin: 0;
+}
+
+.mobile-submit-context--anonymous .mobile-submit-session-card,
+.mobile-submit-context--anonymous .mobile-history-trigger {
+  display: none;
+}
+
+.mobile-submit-context--anonymous .mobile-creation-meta-row {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .mobile-submit-session-card {
@@ -4423,107 +4501,8 @@ html.mobile-soft-keyboard-open .mobile-artwork-name-dialog-backdrop {
   color: #276fae;
 }
 
-.mobile-booking-result {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 13px;
-  margin: 14px 0;
-  border: 1px solid rgba(89, 211, 151, 0.3);
-  border-radius: 24px;
-  padding: 16px;
-  background: linear-gradient(135deg, rgba(17, 67, 55, 0.9), rgba(13, 35, 72, 0.92));
-  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.2);
-}
-
-.mobile-booking-result.is-visitor {
-  border-color: rgba(121, 171, 255, 0.28);
-  background: linear-gradient(135deg, rgba(18, 43, 82, 0.92), rgba(47, 31, 86, 0.9));
-}
-
-.mobile-booking-result__icon {
-  display: grid;
-  width: 44px;
-  height: 44px;
-  place-items: center;
-  border-radius: 15px;
-  background: rgba(124, 255, 190, 0.12);
-  color: #82f0b9;
-}
-
-.mobile-booking-result.is-visitor .mobile-booking-result__icon {
-  background: rgba(117, 189, 255, 0.14);
-  color: #8dd3ff;
-}
-
-.mobile-booking-result__copy {
-  min-width: 0;
-  font-family: system-ui, -apple-system, "Microsoft YaHei", sans-serif;
-}
-
-.mobile-booking-result__copy span {
-  color: #88f0bb;
-  font-size: 10px;
-  font-weight: 850;
-}
-
-.mobile-booking-result.is-visitor .mobile-booking-result__copy span {
-  color: #9dd8ff;
-}
-
-.mobile-booking-result__copy h2 {
-  margin: 4px 0;
-  color: #ffffff;
-  font-size: 15px;
-  line-height: 1.35;
-}
-
-.mobile-booking-result__copy p {
-  margin: 0;
-  color: rgba(231, 239, 255, 0.72);
-  font-size: 11px;
-  line-height: 1.55;
-}
-
-.mobile-booking-result__qr {
-  display: grid;
-  justify-items: center;
-  gap: 4px;
-}
-
-.mobile-booking-result__qr img {
-  width: 94px;
-  height: 94px;
-  border-radius: 12px;
-  padding: 5px;
-  background: #ffffff;
-  object-fit: contain;
-}
-
-.mobile-booking-result__qr small {
-  color: rgba(231, 239, 255, 0.68);
-  font: 650 8px/1.2 system-ui, -apple-system, "Microsoft YaHei", sans-serif;
-}
-
 @keyframes mobile-submit-spin {
   to { transform: rotate(360deg); }
-}
-
-@media (max-width: 430px) {
-  .mobile-booking-result {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .mobile-booking-result__qr {
-    grid-column: 1 / -1;
-    width: 100%;
-    padding-top: 4px;
-  }
-
-  .mobile-booking-result__qr img {
-    width: min(58vw, 210px);
-    height: min(58vw, 210px);
-  }
 }
 
 /* /submit mobile home: keep history, workspace and generate action in one viewport. */
@@ -4725,6 +4704,128 @@ html.mobile-soft-keyboard-open .mobile-artwork-name-dialog-backdrop {
 
 .mobile-upload-page--generating .mobile-generation-shell .mobile-upload-status strong {
   color: #075f9f;
+}
+
+/* Keep the generation state within one phone viewport whenever possible. */
+@media (max-width: 600px) {
+  .mobile-upload-page--generating {
+    padding-top: max(8px, env(safe-area-inset-top));
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+
+  .mobile-upload-page--generating .mobile-generation-shell {
+    display: grid;
+    gap: 7px;
+    align-content: start;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-header {
+    margin: 0;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-header .mobile-brand-lockup {
+    min-height: 28px;
+    margin-bottom: 1px;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-header .mobile-dadakido-logo {
+    width: min(34vw, 142px);
+  }
+
+  .mobile-upload-page--generating .mobile-generation-header .mobile-brand-cosmos {
+    min-height: 26px;
+    padding: 4px 7px;
+    font-size: 9px;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-header .mobile-brand-story {
+    grid-template-columns: 64px minmax(0, 1fr);
+    min-height: 64px;
+    gap: 6px;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-header .mobile-brand-mascot-stage {
+    width: 64px;
+    height: 64px;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-header h1 {
+    font-size: clamp(18px, 5.2vw, 22px);
+    line-height: 1.05;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-header p {
+    margin-top: 2px;
+    font-size: 9px;
+    line-height: 1.25;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-preview {
+    width: min(42vw, 180px);
+    margin: 0 auto 2px;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-progress {
+    gap: 8px;
+    padding: 7px 9px;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-progress > div {
+    height: 10px;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-visit-notice {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin: 0;
+    padding: 8px 10px;
+    border-width: 1px;
+    border-radius: 14px;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-visit-notice strong {
+    font-size: 13px;
+    line-height: 1.25;
+    white-space: nowrap;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-visit-notice p {
+    margin: 0;
+    font-size: 10px;
+    line-height: 1.25;
+    white-space: nowrap;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-steps {
+    margin: 2px 0;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-shell .mobile-upload-status {
+    min-height: 40px;
+    margin: 0;
+  }
+}
+
+@media (max-width: 600px) and (max-height: 740px) {
+  .mobile-upload-page--generating .mobile-generation-header .mobile-brand-story {
+    grid-template-columns: 54px minmax(0, 1fr);
+    min-height: 54px;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-header .mobile-brand-mascot-stage {
+    width: 54px;
+    height: 54px;
+  }
+
+  .mobile-upload-page--generating .mobile-generation-preview {
+    width: min(35vw, 145px);
+  }
+
+  .mobile-upload-page--generating .mobile-generation-visit-notice p {
+    display: none;
+  }
 }
 
 @keyframes mobile-brand-title-flow {

@@ -13,7 +13,13 @@ type MobileGenerationHistoryPayload = {
 };
 
 const STORAGE_KEY = 'ai-sketch-cosmos:mobile-generation-history';
+const ANONYMOUS_LAST_ARTWORK_STORAGE_KEY = 'ai-sketch-cosmos:anonymous-last-artwork';
 const MAX_HISTORY_ENTRIES = 24;
+
+type AnonymousLastArtworkPayload = {
+  version: 1;
+  artworkId: string;
+};
 
 function writeMobileGenerationHistory(entries: MobileGenerationHistoryEntry[]) {
   try {
@@ -64,6 +70,41 @@ export function rememberMobileGeneration(artwork: StoredArtwork) {
 
   writeMobileGenerationHistory(entries);
   return entries;
+}
+
+export function readAnonymousLastArtworkId() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(ANONYMOUS_LAST_ARTWORK_STORAGE_KEY);
+    if (!raw) return null;
+    const payload = JSON.parse(raw) as Partial<AnonymousLastArtworkPayload>;
+    return payload.version === 1 && typeof payload.artworkId === 'string' && payload.artworkId.trim()
+      ? payload.artworkId.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberAnonymousLastArtwork(artwork: StoredArtwork) {
+  const artworkId = artwork.gaussianModel?.sourceArtworkId?.trim();
+  if (!artworkId) return null;
+  try {
+    const payload: AnonymousLastArtworkPayload = { version: 1, artworkId };
+    window.localStorage.setItem(ANONYMOUS_LAST_ARTWORK_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // The completed result remains visible in the current session when storage is unavailable.
+  }
+  return artworkId;
+}
+
+export function clearAnonymousLastArtwork() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(ANONYMOUS_LAST_ARTWORK_STORAGE_KEY);
+  } catch {
+    // Ignore storage restrictions; the caller can still continue in memory.
+  }
 }
 
 export function syncMobileGenerationHistoryNames(namesByArtworkId: ReadonlyMap<string, string>) {

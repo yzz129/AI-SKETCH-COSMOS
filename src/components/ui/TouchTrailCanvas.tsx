@@ -30,6 +30,7 @@ export function TouchTrailCanvas() {
     const resizeCanvas = () => {
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
     };
 
     const createParticle = (): TrailParticle => ({
@@ -49,6 +50,7 @@ export function TouchTrailCanvas() {
       for (let i = 0; i < 3; i += 1) {
         particlesArray.push(createParticle());
       }
+      if (animationFrame === 0) animationFrame = requestAnimationFrame(animate);
     };
 
     const handleMouseMove = (event: MouseEvent) => {
@@ -94,17 +96,22 @@ export function TouchTrailCanvas() {
     };
 
     const animate = () => {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+      // Fade by erasing alpha. Painting translucent black eventually turns
+      // this full-screen overlay into an opaque black compositor layer, which
+      // can flash on its own when Chrome misses a WebGL composite frame.
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.globalCompositeOperation = 'lighter';
       handleParticles();
       ctx.globalCompositeOperation = 'source-over';
       hue += 1.2;
-      animationFrame = requestAnimationFrame(animate);
+      animationFrame = particlesArray.length > 0
+        ? requestAnimationFrame(animate)
+        : 0;
     };
 
     resizeCanvas();
-    animate();
     window.addEventListener('resize', resizeCanvas);
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('touchmove', handleTouchMove, { passive: true });

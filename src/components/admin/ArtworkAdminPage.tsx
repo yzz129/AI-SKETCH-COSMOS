@@ -1,16 +1,35 @@
 import {
+  Activity,
   ArrowLeft,
+  Box,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  ClipboardCheck,
   Database,
   ExternalLink,
+  Eye,
   FileJson,
   Image,
+  LayoutDashboard,
+  Library,
+  LogOut,
   RefreshCw,
   RotateCcw,
   Save,
   Search,
+  Server,
   Trash2
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent
+} from 'react';
 import {
   deleteBackendArtwork,
   deleteBackendArtworkRecord,
@@ -19,91 +38,216 @@ import {
   patchBackendArtworkRecord,
   restoreBackendArtwork
 } from '../../lib/artwork/backendArtworkLibrary';
-import { resolveRigAssetUrl } from '../webgl/rigAssetUrl';
 import { type BackendArtworkRecord, useArtworkStore } from '../../stores/artworkStore';
 import { experienceRequiredForLevel } from '../webgl/creatureEvolutionMath';
+import { fetchSubmissionMetrics, type SubmissionMetrics } from '../../lib/artwork/submissionMetrics';
 import './admin.css';
+import { ExhibitionModelAdminPanel } from './ExhibitionModelAdminPanel';
+import { SubmissionMetricsPanel } from './SubmissionMetricsPanel';
+import { AdminSystemPanel } from './AdminSystemPanel';
+import { DesignerReviewQueue } from './DesignerReviewQueue';
+
+const AdminArtworkPreviewModal = lazy(() => import('./AdminArtworkPreviewModal').then((module) => ({
+  default: module.AdminArtworkPreviewModal
+})));
 
 const PAGE_SIZE = 20;
 const ARTWORK_LIBRARY_CHANGED_EVENT = 'artwork-library-changed';
 
-type RigDownloadPart = {
-  id: string;
-  url: string;
-  gaussianCount?: number;
-};
+type AdminSection = 'overview' | 'artworks' | 'designer' | 'exhibition' | 'submissions' | 'system';
 
-type RigDownloadManifest = {
-  enabled?: boolean;
-  strategy?: string;
-  partMapUrl?: string;
-  weightsUrl?: string;
-  proxyMeshUrl?: string;
-  multiviewUrl?: string;
-  sourceGaussianCount?: number;
-  parts?: RigDownloadPart[];
-};
+const ADMIN_SECTIONS: Array<{
+  id: AdminSection;
+  label: string;
+  description: string;
+  icon: typeof LayoutDashboard;
+}> = [
+  { id: 'overview', label: '总览', description: '运营概况', icon: LayoutDashboard },
+  { id: 'artworks', label: '作品库', description: 'Splat 与成长数据', icon: Library },
+  { id: 'designer', label: '模型审核', description: '生成状态与入星河审核', icon: ClipboardCheck },
+  { id: 'exhibition', label: 'GLB 展品', description: '预览与增删改查', icon: Box },
+  { id: 'submissions', label: '提交监控', description: '耗时、成功率与流量', icon: Activity },
+  { id: 'system', label: '系统状态', description: '服务和加载策略', icon: Server }
+];
 
-const rigPartsCache = new Map<string, Promise<RigDownloadPart[]>>();
+const ADMIN_TIME_ZONE = 'Asia/Shanghai';
+const ADMIN_DATE_QUERY_KEY = 'chartDate';
+const ADMIN_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: ADMIN_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
+const ADMIN_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: ADMIN_TIME_ZONE,
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+});
 
-function partDisplayName(id: string) {
-  const labels: Record<string, string> = {
-    'skinning-weights': 'CPU 部位映射',
-    'part-map': '三维连通部位映射',
-    'proxy-mesh': '三维代理网格',
-    'multiview-analysis': '多视角识别结果',
-    body: '身体',
-    'left-arm': '左手臂',
-    'right-arm': '右手臂',
-    'left-leg': '左腿',
-    'right-leg': '右腿',
-    'left-wing': '左翅膀',
-    'right-wing': '右翅膀',
-    'left-fin': '左鱼鳍',
-    'right-fin': '右鱼鳍',
-    'tail-1': '尾巴根部',
-    'tail-2': '尾巴中段',
-    'tail-3': '尾巴末端'
-  };
-  return labels[id] ?? id;
+function todayInAdminTimeZone() {
+  return ADMIN_DATE_FORMATTER.format(new Date());
 }
 
-function loadRigDownloadParts(rigUrl: string) {
-  const cached = rigPartsCache.get(rigUrl);
-  if (cached) return cached;
-  const request = fetch(rigUrl, { cache: 'no-store' })
-    .then(async (response) => {
-      if (!response.ok) throw new Error(`Splat 部位映射清单加载失败（${response.status}）`);
-      return response.json() as Promise<RigDownloadManifest>;
-    })
-    .then((manifest) => {
-      if (manifest.enabled
-        && ['cpu-rigid-parts', 'gpu-splat-skinning', 'cpu-splat-bone-mapping'].includes(String(manifest.strategy))
-        && (manifest.partMapUrl || manifest.weightsUrl)) {
-        const generatedAssets: RigDownloadPart[] = [{
-          id: manifest.partMapUrl ? 'part-map' : 'skinning-weights',
-          url: resolveRigAssetUrl(rigUrl, manifest.partMapUrl ?? manifest.weightsUrl!),
-          gaussianCount: manifest.sourceGaussianCount
-        }];
-        if (manifest.proxyMeshUrl) generatedAssets.push({
-          id: 'proxy-mesh',
-          url: resolveRigAssetUrl(rigUrl, manifest.proxyMeshUrl)
-        });
-        if (manifest.multiviewUrl) generatedAssets.push({
-          id: 'multiview-analysis',
-          url: resolveRigAssetUrl(rigUrl, manifest.multiviewUrl)
-        });
-        return generatedAssets;
+function initialOverviewDate() {
+  if (typeof window === 'undefined') return todayInAdminTimeZone();
+  const value = new URLSearchParams(window.location.search).get(ADMIN_DATE_QUERY_KEY) ?? '';
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : todayInAdminTimeZone();
+}
+
+function shiftDateKey(dateKey: string, days: number) {
+  const date = new Date(`${dateKey}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function MinuteUploadChart({
+  points,
+  selectedDate
+}: {
+  points: Array<{ timestamp: string; count: number }>;
+  selectedDate: string;
+}) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef({ pointerId: -1, startX: 0, startScrollLeft: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const height = 284;
+  const padding = { top: 22, right: 24, bottom: 44, left: 12 };
+  const width = Math.max(720, (Math.max(1, points.length - 1) * 4) + padding.left + padding.right);
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maxCount = Math.max(1, ...points.map((point) => point.count));
+  const yTicks = maxCount > 1 ? [maxCount, Math.ceil(maxCount / 2), 0] : [1, 0];
+  const xFor = (index: number) => padding.left + (points.length <= 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
+  const yFor = (count: number) => padding.top + plotHeight - (count / maxCount) * plotHeight;
+  const linePath = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(index).toFixed(1)} ${yFor(point.count).toFixed(1)}`).join(' ');
+  const areaPath = points.length
+    ? `${linePath} L ${xFor(points.length - 1).toFixed(1)} ${(padding.top + plotHeight).toFixed(1)} L ${xFor(0).toFixed(1)} ${(padding.top + plotHeight).toFixed(1)} Z`
+    : '';
+  const xTickIndices = points.length > 1
+    ? Array.from(new Set([
+      ...Array.from({ length: 12 }, (_, index) => index * 120),
+      points.length - 1
+    ])).filter((index) => index < points.length)
+    : [0];
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || points.length === 0) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      if (selectedDate !== todayInAdminTimeZone()) {
+        scroller.scrollLeft = 0;
+        return;
       }
-      if (!manifest.enabled || !manifest.parts?.length) return [];
-      return manifest.parts.map((part) => ({
-        ...part,
-        url: resolveRigAssetUrl(rigUrl, part.url)
-      }));
+      const timeParts = ADMIN_TIME_FORMATTER.formatToParts(new Date());
+      const hour = Number(timeParts.find((part) => part.type === 'hour')?.value ?? 0);
+      const minute = Number(timeParts.find((part) => part.type === 'minute')?.value ?? 0);
+      const currentMinuteIndex = Math.min(points.length - 1, hour * 60 + minute);
+      scroller.scrollLeft = Math.max(0, xFor(currentMinuteIndex) - scroller.clientWidth * 0.72);
     });
-  rigPartsCache.set(rigUrl, request);
-  request.catch(() => rigPartsCache.delete(rigUrl));
-  return request;
+    return () => window.cancelAnimationFrame(frame);
+  }, [points.length, selectedDate]);
+
+  const stopDragging = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragRef.current.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragRef.current.pointerId = -1;
+    setIsDragging(false);
+  };
+
+  const nonZeroPoints = points
+    .map((point, index) => ({ point, index }))
+    .filter(({ point }) => point.count > 0);
+
+  if (!points.length) {
+    return <div className="admin-chart-empty">暂无分钟上传数据</div>;
+  }
+
+  return (
+    <div className="admin-line-chart-layout">
+      <svg className="admin-line-chart-axis" viewBox={`0 0 54 ${height}`} aria-hidden="true">
+        {yTicks.map((value) => {
+          const y = yFor(value);
+          return (
+            <g key={value}>
+              <line x1={46} x2={54} y1={y} y2={y} className="admin-chart-gridline" />
+              <text x={40} y={y + 4} textAnchor="end" className="admin-chart-axis-label">{value}</text>
+            </g>
+          );
+        })}
+        <text x={4} y={13} className="admin-chart-axis-title">人数</text>
+      </svg>
+      <div
+        ref={scrollerRef}
+        className={`admin-line-chart-scroll${isDragging ? ' is-dragging' : ''}`}
+        role="region"
+        tabIndex={0}
+        aria-label={`${selectedDate} 全天每分钟上传人数，可左右拖动查看`}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          dragRef.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startScrollLeft: event.currentTarget.scrollLeft
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setIsDragging(true);
+        }}
+        onPointerMove={(event) => {
+          if (dragRef.current.pointerId !== event.pointerId) return;
+          event.currentTarget.scrollLeft = dragRef.current.startScrollLeft
+            - (event.clientX - dragRef.current.startX);
+        }}
+        onPointerUp={stopDragging}
+        onPointerCancel={stopDragging}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+          event.preventDefault();
+          event.currentTarget.scrollBy({
+            left: event.key === 'ArrowLeft' ? -240 : 240,
+            behavior: 'smooth'
+          });
+        }}
+      >
+        <svg
+          className="admin-line-chart"
+          viewBox={`0 0 ${width} ${height}`}
+          style={{ width: `${width}px`, height: `${height}px` }}
+          role="img"
+          aria-label={`${selectedDate} 全天每分钟上传人数折线图`}
+        >
+          <title>{selectedDate} 全天每分钟上传人数</title>
+          {yTicks.map((value) => {
+            const y = yFor(value);
+            return <line key={value} x1={0} x2={width} y1={y} y2={y} className="admin-chart-gridline" />;
+          })}
+          <path d={areaPath} className="admin-chart-area" />
+          <path d={linePath} className="admin-chart-line" />
+          {nonZeroPoints.map(({ point, index }) => (
+            <circle key={point.timestamp} cx={xFor(index)} cy={yFor(point.count)} r={3.2} className="admin-chart-point">
+              <title>{`${ADMIN_TIME_FORMATTER.format(new Date(point.timestamp))} · ${point.count} 人`}</title>
+            </circle>
+          ))}
+          {xTickIndices.map((index) => (
+            <g key={`${points[index]?.timestamp}-${index}`}>
+              <line x1={xFor(index)} x2={xFor(index)} y1={padding.top} y2={padding.top + plotHeight} className="admin-chart-time-gridline" />
+              <text
+                x={xFor(index)}
+                y={height - 14}
+                textAnchor={index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle'}
+                className="admin-chart-axis-label"
+              >
+                {ADMIN_TIME_FORMATTER.format(new Date(points[index].timestamp))}
+              </text>
+            </g>
+          ))}
+          <text x={width - padding.right} y={height - 1} textAnchor="end" className="admin-chart-axis-title">时间</text>
+        </svg>
+      </div>
+    </div>
+  );
 }
 
 function notifyArtworkLibraryChanged() {
@@ -140,9 +284,12 @@ function parseJsonField(value: string, field: string) {
   }
 }
 
-export function ArtworkAdminPage() {
+export function ArtworkAdminPage({ onLogout }: { onLogout?: () => void }) {
   const removeArtwork = useArtworkStore((store) => store.removeArtwork);
   const upsertBackendArtwork = useArtworkStore((store) => store.upsertBackendArtwork);
+  const [section, setSection] = useState<AdminSection>('overview');
+  const [overviewMetrics, setOverviewMetrics] = useState<SubmissionMetrics | null>(null);
+  const [overviewDate, setOverviewDate] = useState(initialOverviewDate);
   const [records, setRecords] = useState<BackendArtworkRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -156,8 +303,7 @@ export function ArtworkAdminPage() {
   const [draftName, setDraftName] = useState('');
   const [draftFeatures, setDraftFeatures] = useState('{}');
   const [draftGaussian, setDraftGaussian] = useState('{}');
-  const [rigParts, setRigParts] = useState<RigDownloadPart[]>([]);
-  const [rigPartsStatus, setRigPartsStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [previewRecordId, setPreviewRecordId] = useState<string | null>(null);
 
   const selected = useMemo(
     () => records.find((record) => record.id === selectedId) ?? records[0] ?? null,
@@ -185,6 +331,9 @@ export function ArtworkAdminPage() {
   );
   const selectedCount = selectedIds.size;
   const isDeletedView = status === 'deleted';
+  const availableOverviewDates = overviewMetrics?.daily?.availableDates ?? [];
+  const earliestOverviewDate = availableOverviewDates[availableOverviewDates.length - 1];
+  const latestOverviewDate = todayInAdminTimeZone();
   const allVisibleSelected = filteredRecords.length > 0
     && filteredRecords.every((record) => selectedIds.has(record.id));
 
@@ -211,7 +360,6 @@ export function ArtworkAdminPage() {
       setSelectedId((current) => current && nextRecords.some((record) => record.id === current)
         ? current
         : nextRecords[0]?.id ?? null);
-      setMessage(`已载入第 ${targetPage + 1} 页，共 ${result.total} 条${targetStatus === 'deleted' ? '已移除' : '当前'}作品记录`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '加载失败');
     } finally {
@@ -243,9 +391,42 @@ export function ArtworkAdminPage() {
     });
   };
 
+  const changeOverviewDate = (nextDate: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) return;
+    setOverviewDate(nextDate);
+    const url = new URL(window.location.href);
+    url.searchParams.set(ADMIN_DATE_QUERY_KEY, nextDate);
+    window.history.pushState({}, '', url);
+  };
+
   useEffect(() => {
     void loadRecords(page, status, sortByLevel);
   }, [page, status, sortByLevel]);
+
+  useEffect(() => {
+    const handlePopState = () => setOverviewDate(initialOverviewDate());
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (section !== 'overview') return;
+    let cancelled = false;
+    const loadOverviewMetrics = async () => {
+      try {
+        const nextMetrics = await fetchSubmissionMetrics(24, 1, overviewDate);
+        if (!cancelled) setOverviewMetrics(nextMetrics);
+      } catch {
+        if (!cancelled) setOverviewMetrics(null);
+      }
+    };
+    void loadOverviewMetrics();
+    const timer = window.setInterval(() => void loadOverviewMetrics(), 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [overviewDate, section]);
 
   useEffect(() => {
     if (!selected) {
@@ -258,29 +439,6 @@ export function ArtworkAdminPage() {
     setDraftFeatures(prettyJson(selected.features));
     setDraftGaussian(prettyJson(selected.gaussianModel));
   }, [selected]);
-
-  useEffect(() => {
-    const rigUrl = selected?.gaussianModel?.rigUrl;
-    let cancelled = false;
-    setRigParts([]);
-    if (!rigUrl) {
-      setRigPartsStatus('idle');
-      return;
-    }
-    setRigPartsStatus('loading');
-    void loadRigDownloadParts(rigUrl)
-      .then((parts) => {
-        if (cancelled) return;
-        setRigParts(parts);
-        setRigPartsStatus('ready');
-      })
-      .catch(() => {
-        if (!cancelled) setRigPartsStatus('error');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selected?.gaussianModel?.rigUrl]);
 
   const saveSelected = async () => {
     if (!selected) return;
@@ -450,40 +608,122 @@ export function ArtworkAdminPage() {
 
   return (
     <main className="admin-shell">
-      <header className="admin-topbar">
-        <div className="admin-brand">
-          <Database size={22} />
-          <div>
-            <h1>作品数据管理</h1>
-            <span>SQLite / TripoSplat Library</span>
-          </div>
+      <aside className="admin-sidebar">
+        <div className="admin-sidebar-brand">
+          <span><Database size={22} /></span>
+          <div><strong>星河管理中心</strong><small>Cosmos Console</small></div>
         </div>
-        <nav className="admin-actions">
-          <a className="admin-icon-button" href="/" title="返回星河">
-            <ArrowLeft size={18} />
-          </a>
-          <button className="admin-icon-button" type="button" onClick={() => loadRecords(page)} disabled={isLoading} title="刷新">
-            <RefreshCw size={18} />
-          </button>
+        <nav className="admin-sidebar-nav" aria-label="后台栏目">
+          {ADMIN_SECTIONS.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button key={item.id} type="button" className={section === item.id ? 'is-active' : ''} onClick={() => setSection(item.id)}>
+                <Icon size={19} />
+                <span><strong>{item.label}</strong><small>{item.description}</small></span>
+              </button>
+            );
+          })}
         </nav>
-      </header>
+        <a className="admin-sidebar-back" href="/"><ArrowLeft size={17} />返回星河</a>
+      </aside>
 
-      <section className="admin-metrics" aria-label="数据概览">
-        <div>
-          <span>{isDeletedView ? '已移除作品' : '当前作品'}</span>
-          <strong>{total}</strong>
-        </div>
-        <div>
-          <span>本页 Splat</span>
-          <strong>{records.filter((record) => record.splatUrl || record.gaussianModel?.splatUrl).length}</strong>
-        </div>
-        <div>
-          <span>本页已识别动作</span>
-          <strong>{records.filter((record) => record.features?.motionPreset).length}</strong>
-        </div>
-      </section>
+      <div className="admin-main">
+        <header className="admin-topbar">
+          <div className="admin-brand">
+            <div>
+              <h1>{ADMIN_SECTIONS.find((item) => item.id === section)?.label}</h1>
+              <span>{ADMIN_SECTIONS.find((item) => item.id === section)?.description}</span>
+            </div>
+          </div>
+          <nav className="admin-actions">
+            <span className="admin-live-indicator"><i />管理服务</span>
+            <button className="admin-icon-button" type="button" onClick={() => loadRecords(page)} disabled={isLoading} title="刷新作品数据">
+              <RefreshCw size={18} />
+            </button>
+            <button className="admin-secondary-button admin-logout-button" type="button" onClick={onLogout} title="退出后台登录">
+              <LogOut size={16} />退出
+            </button>
+          </nav>
+        </header>
 
-      <section className="admin-workspace">
+      {section === 'overview' ? (
+        <section className="admin-overview" aria-label="后台控制中心">
+          <div className="admin-overview-title">
+            <h2>星河运营台</h2>
+          </div>
+          <div className="admin-overview-metrics" aria-label="用户上传统计">
+            <div>
+              <span>用户上传模型总数</span>
+              <strong>{overviewMetrics?.summary.totalUploadedModels?.toLocaleString() ?? '—'}</strong>
+            </div>
+            <div>
+              <span>当前每分钟上传人数</span>
+              <strong>{overviewMetrics?.summary.usersLastMinute?.toLocaleString() ?? '—'}</strong>
+            </div>
+          </div>
+          <section className="admin-overview-chart-card" aria-label="每分钟上传人数趋势">
+            <div className="admin-overview-chart-head">
+              <div>
+                <h3>全天每分钟上传人数</h3>
+                <small>
+                  {overviewMetrics?.daily
+                    ? `${overviewMetrics.daily.totalUploads} 次上传 · ${overviewMetrics.daily.uniqueUsers} 位用户 · 数据永久保存在服务器`
+                    : '正在读取全天历史数据…'}
+                </small>
+              </div>
+              <div className="admin-overview-chart-controls">
+                <button
+                  type="button"
+                  aria-label="查看前一天"
+                  title="前一天"
+                  disabled={Boolean(earliestOverviewDate && overviewDate <= earliestOverviewDate)}
+                  onClick={() => changeOverviewDate(shiftDateKey(overviewDate, -1))}
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <label>
+                  <CalendarDays size={16} aria-hidden="true" />
+                  <span className="sr-only">选择统计日期</span>
+                  <input
+                    type="date"
+                    value={overviewDate}
+                    min={earliestOverviewDate}
+                    max={latestOverviewDate}
+                    list="admin-overview-available-dates"
+                    onChange={(event) => changeOverviewDate(event.target.value)}
+                  />
+                </label>
+                <datalist id="admin-overview-available-dates">
+                  {availableOverviewDates.map((date) => <option key={date} value={date} />)}
+                </datalist>
+                <button
+                  type="button"
+                  aria-label="查看后一天"
+                  title="后一天"
+                  disabled={overviewDate >= latestOverviewDate}
+                  onClick={() => changeOverviewDate(shiftDateKey(overviewDate, 1))}
+                >
+                  <ChevronRight size={16} />
+                </button>
+                {overviewDate !== latestOverviewDate ? (
+                  <button type="button" className="admin-chart-today" onClick={() => changeOverviewDate(latestOverviewDate)}>
+                    今天
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <MinuteUploadChart points={overviewMetrics?.minuteUsers ?? []} selectedDate={overviewDate} />
+            <p className="admin-chart-drag-hint">拖动图表或使用底部滚动条查看全天 00:00–23:59；键盘可用左右方向键。</p>
+          </section>
+        </section>
+      ) : null}
+
+      {section === 'exhibition' ? <ExhibitionModelAdminPanel /> : null}
+      {section === 'designer' ? <DesignerReviewQueue /> : null}
+      {section === 'submissions' ? <SubmissionMetricsPanel /> : null}
+      {section === 'system' ? <AdminSystemPanel /> : null}
+
+      {section === 'artworks' ? <section className="admin-workspace">
         <aside className="admin-list-pane">
           <div className="admin-list-tools">
             <label className="admin-search">
@@ -621,8 +861,18 @@ export function ArtworkAdminPage() {
                   <h2>{selected.name ?? selected.id}</h2>
                 </div>
                 <div className="admin-detail-actions">
+                  {(selected.splatUrl ?? selected.gaussianModel?.splatUrl) ? (
+                    <button
+                      className="admin-secondary-button"
+                      type="button"
+                      title="预览 3D 模型"
+                      onClick={() => setPreviewRecordId(selected.id)}
+                    >
+                      <Eye size={17} />预览模型
+                    </button>
+                  ) : null}
                   {selected.splatUrl ? (
-                    <a className="admin-icon-button" href={selected.splatUrl} target="_blank" rel="noreferrer" title="打开 .splat">
+                    <a className="admin-icon-button" href={selected.splatUrl} target="_blank" rel="noreferrer" title="打开模型">
                       <ExternalLink size={18} />
                     </a>
                   ) : null}
@@ -701,27 +951,14 @@ export function ArtworkAdminPage() {
               <section className="admin-model-downloads" aria-label="模型文件下载">
                 <div className="admin-model-downloads__head">
                   <h3>模型文件</h3>
-                  {selected.gaussianModel?.rigUrl ? (
-                    <a href={selected.gaussianModel.rigUrl} target="_blank" rel="noreferrer">rig.json</a>
-                  ) : null}
                 </div>
                 <div className="admin-model-downloads__list">
                   {(selected.splatUrl ?? selected.gaussianModel?.splatUrl) ? (
                     <a href={selected.splatUrl ?? selected.gaussianModel?.splatUrl} target="_blank" rel="noreferrer">
                       <span><ExternalLink size={15} />主模型</span>
-                      <code>model.splat</code>
+                      <code>3D 模型文件</code>
                     </a>
                   ) : null}
-                  {rigParts.map((part) => (
-                    <a key={part.id} href={part.url} target="_blank" rel="noreferrer">
-                      <span><ExternalLink size={15} />{partDisplayName(part.id)}</span>
-                      <code>{part.url.split('/').pop()} · {part.gaussianCount?.toLocaleString() ?? '-'} Gaussians</code>
-                    </a>
-                  ))}
-                  {rigPartsStatus === 'loading' ? <p>正在载入 CPU 部位映射…</p> : null}
-                  {rigPartsStatus === 'ready' && rigParts.length === 0 ? <p>该模型没有可用的部位映射资源</p> : null}
-                  {rigPartsStatus === 'error' ? <p className="is-error">部位映射清单加载失败，完整主模型仍可正常下载</p> : null}
-                  {rigPartsStatus === 'idle' ? <p>该模型尚未生成 CPU 部位映射</p> : null}
                 </div>
               </section>
 
@@ -740,9 +977,20 @@ export function ArtworkAdminPage() {
             <div className="admin-empty">暂无作品记录</div>
           )}
         </section>
-      </section>
+      </section> : null}
 
       {message ? <div className="admin-toast">{message}</div> : null}
+      {previewRecordId && selected?.id === previewRecordId && (selected.splatUrl ?? selected.gaussianModel?.splatUrl) ? (
+        <Suspense fallback={null}>
+          <AdminArtworkPreviewModal
+            name={selected.name ?? selected.id}
+            splatUrl={(selected.splatUrl ?? selected.gaussianModel?.splatUrl)!}
+            features={selected.features}
+            onClose={() => setPreviewRecordId(null)}
+          />
+        </Suspense>
+      ) : null}
+      </div>
     </main>
   );
 }

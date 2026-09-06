@@ -14,7 +14,6 @@ import {
   Maximize2,
   Minimize2,
   PenTool,
-  QrCode,
   RefreshCw,
   Rotate3D,
   ShieldCheck,
@@ -40,9 +39,17 @@ import {
   type CosmicDrawingBoardHandle
 } from '../components/mobile/CosmicDrawingBoard';
 import type { MobileSplatResultViewerHandle } from '../components/mobile/MobileSplatResultViewer';
-import { fetchBackendArtworkById } from '../lib/artwork/backendArtworkLibrary';
 import {
+  fetchSubmissionEligibility,
+  type SubmissionEligibilityResult
+} from '../lib/ai/generateGaussianArtworkModel';
+import { fetchBackendArtworkById } from '../lib/artwork/backendArtworkLibrary';
+import { fetchSubmitTestEntrySetting } from '../lib/artwork/systemSettings';
+import {
+  clearAnonymousLastArtwork,
+  readAnonymousLastArtworkId,
   readMobileGenerationHistory,
+  rememberAnonymousLastArtwork,
   rememberMobileGeneration,
   syncMobileGenerationHistoryNames,
   type MobileGenerationHistoryEntry
@@ -74,13 +81,62 @@ const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const ACCEPTED_IMAGE_EXTENSION = /\.(?:jpe?g|png|webp)$/i;
 const DRAWING_DRAFT_STORAGE_KEY = 'ai-sketch-cosmos:submit-drawing-draft';
+const CREATION_FLOW_STORAGE_KEY_PREFIX = 'ai-sketch-cosmos:submit-creation-flow:';
+const SUBMIT_TEST_ACCESS_SESSION_KEY = 'ai-sketch-cosmos:submit-test-access';
 const MAX_ARTWORK_NAME_LENGTH = 18;
+const SUBMIT_TEST_BOOKING_CODE = '900001';
 const HISTORY_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
   month: 'numeric',
   day: 'numeric',
   hour: '2-digit',
   minute: '2-digit'
 });
+
+function createSubmitTestReservation(): { user: DadakidoUser; booking: CourseBooking } {
+  const checkedInAt = new Date().toISOString();
+  const registrationChannel = {
+    source: 'mini_program',
+    id: 'submit-test-reservation',
+    name: 'DadaKido 微信小程序',
+    remark: '后台测试入口',
+    attributedAt: checkedInAt
+  };
+  const userData = {
+    id: 'submit-test-user',
+    nickname: '测试预约用户',
+    mobile: '13800000000',
+    registrationChannel
+  };
+  const bookingData = {
+    id: 'submit-test-booking',
+    code: SUBMIT_TEST_BOOKING_CODE,
+    projectId: 'cosmos-test-project',
+    slotId: 'cosmos-test-slot',
+    slotLabel: '今日全天场（测试预约）',
+    status: 'checked_in',
+    checkedInAt,
+    registrationChannel
+  };
+  return {
+    user: {
+      id: userData.id,
+      name: userData.nickname,
+      mobile: userData.mobile,
+      registrationChannel,
+      raw: { code: 0, data: userData, testMode: true }
+    },
+    booking: {
+      id: bookingData.id,
+      code: bookingData.code,
+      projectId: bookingData.projectId,
+      slotId: bookingData.slotId,
+      slotLabel: bookingData.slotLabel,
+      status: bookingData.status,
+      registrationChannel,
+      raw: { code: 0, data: { booking: bookingData }, testMode: true }
+    }
+  };
+}
 
 function readDrawingDraft() {
   if (typeof window === 'undefined') return null;
@@ -91,8 +147,47 @@ function readDrawingDraft() {
   }
 }
 
+function readCreationFlowStarted(code?: string) {
+  if (typeof window === 'undefined' || !code) return false;
+  try {
+    return window.sessionStorage.getItem(`${CREATION_FLOW_STORAGE_KEY_PREFIX}${code}`) === 'started';
+  } catch {
+    return false;
+  }
+}
+
+function rememberCreationFlowStarted(code: string | undefined, started: boolean) {
+  if (!code) return;
+  try {
+    const key = `${CREATION_FLOW_STORAGE_KEY_PREFIX}${code}`;
+    if (started) window.sessionStorage.setItem(key, 'started');
+    else window.sessionStorage.removeItem(key);
+  } catch {
+    // Session restoration is optional when a webview blocks session storage.
+  }
+}
+
+function readSubmitTestAccess() {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.sessionStorage.getItem(SUBMIT_TEST_ACCESS_SESSION_KEY) === 'enabled';
+  } catch {
+    return false;
+  }
+}
+
+function rememberSubmitTestAccess(enabled: boolean) {
+  try {
+    if (enabled) window.sessionStorage.setItem(SUBMIT_TEST_ACCESS_SESSION_KEY, 'enabled');
+    else window.sessionStorage.removeItem(SUBMIT_TEST_ACCESS_SESSION_KEY);
+  } catch {
+    // The test flow still works until the page is refreshed when storage is unavailable.
+  }
+}
+
 type CreationMode = 'upload' | 'drawing';
 type SubmitAccessStatus = 'loading' | 'ready' | 'error';
+type SubmissionEligibilityStatus = 'checking' | 'eligible' | 'used';
 type ArtworkNamePrompt = {
   generateAfterConfirm: boolean;
 };
@@ -234,6 +329,7 @@ type ArtworkNameConfirmationDialogProps = {
   value: string;
   generateAfterConfirm: boolean;
   usesReservationNickname: boolean;
+  requiresName?: boolean;
   onChange: (value: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -243,6 +339,7 @@ function ArtworkNameConfirmationDialog({
   value,
   generateAfterConfirm,
   usesReservationNickname,
+  requiresName = false,
   onChange,
   onCancel,
   onConfirm
@@ -260,9 +357,11 @@ function ArtworkNameConfirmationDialog({
         <div className="mobile-artwork-name-dialog__heading">
           <h2 id="mobile-artwork-name-dialog-title">确认作品名</h2>
           <p>
-            {usesReservationNickname
-              ? '已将预约昵称填入作品名，你可以直接使用，也可以在下面修改。明显敏感词会自动替换为 *。'
-              : '请确认这件作品的名字，也可以修改；留空将自动生成 dada+编号。明显敏感词会自动替换为 *。'}
+            {requiresName
+              ? '请确认作品名称，可直接使用“小小造物家”，也可以修改。'
+              : usesReservationNickname
+              ? '已将预约昵称填入作品名，你可以直接使用，也可以在下面修改。'
+              : '请确认这件作品的名字，也可以修改；留空将自动生成 dada+编号。'}
           </p>
         </div>
         <label className="mobile-artwork-name-dialog__field">
@@ -271,20 +370,25 @@ function ArtworkNameConfirmationDialog({
             type="text"
             value={value}
             maxLength={MAX_ARTWORK_NAME_LENGTH}
-            placeholder="不填则为 dada+编号"
+            placeholder={requiresName ? '请输入作品名称' : '不填则为 dada+编号'}
             aria-label="确认或修改作品名"
             autoComplete="off"
             enterKeyHint="done"
             onChange={(event) => onChange(maskSensitiveText(event.target.value))}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.nativeEvent.isComposing) onConfirm();
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing && (!requiresName || fitArtworkName(value))) onConfirm();
             }}
           />
           <small>{Array.from(value).length}/{MAX_ARTWORK_NAME_LENGTH}</small>
         </label>
         <div className="mobile-artwork-name-dialog__actions">
           <button type="button" className="mobile-artwork-name-dialog__cancel" onClick={onCancel}>返回修改</button>
-          <button type="button" className="mobile-artwork-name-dialog__confirm" onClick={onConfirm}>
+          <button
+            type="button"
+            className="mobile-artwork-name-dialog__confirm"
+            disabled={requiresName && !fitArtworkName(value)}
+            onClick={onConfirm}
+          >
             <Check size={17} />
             {generateAfterConfirm ? '确认并生成 3D' : '使用这个名字'}
           </button>
@@ -419,6 +523,14 @@ function bookingIsCheckedIn(booking: CourseBooking | null) {
   return ['checked_in', 'checked-in', 'checkedin', 'consumed', 'completed', 'used'].includes(status);
 }
 
+function registrationChannelIsGuest(channel: CourseBooking['registrationChannel']) {
+  return channel?.source === 'channel' && channel.remark === '';
+}
+
+function bookingIsChannelGuest(booking: CourseBooking | null) {
+  return registrationChannelIsGuest(booking?.registrationChannel);
+}
+
 function bookingStatusLabel(booking: CourseBooking | null) {
   if (!booking) return '游客体验';
   if (bookingIsCheckedIn(booking)) return '已完成签到';
@@ -431,23 +543,63 @@ function mergeCheckedInBooking(booking: CourseBooking, checkedInBooking: CourseB
     status: checkedInBooking.status,
     qrCodeDataUrl: checkedInBooking.qrCodeDataUrl ?? booking.qrCodeDataUrl,
     slotLabel: checkedInBooking.slotLabel ?? booking.slotLabel,
-    raw: checkedInBooking.raw
+    registrationChannel: checkedInBooking.registrationChannel ?? booking.registrationChannel,
+    raw: { ...booking.raw, ...checkedInBooking.raw }
+  };
+}
+
+function buildSubmissionUserContext(
+  currentUser: DadakidoUser | null,
+  activeBooking: CourseBooking | null,
+  launchContext: SubmitLaunchContext | null
+): Record<string, unknown> {
+  return {
+    user: currentUser ? {
+      id: currentUser.id,
+      name: currentUser.name,
+      avatarUrl: currentUser.avatarUrl,
+      mobile: currentUser.mobile,
+      raw: currentUser.raw
+    } : undefined,
+    booking: activeBooking ? {
+      id: activeBooking.id,
+      code: activeBooking.code ?? launchContext?.code,
+      projectId: activeBooking.projectId,
+      slotId: activeBooking.slotId,
+      slotLabel: activeBooking.slotLabel,
+      status: activeBooking.status,
+      raw: activeBooking.raw
+    } : undefined
   };
 }
 
 type MobileUploadPageProps = {
   launchContext: SubmitLaunchContext | null;
+  anonymousGuest?: boolean;
 };
 
-export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
+export function MobileUploadPage({ launchContext, anonymousGuest = false }: MobileUploadPageProps) {
   const isWeChat = isWeChatBrowser();
-  const [accessStatus, setAccessStatus] = useState<SubmitAccessStatus>('loading');
+  const [restoredTestReservation] = useState(() => (
+    !anonymousGuest && readSubmitTestAccess() ? createSubmitTestReservation() : null
+  ));
+  const [accessStatus, setAccessStatus] = useState<SubmitAccessStatus>(
+    anonymousGuest || restoredTestReservation ? 'ready' : 'loading'
+  );
   const [accessError, setAccessError] = useState('');
   const [accessReloadKey, setAccessReloadKey] = useState(0);
-  const [testAccessEnabled, setTestAccessEnabled] = useState(false);
+  const [testAccessEnabled, setTestAccessEnabled] = useState(Boolean(restoredTestReservation));
+  const [testEntryVisible, setTestEntryVisible] = useState(false);
   const [copiedNotice, setCopiedNotice] = useState(false);
-  const [currentUser, setCurrentUser] = useState<DadakidoUser | null>(null);
-  const [activeBooking, setActiveBooking] = useState<CourseBooking | null>(null);
+  const [currentUser, setCurrentUser] = useState<DadakidoUser | null>(restoredTestReservation?.user ?? null);
+  const [activeBooking, setActiveBooking] = useState<CourseBooking | null>(restoredTestReservation?.booking ?? null);
+  const [channelGuest, setChannelGuest] = useState(false);
+  const [submissionEligibility, setSubmissionEligibility] = useState<SubmissionEligibilityStatus>(anonymousGuest ? 'eligible' : 'checking');
+  const [existingSubmission, setExistingSubmission] = useState<SubmissionEligibilityResult | null>(null);
+  const [eligibilityReloadKey, setEligibilityReloadKey] = useState(0);
+  const [showCreationFlow, setShowCreationFlow] = useState(
+    () => anonymousGuest || readCreationFlowStarted(launchContext?.code ?? restoredTestReservation?.booking.code)
+  );
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const drawingBoardRef = useRef<CosmicDrawingBoardHandle>(null);
@@ -473,7 +625,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
   });
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<PixelCrop | null>(null);
   const [isApplyingCrop, setIsApplyingCrop] = useState(false);
-  const [drawingDraft, setDrawingDraft] = useState<string | null>(readDrawingDraft);
+  const [drawingDraft, setDrawingDraft] = useState<string | null>(() => anonymousGuest ? null : readDrawingDraft());
   const [hasDrawing, setHasDrawing] = useState(Boolean(drawingDraft));
   const [submitting, setSubmitting] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -488,25 +640,66 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
     copied?: boolean;
   } | null>(null);
   const [showGenerationProgress, setShowGenerationProgress] = useState(false);
-  const [historyEntries, setHistoryEntries] = useState(readMobileGenerationHistory);
+  const [historyEntries, setHistoryEntries] = useState(() => anonymousGuest ? [] : readMobileGenerationHistory());
   const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [artworkName, setArtworkName] = useState('');
+  const [artworkName, setArtworkName] = useState(() => anonymousGuest ? '小小造物家' : '');
   const [artworkNameDraft, setArtworkNameDraft] = useState('');
   const [artworkNamePrompt, setArtworkNamePrompt] = useState<ArtworkNamePrompt | null>(null);
   const [artworkNameConfirmed, setArtworkNameConfirmed] = useState(false);
+  const [anonymousLastArtworkId, setAnonymousLastArtworkId] = useState(() => (
+    anonymousGuest ? readAnonymousLastArtworkId() : null
+  ));
+  const [anonymousRestoreStatus, setAnonymousRestoreStatus] = useState<'idle' | 'loading' | 'error'>(() => (
+    anonymousLastArtworkId ? 'loading' : 'idle'
+  ));
+  const [anonymousRestoreReloadKey, setAnonymousRestoreReloadKey] = useState(0);
   const status = useSketchStore((state) => state.status);
   const message = useSketchStore((state) => state.message);
-  const setProcessing = useSketchStore((state) => state.setProcessing);
   const setError = useSketchStore((state) => state.setError);
   const reservationArtworkName = activeBooking ? fitArtworkName(currentUser?.name ?? '') : '';
 
   useEffect(() => {
+    if (anonymousGuest) return undefined;
+    let cancelled = false;
+    const syncTestEntry = () => {
+      void fetchSubmitTestEntrySetting()
+        .then((setting) => {
+          if (!cancelled) setTestEntryVisible(setting.enabled);
+        })
+        .catch(() => {
+          if (!cancelled) setTestEntryVisible(false);
+        });
+    };
+    syncTestEntry();
+    const intervalId = window.setInterval(syncTestEntry, 15_000);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') syncTestEntry();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [anonymousGuest]);
+
+  useEffect(() => {
+    if (anonymousGuest) {
+      setAccessStatus('ready');
+      setAccessError('');
+      setCurrentUser(null);
+      setActiveBooking(null);
+      setChannelGuest(false);
+      setShowCreationFlow(true);
+      return undefined;
+    }
     if (testAccessEnabled) return undefined;
     let cancelled = false;
     const loadSubmitAccess = async () => {
       setAccessStatus('loading');
       setAccessError('');
+      setChannelGuest(false);
       if (!launchContext) {
         setAccessStatus('error');
         setAccessError('缺少用户 Token 或六位数字 code，请从微信小程序重新进入。');
@@ -528,11 +721,45 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
           fetchVisitBookingByCode(launchContext.token, launchContext.code)
         ]);
         if (cancelled) return;
+        const queriedChannelGuest = bookingIsChannelGuest(queriedBooking);
+        const queriedChannel = queriedBooking?.registrationChannel;
+        console.info('[submit-access] booking verified', {
+          launchCode: launchContext.code,
+          responseCode: queriedBooking?.code,
+          channelSource: queriedChannel?.source ?? 'missing',
+          channelRemark: queriedChannel?.remark === ''
+            ? 'empty-string'
+            : queriedChannel?.remark == null ? 'missing' : 'non-empty',
+          channelGuest: queriedChannelGuest
+        });
+        if (!queriedBooking) {
+          setCurrentUser(user);
+          setActiveBooking(null);
+          setChannelGuest(false);
+          setAccessStatus('error');
+          setAccessError('预约已结束');
+          return;
+        }
+        const booking = queriedBooking;
+        const checkedInBooking = bookingIsCheckedIn(booking)
+          ? booking
+          : await checkInVisitBookingByCode(launchContext.token, launchContext.code)
+            .then((checkedIn) => mergeCheckedInBooking(booking, checkedIn));
+        if (cancelled) return;
+        const freshChannelGuest = bookingIsChannelGuest(checkedInBooking);
+        console.info('[submit-access] check-in completed', {
+          launchCode: launchContext.code,
+          responseCode: checkedInBooking.code,
+          channelGuest: freshChannelGuest
+        });
         setCurrentUser(user);
-        setActiveBooking(queriedBooking);
+        setActiveBooking(checkedInBooking);
+        setChannelGuest(freshChannelGuest);
+        setShowCreationFlow(readCreationFlowStarted(launchContext.code));
         setAccessStatus('ready');
       } catch (error) {
         if (cancelled) return;
+        setChannelGuest(false);
         setAccessStatus('error');
         setAccessError(error instanceof Error ? error.message : '用户信息读取失败，请稍后重试。');
       }
@@ -541,7 +768,80 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [accessReloadKey, launchContext, testAccessEnabled]);
+  }, [accessReloadKey, anonymousGuest, launchContext, testAccessEnabled]);
+
+  useEffect(() => {
+    if (!anonymousGuest || !anonymousLastArtworkId) {
+      setAnonymousRestoreStatus('idle');
+      return undefined;
+    }
+    let cancelled = false;
+    setAnonymousRestoreStatus('loading');
+    void fetchBackendArtworkById(anonymousLastArtworkId)
+      .then((record) => {
+        if (cancelled) return;
+        useArtworkStore.getState().upsertBackendArtwork(record);
+        const restoredArtwork = useArtworkStore.getState().artworks.find((artwork) => (
+          artwork.id === anonymousLastArtworkId
+          || artwork.gaussianModel?.sourceArtworkId === anonymousLastArtworkId
+        ));
+        if (!restoredArtwork?.gaussianModel?.splatUrl) {
+          throw new Error('上次生成的模型暂时不可用。');
+        }
+        if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = '';
+        setPreviewUrl(record.sourceUrl ?? restoredArtwork.url);
+        setGenerationPreview(restoredArtwork.gaussianModel);
+        setResult(restoredArtwork);
+        setViewerReady(false);
+        setShowGenerationProgress(false);
+        setAnonymousRestoreStatus('idle');
+        useSketchStore.setState({ status: 'ready', message: '已恢复上次生成完成的作品。' });
+        window.scrollTo({ top: 0, behavior: 'auto' });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.warn('[guest-submit] failed to restore the last artwork:', error);
+        setAnonymousRestoreStatus('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [anonymousGuest, anonymousLastArtworkId, anonymousRestoreReloadKey]);
+
+  useEffect(() => {
+    if (anonymousGuest) {
+      setSubmissionEligibility('eligible');
+      setExistingSubmission(null);
+      return undefined;
+    }
+    if (accessStatus !== 'ready') {
+      setSubmissionEligibility('checking');
+      setExistingSubmission(null);
+      return undefined;
+    }
+    if (testAccessEnabled || !currentUser || !activeBooking) {
+      setSubmissionEligibility('eligible');
+      setExistingSubmission(null);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setSubmissionEligibility('checking');
+    void fetchSubmissionEligibility(
+      buildSubmissionUserContext(currentUser, activeBooking, launchContext),
+      controller.signal
+    )
+      .then((eligibility) => {
+        setSubmissionEligibility(eligibility.eligible ? 'eligible' : 'used');
+        setExistingSubmission(eligibility.eligible ? null : eligibility);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        console.warn('[submit-access] eligibility preflight failed; backend enforcement remains active', error);
+        setSubmissionEligibility('eligible');
+      });
+    return () => controller.abort();
+  }, [accessStatus, activeBooking, anonymousGuest, currentUser, eligibilityReloadKey, launchContext, testAccessEnabled]);
 
   useEffect(() => {
     if (!reservationArtworkName) return;
@@ -551,6 +851,10 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
   useEffect(() => {
     if (accessStatus !== 'ready') {
       document.title = '活动签到';
+      return;
+    }
+    if (!showCreationFlow) {
+      document.title = '签到成功';
       return;
     }
     if (historyOpen) {
@@ -574,7 +878,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
       return;
     }
     document.title = '星河创作';
-  }, [accessStatus, cropSourceFile, generationPreview?.previewUrl, historyOpen, isModelFullscreen, result, submitting]);
+  }, [accessStatus, cropSourceFile, generationPreview?.previewUrl, historyOpen, isModelFullscreen, result, showCreationFlow, submitting]);
 
   useEffect(() => {
     const syncFullscreenState = () => {
@@ -777,7 +1081,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
       setUploadSourceFile(cropSourceFile);
       installPreviewFile(croppedFile, '裁剪完成，确认后即可生成你的 3D 星河生命。');
       closeCropEditor();
-      openArtworkNamePrompt(false);
+      if (!anonymousGuest) openArtworkNamePrompt(false);
     } catch (error) {
       setIsApplyingCrop(false);
       setError(error instanceof Error ? error.message : '图片裁剪失败，请重新尝试。');
@@ -816,6 +1120,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
     setHasDrawing(nextHasDrawing);
     setDrawingDraft(nextDraft);
     setArtworkNameConfirmed(false);
+    if (anonymousGuest) return;
     try {
       if (nextDraft) window.sessionStorage.setItem(DRAWING_DRAFT_STORAGE_KEY, nextDraft);
       else window.sessionStorage.removeItem(DRAWING_DRAFT_STORAGE_KEY);
@@ -840,18 +1145,18 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
         }
       }
       if (!submissionFile) return;
+      if (anonymousGuest) {
+        const extension = submissionFile.type === 'image/png'
+          ? 'png'
+          : submissionFile.type === 'image/webp' ? 'webp' : 'jpg';
+        submissionFile = new File(
+          [submissionFile],
+          `anonymous-artwork.${extension}`,
+          { type: submissionFile.type, lastModified: Date.now() }
+        );
+      }
 
       setSubmitting(true);
-      if (activeBooking && !bookingIsCheckedIn(activeBooking)) {
-        if (!launchContext) throw new Error('登录信息已失效，请返回微信小程序重新进入。');
-        setProcessing('作品已准备好，正在完成预约签到…');
-        const checkedInBooking = await checkInVisitBookingByCode(
-          launchContext.token,
-          launchContext.code
-        );
-        if (activeSubmissionRef.current?.id !== submissionId) return;
-        setActiveBooking(mergeCheckedInBooking(activeBooking, checkedInBooking));
-      }
       setShowGenerationProgress(true);
       setResult(null);
       setGenerationPreview(null);
@@ -860,6 +1165,10 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
         allowLocalFallback: false,
         name: fitArtworkName(confirmedArtworkName) || undefined,
         submissionId,
+        userContext: anonymousGuest
+          ? undefined
+          : buildSubmissionUserContext(currentUser, activeBooking, launchContext),
+        anonymous: anonymousGuest,
         signal: controller.signal,
         onGaussianProgress: (progress) => {
           if (activeSubmissionRef.current?.id !== submissionId) return;
@@ -876,9 +1185,13 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
       if (activeSubmissionRef.current?.id !== submissionId) return;
       if (mode === 'drawing') handleDrawingChange(false, null);
       setResult(generatedArtwork);
-      setHistoryEntries(rememberMobileGeneration(generatedArtwork));
+      if (anonymousGuest) rememberAnonymousLastArtwork(generatedArtwork);
+      else setHistoryEntries(rememberMobileGeneration(generatedArtwork));
     } catch (error) {
       if (controller.signal.aborted || activeSubmissionRef.current?.id !== submissionId) return;
+      if (error instanceof Error && error.message.includes('一次创作机会')) {
+        setSubmissionEligibility('used');
+      }
       if (isArtworkModerationRejection(error)) {
         if (mode === 'drawing') handleDrawingChange(false, null);
         discardUpload(true);
@@ -901,6 +1214,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
   const confirmArtworkName = () => {
     if (!artworkNamePrompt) return;
     const confirmedArtworkName = fitArtworkName(artworkNameDraft);
+    if (anonymousGuest && !confirmedArtworkName) return;
     const generateAfterConfirm = artworkNamePrompt.generateAfterConfirm;
     setArtworkName(confirmedArtworkName);
     setArtworkNameConfirmed(true);
@@ -916,7 +1230,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
     setGenerationPreview(null);
     setViewerReady(false);
     setShowGenerationProgress(false);
-    setArtworkName(reservationArtworkName);
+    setArtworkName(anonymousGuest ? '小小造物家' : reservationArtworkName);
     setArtworkNameDraft('');
     setArtworkNamePrompt(null);
     setArtworkNameConfirmed(false);
@@ -945,12 +1259,16 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
         throw new Error('历史模型暂时不可用。');
       }
 
+      const currentModelUrl = result?.gaussianModel?.splatUrl;
+      const restoredModelUrl = restoredArtwork.gaussianModel.splatUrl;
+      const canReuseReadyViewer = Boolean(currentModelUrl && currentModelUrl === restoredModelUrl);
+
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
       previewUrlRef.current = '';
       setPreviewUrl(record.sourceUrl ?? restoredArtwork.url);
       setGenerationPreview(restoredArtwork.gaussianModel);
       setResult(restoredArtwork);
-      setViewerReady(false);
+      setViewerReady(canReuseReadyViewer);
       setShowGenerationProgress(false);
       setHistoryOpen(false);
       useSketchStore.setState({ status: 'ready', message: '历史作品已打开，可以继续查看和联动大屏。' });
@@ -991,45 +1309,74 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
   };
 
   const enterSubmitTestMode = () => {
+    const testReservation = createSubmitTestReservation();
+    rememberSubmitTestAccess(true);
+    rememberCreationFlowStarted(testReservation.booking.code, false);
     setTestAccessEnabled(true);
     setAccessError('');
-    setCurrentUser({
-      id: 'submit-dev-user',
-      name: '测试创作者',
-      raw: { testMode: true }
-    });
-    setActiveBooking({
-      id: 'submit-dev-booking',
-      code: '000000',
-      status: 'checked_in',
-      slotLabel: '开发测试模式',
-      raw: { testMode: true }
-    });
+    setCurrentUser(testReservation.user);
+    setActiveBooking(testReservation.booking);
+    setChannelGuest(false);
+    setShowCreationFlow(false);
     setAccessStatus('ready');
-    useSketchStore.setState({ status: 'idle', message: '开发测试模式已开启，已跳过身份与预约检测。' });
+    useSketchStore.setState({ status: 'idle', message: '测试预约用户已完成身份验证与签到，可开始完整创作流程。' });
+  };
+
+  const setCreationFlowVisible = (visible: boolean) => {
+    rememberCreationFlowStarted(launchContext?.code ?? activeBooking?.code, visible);
+    setShowCreationFlow(visible);
   };
 
   if (accessStatus !== 'ready') {
     const failed = accessStatus === 'error';
+    const externalBrowserWithoutContext = failed && !isWeChat && !launchContext;
+    const weChatWithoutReservation = failed
+      && isWeChat
+      && (!launchContext || accessError === '预约已结束');
+    const accessTitle = externalBrowserWithoutContext
+      ? '请从 DadaKido 微信小程序进入'
+      : weChatWithoutReservation
+        ? '预约已结束'
+        : failed ? '暂时无法进入星河' : '正在确认你的身份';
+    const accessDescription = externalBrowserWithoutContext
+      ? '微信小程序会自动携带你的预约与签到凭证。'
+      : weChatWithoutReservation
+        ? '未检测到有效预约，本次活动暂不接受未预约用户。'
+        : failed ? '需要从微信小程序重新取得活动身份。' : '正在连接活动服务并查询预约信息。';
     return (
-      <main className={`mobile-upload-page mobile-upload-page--generating mobile-submit-access-page${isWeChat ? ' mobile-upload-page--wechat' : ''}`} translate="no">
+      <main
+        className={`mobile-upload-page mobile-upload-page--generating mobile-submit-access-page${isWeChat ? ' mobile-upload-page--wechat' : ''}`}
+        translate="no"
+      >
         <div className="mobile-cosmos-backdrop" aria-hidden="true" />
         <section className="mobile-creation-shell mobile-generation-shell mobile-submit-access-shell" aria-labelledby="submit-access-title">
           <MobileBrandHero
             variant="mobile-generation-header"
-            title={failed ? '暂时无法进入星河' : '正在确认你的身份'}
+            title={accessTitle}
             animatedTitle={isWeChat}
-            description={failed ? '需要从微信小程序重新取得活动身份。' : '正在连接活动服务并查询预约信息。'}
+            description={accessDescription}
             titleId="submit-access-title"
           />
-          <div className={`mobile-submit-access-card${failed ? ' is-error' : ''}`} role="status" aria-live="polite">
+          <div className={`mobile-submit-access-card${failed ? ' is-error' : ' is-loading'}`} role="status" aria-live="polite">
             <span className="mobile-submit-access-card__icon" aria-hidden="true">
               {failed ? <CalendarCheck size={26} /> : <RefreshCw size={26} />}
             </span>
-            <strong>{failed ? '请先前往微信小程序预约' : '正在加载预约信息'}</strong>
+            <strong>
+              {externalBrowserWithoutContext
+                ? '如已经预约，请从 DadaKido 微信小程序进入核销签到'
+                : weChatWithoutReservation
+                  ? '预约已结束'
+                : failed ? accessError : '正在加载预约信息'}
+            </strong>
             <p>
               {failed
-                ? '请前往「DadaKido」微信小程序预约活动，预约成功后重新进入即可。'
+                ? externalBrowserWithoutContext
+                  ? '请打开「DadaKido」微信小程序，从活动预约页进入本页面。'
+                  : weChatWithoutReservation
+                    ? '未查询到有效预约，无法进入后续创作流程。'
+                  : accessError === '预约已结束'
+                  ? '未查询到有效预约，本次活动暂不接受未预约用户。'
+                  : '请从「DadaKido」微信小程序重新进入。'
                 : '正在获取用户信息并验证活动凭证…'}
             </p>
             {failed ? (
@@ -1043,10 +1390,154 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
               </button>
             ) : null}
           </div>
-          <button type="button" className="mobile-submit-test-bypass" onClick={enterSubmitTestMode}>
-            <ShieldCheck size={16} />
-            测试进入：跳过身份检测
-          </button>
+          {testEntryVisible ? (
+            <button type="button" className="mobile-submit-test-bypass" onClick={enterSubmitTestMode}>
+              <ShieldCheck size={16} />
+              测试进入：模拟真实预约全流程
+            </button>
+          ) : null}
+        </section>
+      </main>
+    );
+  }
+
+  if (anonymousGuest && anonymousLastArtworkId && anonymousRestoreStatus !== 'idle' && !result) {
+    const restoreFailed = anonymousRestoreStatus === 'error';
+    return (
+      <main className="mobile-upload-page mobile-upload-page--generating mobile-submit-access-page" translate="no">
+        <div className="mobile-cosmos-backdrop" aria-hidden="true" />
+        <section className="mobile-creation-shell mobile-generation-shell mobile-submit-access-shell" aria-labelledby="guest-restore-title">
+          <MobileBrandHero
+            variant="mobile-generation-header"
+            title={restoreFailed ? '暂时无法打开作品' : '正在恢复你的作品'}
+            animatedTitle={isWeChat}
+            description={restoreFailed ? '生成记录仍然保留，可以重新连接' : '马上进入已经生成完成的模型页面'}
+            titleId="guest-restore-title"
+          />
+          <div className={`mobile-submit-access-card${restoreFailed ? ' is-error' : ' is-loading'}`} role="status" aria-live="polite">
+            <span className="mobile-submit-access-card__icon" aria-hidden="true"><RefreshCw size={26} /></span>
+            <strong>{restoreFailed ? '作品读取失败' : '正在读取已完成模型'}</strong>
+            <p>{restoreFailed ? '请检查网络后重试；也可以主动清除记录并开始新作品。' : '无需重新拍照或绘画。'}</p>
+            {restoreFailed ? (
+              <div className="mobile-submit-access-actions">
+                <button type="button" className="mobile-submit-button" onClick={() => setAnonymousRestoreReloadKey((value) => value + 1)}>
+                  <RefreshCw size={17} />重新打开
+                </button>
+                <button
+                  type="button"
+                  className="mobile-secondary-button"
+                  onClick={() => {
+                    clearAnonymousLastArtwork();
+                    setAnonymousLastArtworkId(null);
+                    setAnonymousRestoreStatus('idle');
+                  }}
+                >
+                  开始新作品
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  const effectiveChannelGuest = channelGuest || bookingIsChannelGuest(activeBooking);
+
+  if (!testAccessEnabled && submissionEligibility !== 'eligible' && !result && !submitting) {
+    const opportunityUsed = submissionEligibility === 'used';
+    const existingArtworkReady = opportunityUsed
+      && existingSubmission?.status === 'ready'
+      && Boolean(existingSubmission.artworkId);
+    const existingArtworkPending = opportunityUsed && !existingArtworkReady;
+    return (
+      <main
+        className={`mobile-upload-page mobile-upload-page--generating mobile-submit-access-page${isWeChat ? ' mobile-upload-page--wechat' : ''}`}
+        translate="no"
+      >
+        <div className="mobile-cosmos-backdrop" aria-hidden="true" />
+        <section className="mobile-creation-shell mobile-generation-shell mobile-submit-access-shell" aria-labelledby="submission-opportunity-title">
+          <MobileBrandHero
+            variant="mobile-generation-header"
+            title={existingArtworkPending ? '作品生成中' : opportunityUsed ? '本次创作已完成' : '正在确认创作资格'}
+            animatedTitle={isWeChat}
+            description={opportunityUsed ? '每位预约用户只有一次创作机会' : '马上就好'}
+            titleId="submission-opportunity-title"
+          />
+          <div className={`mobile-submit-access-card${opportunityUsed ? ' is-success' : ' is-loading'}`} role="status" aria-live="polite">
+            <span className="mobile-submit-access-card__icon" aria-hidden="true">
+              {opportunityUsed ? <TicketCheck size={28} /> : <RefreshCw size={26} />}
+            </span>
+            <strong>{existingArtworkPending ? '你的作品仍在生成' : opportunityUsed ? '你的作品已经进入星河' : '正在读取创作记录'}</strong>
+            <p>{existingArtworkPending ? '完成后即可查看自己的生成记录。' : opportunityUsed ? '可以随时回来查看自己的作品。' : '正在确认是否已有作品…'}</p>
+            {existingArtworkReady ? (
+              <button
+                type="button"
+                className="mobile-submit-button"
+                disabled={historyLoadingId === existingSubmission?.artworkId}
+                onClick={() => void openHistoryEntry(existingSubmission?.artworkId ?? '')}
+              >
+                <History size={18} />
+                {historyLoadingId === existingSubmission?.artworkId ? '正在打开…' : '查看我的生成记录'}
+              </button>
+            ) : existingArtworkPending ? (
+              <button
+                type="button"
+                className="mobile-submit-button"
+                onClick={() => setEligibilityReloadKey((value) => value + 1)}
+              >
+                <RefreshCw size={17} />
+                刷新生成状态
+              </button>
+            ) : null}
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (!showCreationFlow) {
+    return (
+      <main
+        className={`mobile-upload-page mobile-upload-page--generating mobile-submit-access-page${isWeChat ? ' mobile-upload-page--wechat' : ''}`}
+        data-access-kind={effectiveChannelGuest ? 'channel-guest' : 'standard'}
+        translate="no"
+      >
+        <div className="mobile-cosmos-backdrop" aria-hidden="true" />
+        <section className="mobile-creation-shell mobile-generation-shell mobile-submit-access-shell" aria-labelledby="submit-success-title">
+          <MobileBrandHero
+            variant="mobile-generation-header"
+            title="签到成功"
+            animatedTitle={isWeChat}
+            description={effectiveChannelGuest ? '欢迎嘉宾观展' : '欢迎来到星河画境'}
+            titleId="submit-success-title"
+          />
+          <div className="mobile-submit-access-card is-success" role="status" aria-live="polite">
+            <span className="mobile-submit-access-card__icon" aria-hidden="true">
+              <ShieldCheck size={28} />
+            </span>
+            {effectiveChannelGuest ? (
+              <>
+                <span className="mobile-submit-access-card__success-label">签到成功</span>
+                <strong className="mobile-submit-access-card__guest-title">
+                  欢迎嘉宾观展
+                  <br />
+                  请去前台领取礼品
+                </strong>
+              </>
+            ) : (
+              <>
+                <strong>签到成功</strong>
+                <p>{currentUser?.name ?? '嘉宾'}，您已成功签到。</p>
+              </>
+            )}
+            <div className="mobile-submit-access-actions">
+              <button type="button" className="mobile-submit-button" onClick={() => setCreationFlowVisible(true)}>
+                <WandSparkles size={18} />
+                进入星河创作台
+              </button>
+            </div>
+          </div>
         </section>
       </main>
     );
@@ -1060,9 +1551,11 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
       + 52 * (1 - Math.exp(-elapsedSeconds / 75))
   );
   const generationProgress = Math.min(96, Math.max(explicitProgress, estimatedProgress));
-  const canGenerate = mode === 'drawing' ? hasDrawing : Boolean(file) && !cropSourceFile;
-  const isVisitor = !activeBooking;
-  const accessCodeLabel = testAccessEnabled ? 'TEST' : launchContext?.code ?? '未知';
+  const hasRequiredArtworkName = !anonymousGuest || Boolean(fitArtworkName(artworkName));
+  const canGenerate = (mode === 'drawing' ? hasDrawing : Boolean(file) && !cropSourceFile)
+    && hasRequiredArtworkName;
+  const isVisitor = !anonymousGuest && !activeBooking;
+  const accessCodeLabel = activeBooking?.code ?? launchContext?.code ?? '未知';
 
   const progressiveEffectUrl = result?.gaussianModel?.previewUrl ?? generationPreview?.previewUrl;
 
@@ -1104,35 +1597,6 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
             />
           ) : null}
 
-          {generationComplete ? (
-            <section className={`mobile-booking-result${isVisitor ? ' is-visitor' : ''}`} aria-labelledby="booking-result-title">
-              <div className="mobile-booking-result__icon" aria-hidden="true">
-                {isVisitor ? <UserRound size={24} /> : bookingIsCheckedIn(activeBooking) ? <ShieldCheck size={24} /> : <QrCode size={24} />}
-              </div>
-              <div className="mobile-booking-result__copy">
-                <span>{currentUser?.name ?? '星河创作者'} · {bookingStatusLabel(activeBooking)}</span>
-                <h2 id="booking-result-title">
-                  {isVisitor
-                    ? '本次作品已按游客身份送入星河'
-                    : bookingIsCheckedIn(activeBooking)
-                      ? '本次预约已经完成签到'
-                      : '作品已完成，请向工作人员出示核销码'}
-                </h2>
-                <p>
-                  {isVisitor
-                    ? '游客可以继续体验创作；如需参加预约活动，请返回微信小程序办理预约。'
-                    : activeBooking?.slotLabel ?? `预约编号：${activeBooking?.id}`}
-                </p>
-              </div>
-              {!isVisitor && activeBooking?.qrCodeDataUrl && !bookingIsCheckedIn(activeBooking) ? (
-                <div className="mobile-booking-result__qr">
-                  <img src={activeBooking.qrCodeDataUrl} alt="预约核销二维码" />
-                  <small>请由工作人员扫码核销</small>
-                </div>
-              ) : null}
-            </section>
-          ) : null}
-
           <section className="mobile-result-section" aria-labelledby="effect-image-title">
             <div className="mobile-result-heading">
               <div>
@@ -1158,14 +1622,6 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
                 </div>
               ) : null}
             </div>
-            <button
-              type="button"
-              className="mobile-text-download"
-              onClick={() => previewUrl && void downloadAsset(previewUrl, `我的原画-${Date.now()}.png`, 'image')}
-            >
-              <Download size={16} />
-              同时下载我的原画
-            </button>
           </section>
 
           <section className="mobile-result-section" aria-labelledby="real-model-title">
@@ -1224,7 +1680,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
                   {generationFailed ? <WandSparkles size={25} /> : <Box size={25} />}
                 </span>
                 <strong>{generationFailed ? '效果图已保留，3D 模型未能完成' : '3D 模型正在后台生成'}</strong>
-                <p>{generationFailed ? message : generationPreview?.message ?? message}</p>
+                {generationFailed ? <p>{message}</p> : null}
                 {!generationFailed ? <i className="mobile-model-pending__pulse" aria-hidden="true"><b /><b /><b /></i> : null}
               </div>
             )}
@@ -1233,14 +1689,22 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
 
           {generationComplete || generationFailed ? (
             <div className="mobile-result-footer-actions">
-              <button type="button" className="mobile-secondary-button" onClick={() => setHistoryOpen(true)}>
+              {effectiveChannelGuest ? (
+                <button type="button" className="mobile-secondary-button" onClick={() => setCreationFlowVisible(false)}>
+                  <ArrowLeft size={18} />
+                  返回签到首页
+                </button>
+              ) : null}
+              {!anonymousGuest ? (<button type="button" className="mobile-secondary-button" onClick={() => setHistoryOpen(true)}>
                 <History size={18} />
                 查看生成记录
-              </button>
-              <button type="button" className="mobile-submit-button mobile-create-again" onClick={resetAll}>
-                <Sparkles size={19} />
-                {generationComplete ? '再创作一只' : '返回重新创作'}
-              </button>
+              </button>) : null}
+              {testAccessEnabled ? (
+                <button type="button" className="mobile-submit-button mobile-create-again" onClick={resetAll}>
+                  <Sparkles size={19} />
+                  {generationComplete ? '再创作一只' : '返回重新创作'}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </section>
@@ -1263,7 +1727,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
             ) : (
               <>
                 <h2 id="wechat-download-title">在浏览器中下载模型</h2>
-                <p>微信网页暂不支持直接保存 .splat 模型。复制链接后，点击微信右上角“在浏览器打开”即可下载。</p>
+                <p>微信网页暂不支持直接保存 3D 模型文件。复制链接后，点击微信右上角“在浏览器打开”即可下载。</p>
                 <button
                   type="button"
                   className="mobile-wechat-download__copy"
@@ -1280,7 +1744,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
             )}
           </div>
         ) : null}
-        {historyOpen ? (
+        {!anonymousGuest && historyOpen ? (
           <MobileGenerationHistoryDialog
             entries={historyEntries}
             loadingId={historyLoadingId}
@@ -1299,9 +1763,9 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
         <section className="mobile-creation-shell mobile-generation-shell">
           <MobileBrandHero
             variant="mobile-generation-header"
-            title="正在唤醒你的星河生命"
+            title="星河生命生成中"
             animatedTitle={isWeChat}
-            description="不用盯着进度条，你的画已经开始在星尘中获得立体形态。"
+            description="你的作品正在获得立体形态"
           />
 
           <div className="mobile-generation-preview">
@@ -1313,6 +1777,10 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
           </div>
 
           <MobileGenerationProgress progress={generationProgress} />
+
+          <aside className="mobile-generation-visit-notice" aria-label="等待期间参观提示">
+            <strong>可先去参观，完成后自动进入大屏</strong>
+          </aside>
 
           <ol className="mobile-generation-steps">
             <li className="is-done"><span><Check size={15} /></span><p>画作已接收</p></li>
@@ -1327,7 +1795,6 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
               <p>{message}</p>
             </div>
           </div>
-          <p className="mobile-wait-note">页面会在完成后自动展示结果，可以先欣赏画作的星尘变化。</p>
         </section>
       </main>
     );
@@ -1348,7 +1815,14 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
           titleId="mobile-upload-title"
         />
 
-        <div className="mobile-submit-context">
+        {effectiveChannelGuest ? (
+          <button type="button" className="mobile-creation-back" onClick={() => setCreationFlowVisible(false)}>
+            <ArrowLeft size={16} />
+            返回签到首页
+          </button>
+        ) : null}
+
+        <div className={`mobile-submit-context${anonymousGuest ? ' mobile-submit-context--anonymous' : ''}`}>
           <section className={`mobile-submit-session-card${isVisitor ? ' is-visitor' : ''}`} aria-label="当前活动身份">
             <span className="mobile-submit-session-card__avatar" aria-hidden={Boolean(currentUser?.avatarUrl)}>
               {currentUser?.avatarUrl
@@ -1386,7 +1860,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
                 type="text"
                 value={artworkName}
                 maxLength={MAX_ARTWORK_NAME_LENGTH}
-                placeholder="不填则为 dada+编号"
+                placeholder={anonymousGuest ? '请输入作品名称' : '不填则为 dada+编号'}
                 aria-label="为作品命名"
                 enterKeyHint="done"
                 onChange={(event) => {
@@ -1499,7 +1973,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
                   重新裁剪
                 </button>
                 <div className="mobile-upload-file-meta">
-                  <span>{file?.name}</span>
+                  <span>{anonymousGuest ? '匿名绘画' : file?.name}</span>
                   <span>{file ? formatMegabytes(file.size) : null}</span>
                 </div>
               </div>
@@ -1556,7 +2030,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
           {mode === 'drawing' ? '完成创作并生成 3D' : '用这幅画生成 3D'}
         </button>
       </section>
-      {historyOpen ? (
+      {!anonymousGuest && historyOpen ? (
         <MobileGenerationHistoryDialog
           entries={historyEntries}
           loadingId={historyLoadingId}
@@ -1569,6 +2043,7 @@ export function MobileUploadPage({ launchContext }: MobileUploadPageProps) {
           value={artworkNameDraft}
           generateAfterConfirm={artworkNamePrompt.generateAfterConfirm}
           usesReservationNickname={Boolean(reservationArtworkName)}
+          requiresName={anonymousGuest}
           onChange={setArtworkNameDraft}
           onCancel={() => setArtworkNamePrompt(null)}
           onConfirm={confirmArtworkName}

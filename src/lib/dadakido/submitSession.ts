@@ -1,6 +1,6 @@
-const DEFAULT_API_BASE = 'https://test.dadakido.com';
-const SUBMIT_SESSION_STORAGE_KEY = 'ai-sketch-cosmos:submit-session';
-const CHECK_IN_BY_CODE_URL = `${DEFAULT_API_BASE}/api/v1/users/me/visit-bookings/check-in-by-code`;
+const DEFAULT_API_BASE = 'https://api.dadakido.com';
+const CHECK_IN_BY_CODE_PATH = '/api/v1/users/me/visit-bookings/check-in-by-code';
+const SUBMIT_LAUNCH_CONTEXT_SESSION_KEY = 'ai-sketch-cosmos:submit-launch-context:v1';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -9,11 +9,20 @@ export type SubmitLaunchContext = {
   code: string;
 };
 
+export type RegistrationChannel = {
+  source?: string;
+  id?: string;
+  name?: string;
+  remark?: string;
+  attributedAt?: string;
+};
+
 export type DadakidoUser = {
   id: string;
   name: string;
   avatarUrl?: string;
   mobile?: string;
+  registrationChannel?: RegistrationChannel;
   raw: JsonRecord;
 };
 
@@ -35,6 +44,7 @@ export type CourseBooking = {
   status?: string;
   qrCodeDataUrl?: string;
   slotLabel?: string;
+  registrationChannel?: RegistrationChannel;
   raw: JsonRecord;
 };
 
@@ -84,6 +94,38 @@ function nestedRecord(record: JsonRecord, keys: string[]) {
   return null;
 }
 
+function findNestedRecord(value: unknown, keys: string[], depth = 0): JsonRecord | null {
+  if (depth >= 6) return null;
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const nested = findNestedRecord(child, keys, depth + 1);
+      if (nested) return nested;
+    }
+    return null;
+  }
+  const record = asRecord(value);
+  if (!record) return null;
+  const direct = nestedRecord(record, keys);
+  if (direct) return direct;
+  for (const value of Object.values(record)) {
+    const nested = findNestedRecord(value, keys, depth + 1);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function normalizeRegistrationChannel(value: unknown): RegistrationChannel | undefined {
+  const channel = findNestedRecord(value, ['registrationChannel', 'registration_channel']);
+  if (!channel) return undefined;
+  return {
+    source: firstString(channel, ['source']),
+    id: firstString(channel, ['id']),
+    name: firstString(channel, ['name']),
+    remark: typeof channel.remark === 'string' ? channel.remark : undefined,
+    attributedAt: firstString(channel, ['attributedAt', 'attributed_at'])
+  };
+}
+
 const BOOKING_CODE_KEYS = new Set([
   'code',
   'booking_code',
@@ -126,9 +168,15 @@ function unwrapPayload(payload: unknown): unknown {
   for (let depth = 0; depth < 4; depth += 1) {
     const record = asRecord(current);
     if (!record) break;
-    const next = record.data ?? record.result;
-    if (next === undefined) break;
-    current = next;
+    if (Object.prototype.hasOwnProperty.call(record, 'data')) {
+      current = record.data;
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(record, 'result')) {
+      current = record.result;
+      continue;
+    }
+    break;
   }
   return current;
 }
@@ -151,6 +199,16 @@ function errorMessage(payload: unknown, fallback: string) {
   return message ?? fallback;
 }
 
+function assertSuccessfulBusinessEnvelope(payload: unknown, fallback: string) {
+  const record = asRecord(payload);
+  if (!record || !Object.prototype.hasOwnProperty.call(record, 'code')) {
+    throw new Error(`${fallback}：接口响应缺少业务状态码。`);
+  }
+  if (record.code !== 0 && record.code !== '0') {
+    throw new DadakidoApiError(errorMessage(payload, fallback), 200);
+  }
+}
+
 function apiBase() {
   return (import.meta.env.VITE_DADAKIDO_API_BASE?.trim() || DEFAULT_API_BASE).replace(/\/$/, '');
 }
@@ -164,6 +222,7 @@ async function apiRequest(path: string, token: string, init: RequestInit = {}) {
       : `${apiBase()}${path}`;
     const response = await fetch(requestUrl, {
       ...init,
+      cache: 'no-store',
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
@@ -199,29 +258,96 @@ async function apiRequest(path: string, token: string, init: RequestInit = {}) {
   }
 }
 
-function parseParams(value: string) {
-  return new URLSearchParams(value.replace(/^[?#]/, ''));
+const TOKEN_PARAM_KEYS = ['token', 'accessToken', 'access_token', 'authToken', 'auth_token', 'jwt'];
+const CODE_PARAM_KEYS = [
+  'code',
+  'bookingCode',
+  'booking_code',
+  'checkInCode',
+  'check_in_code',
+  'verificationCode',
+  'verification_code',
+  'reservationCode',
+  'reservation_code'
+];
+
+function clearStoredSubmitLaunchContext() {
+  try {
+    window.sessionStorage.removeItem(SUBMIT_LAUNCH_CONTEXT_SESSION_KEY);
+  } catch {
+    // Session storage may be unavailable in privacy-restricted webviews.
+  }
 }
 
-function storedLaunchContext() {
+function storeSubmitLaunchContext(context: SubmitLaunchContext) {
   try {
-    const value = window.sessionStorage.getItem(SUBMIT_SESSION_STORAGE_KEY);
-    if (!value) return null;
-    const parsed = JSON.parse(value) as Partial<SubmitLaunchContext>;
-    if (!parsed.token || !parsed.code) return null;
-    return parsed as SubmitLaunchContext;
+    window.sessionStorage.setItem(SUBMIT_LAUNCH_CONTEXT_SESSION_KEY, JSON.stringify(context));
   } catch {
+    // The current page still works even when the webview blocks session storage.
+  }
+}
+
+function readStoredSubmitLaunchContext(): SubmitLaunchContext | null {
+  try {
+    const raw = window.sessionStorage.getItem(SUBMIT_LAUNCH_CONTEXT_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SubmitLaunchContext>;
+    if (
+      typeof parsed.token !== 'string'
+      || !parsed.token
+      || typeof parsed.code !== 'string'
+      || !isSixDigitCode(parsed.code)
+      || isTokenExpired(parsed.token)
+    ) {
+      clearStoredSubmitLaunchContext();
+      return null;
+    }
+    return { token: parsed.token, code: parsed.code };
+  } catch {
+    clearStoredSubmitLaunchContext();
     return null;
   }
 }
 
+function parseParams(value: string) {
+  const normalized = value.replace(/^[?#]/, '');
+  const queryIndex = normalized.indexOf('?');
+  return new URLSearchParams(queryIndex >= 0 ? normalized.slice(queryIndex + 1) : normalized);
+}
+
+function firstParam(params: URLSearchParams, keys: string[]) {
+  for (const key of keys) {
+    const value = params.get(key)?.trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+function sceneParams(query: URLSearchParams, hash: URLSearchParams) {
+  const scene = query.get('scene') ?? hash.get('scene');
+  if (!scene) return new URLSearchParams();
+  try {
+    return parseParams(decodeURIComponent(scene));
+  } catch {
+    return parseParams(scene);
+  }
+}
+
 function removeTokenFromAddress(query: URLSearchParams, hash: URLSearchParams) {
-  const hadToken = query.has('token') || query.has('accessToken') || hash.has('token') || hash.has('accessToken');
+  const hadToken = TOKEN_PARAM_KEYS.some((key) => query.has(key) || hash.has(key))
+    || query.has('scene')
+    || hash.has('scene');
   if (!hadToken) return;
-  query.delete('token');
-  query.delete('accessToken');
-  hash.delete('token');
-  hash.delete('accessToken');
+  TOKEN_PARAM_KEYS.forEach((key) => {
+    query.delete(key);
+    hash.delete(key);
+  });
+  CODE_PARAM_KEYS.forEach((key) => {
+    query.delete(key);
+    hash.delete(key);
+  });
+  query.delete('scene');
+  hash.delete('scene');
   const queryText = query.toString();
   const hashText = hash.toString();
   window.history.replaceState(
@@ -231,27 +357,50 @@ function removeTokenFromAddress(query: URLSearchParams, hash: URLSearchParams) {
   );
 }
 
+export function hasSubmitLaunchContextParams() {
+  if (typeof window === 'undefined') return false;
+  const query = parseParams(window.location.search);
+  const hash = parseParams(window.location.hash);
+  const scene = sceneParams(query, hash);
+  return Boolean(
+    firstParam(hash, TOKEN_PARAM_KEYS)
+    ?? firstParam(query, TOKEN_PARAM_KEYS)
+    ?? firstParam(scene, TOKEN_PARAM_KEYS)
+    ?? firstParam(hash, CODE_PARAM_KEYS)
+    ?? firstParam(query, CODE_PARAM_KEYS)
+    ?? firstParam(scene, CODE_PARAM_KEYS)
+  );
+}
+
 export function readSubmitLaunchContext(): SubmitLaunchContext | null {
   if (typeof window === 'undefined') return null;
   const query = parseParams(window.location.search);
   const hash = parseParams(window.location.hash);
-  const incomingToken = hash.get('token') ?? hash.get('accessToken') ?? query.get('token') ?? query.get('accessToken');
-  const incomingCode = hash.get('code') ?? query.get('code');
+  const scene = sceneParams(query, hash);
+  const incomingToken = firstParam(hash, TOKEN_PARAM_KEYS)
+    ?? firstParam(query, TOKEN_PARAM_KEYS)
+    ?? firstParam(scene, TOKEN_PARAM_KEYS);
+  const incomingCode = firstParam(hash, CODE_PARAM_KEYS)
+    ?? firstParam(query, CODE_PARAM_KEYS)
+    ?? firstParam(scene, CODE_PARAM_KEYS);
   const hasIncomingContext = Boolean(incomingToken || incomingCode);
 
   removeTokenFromAddress(query, hash);
 
-  if (!hasIncomingContext) return storedLaunchContext();
-  if (!incomingToken || !incomingCode) return null;
+  if (!hasIncomingContext) return readStoredSubmitLaunchContext();
+  if (!incomingToken || !incomingCode) {
+    clearStoredSubmitLaunchContext();
+    return null;
+  }
 
-  const context: SubmitLaunchContext = {
-    token: incomingToken,
+  const context = {
+    token: incomingToken.replace(/^Bearer\s+/i, ''),
     code: incomingCode
   };
-  try {
-    window.sessionStorage.setItem(SUBMIT_SESSION_STORAGE_KEY, JSON.stringify(context));
-  } catch {
-    // The in-memory context remains usable if session storage is unavailable.
+  if (isSixDigitCode(context.code) && !isTokenExpired(context.token)) {
+    storeSubmitLaunchContext(context);
+  } else {
+    clearStoredSubmitLaunchContext();
   }
   return context;
 }
@@ -273,10 +422,13 @@ export function isTokenExpired(token: string) {
 }
 
 export async function fetchCurrentUser(token: string): Promise<DadakidoUser> {
-  const payload = unwrapPayload(await apiRequest('/api/v1/users/me', token));
+  const responsePayload = await apiRequest('/api/v1/users/me', token);
+  const payload = unwrapPayload(responsePayload);
+  const responseRecord = asRecord(responsePayload);
   const raw = asRecord(payload);
   if (!raw) throw new Error('用户信息格式不正确，请联系活动工作人员。');
   const profile = nestedRecord(raw, ['profile', 'wechatProfile', 'userInfo']);
+  const registrationChannel = normalizeRegistrationChannel(responsePayload);
   return {
     id: firstString(raw, ['id', '_id', 'userId', 'openid']) ?? 'current-user',
     name: firstString(raw, ['nickname', 'nickName', 'displayName', 'name'])
@@ -285,7 +437,10 @@ export async function fetchCurrentUser(token: string): Promise<DadakidoUser> {
     avatarUrl: firstString(raw, ['avatarUrl', 'avatar', 'headImgUrl'])
       ?? firstString(profile, ['avatarUrl', 'avatar', 'headImgUrl']),
     mobile: firstString(raw, ['mobile', 'phone', 'phoneNumber']),
-    raw
+    registrationChannel,
+    raw: responseRecord && responseRecord !== raw
+      ? { ...responseRecord, user: raw }
+      : raw
   };
 }
 
@@ -339,13 +494,16 @@ export async function fetchAvailableSlots(token: string, projectId: string) {
 }
 
 function normalizeBooking(value: unknown): CourseBooking | null {
+  const originalRecord = asRecord(value);
   const unwrapped = unwrapPayload(value);
   const responseRecord = asRecord(unwrapped);
   const raw = responseRecord
     ? nestedRecord(responseRecord, ['booking', 'visitBooking', 'visit_booking']) ?? responseRecord
     : null;
   if (!raw) return null;
-  const id = firstString(raw, ['id', '_id', 'bookingId', 'booking_id', 'courseBookingId', 'course_booking_id']);
+  const bookingCode = findBookingCode(raw);
+  const id = firstString(raw, ['id', '_id', 'bookingId', 'booking_id', 'courseBookingId', 'course_booking_id'])
+    ?? (bookingCode ? `booking-code-${bookingCode}` : undefined);
   if (!id) return null;
   const project = nestedRecord(raw, ['project', 'course', 'event']);
   const ticket = nestedRecord(raw, ['ticket']);
@@ -358,7 +516,7 @@ function normalizeBooking(value: unknown): CourseBooking | null {
     ?? firstString(raw, ['endAt', 'endTime']);
   return {
     id,
-    code: findBookingCode(raw),
+    code: bookingCode,
     projectId: firstString(raw, ['projectId', 'project_id', 'courseId', 'course_id'])
       ?? firstString(project, ['id', '_id', 'projectId', 'project_id', 'courseId', 'course_id']),
     slotId: firstString(raw, ['slotId', 'slot_id', 'scheduleId', 'schedule_id', 'courseScheduleId', 'course_schedule_id'])
@@ -384,10 +542,15 @@ function normalizeBooking(value: unknown): CourseBooking | null {
         'checkInQrCodeDataUrl',
         'check_in_qr_code_data_url'
       ]),
-    slotLabel: firstString(raw, ['slotLabel', 'slot_label', 'visitTimeLabel', 'visit_time_label'])
+    slotLabel: firstString(raw, ['slotLabel', 'slot_label', 'sessionLabel', 'session_label', 'visitTimeLabel', 'visit_time_label'])
       ?? firstString(slot, ['label', 'title', 'name'])
       ?? (startAt ? formatSlotLabel(startAt, endAt) : undefined),
-    raw
+    registrationChannel: normalizeRegistrationChannel(value),
+    raw: originalRecord
+      ? { ...originalRecord, normalizedBooking: raw }
+      : responseRecord && responseRecord !== raw
+        ? { ...responseRecord, normalizedBooking: raw }
+      : raw
   };
 }
 
@@ -397,8 +560,15 @@ export async function fetchVisitBookingByCode(token: string, code: string) {
       `/api/v1/users/me/visit-bookings/by-code/${encodeURIComponent(code)}`,
       token
     );
+    const responseRecord = asRecord(payload);
+    if (responseRecord && Object.prototype.hasOwnProperty.call(responseRecord, 'code')) {
+      assertSuccessfulBusinessEnvelope(payload, '预约查询失败');
+    }
     const booking = normalizeBooking(payload);
     if (!booking) return null;
+    if (booking.code && booking.code !== code) {
+      throw new Error('预约信息与本次扫码凭证不一致，请从微信小程序重新进入。');
+    }
     const inactiveStatuses = new Set(['cancelled', 'canceled', 'expired', 'rejected', 'refunded']);
     if (inactiveStatuses.has(booking.status?.toLowerCase() ?? '')) return null;
     return { ...booking, code: booking.code ?? code };
@@ -413,31 +583,29 @@ export function checkInVisitBookingByCode(token: string, code: string) {
   const existingRequest = checkInRequests.get(requestKey);
   if (existingRequest) return existingRequest;
 
-  const request = apiRequest(CHECK_IN_BY_CODE_URL, token, {
+  const request = apiRequest(CHECK_IN_BY_CODE_PATH, token, {
     method: 'POST',
     body: JSON.stringify({ code })
   }).then((payload): CourseBooking => {
+    assertSuccessfulBusinessEnvelope(payload, '签到核销失败');
     const booking = normalizeBooking(payload);
-    if (booking) {
-      return {
-        ...booking,
-        code: booking.code ?? code,
-        status: 'checked_in'
-      };
+    if (!booking || !booking.code) {
+      throw new Error('签到核销失败：接口未返回有效预约数据。');
     }
-    const raw = asRecord(unwrapPayload(payload)) ?? {};
+    if (booking.code !== code) {
+      throw new Error('核销结果与本次扫码凭证不一致，请从微信小程序重新进入。');
+    }
     return {
-      id: `checked-in-${code}`,
-      code,
+      ...booking,
       status: 'checked_in',
-      raw
     };
   });
 
   checkInRequests.set(requestKey, request);
-  void request.catch(() => {
-    checkInRequests.delete(requestKey);
-  });
+  void request.then(
+    () => checkInRequests.delete(requestKey),
+    () => checkInRequests.delete(requestKey)
+  );
   return request;
 }
 

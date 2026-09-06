@@ -15,10 +15,25 @@ type ModelControlSender = {
   close: () => void;
 };
 
+export type DisplayAdminCommand =
+  | { command: 'clear-artworks' }
+  | { command: 'stress-start'; target: number }
+  | { command: 'stress-clear' }
+  | { command: 'toggle-fullscreen' };
+
+type DisplayAdminCommandListener = (command: DisplayAdminCommand) => void;
+
+type DisplayAdminControlSender = {
+  send: (command: DisplayAdminCommand) => void;
+  close: () => void;
+};
+
 const SEND_INTERVAL_MS = 25;
 const RECONNECT_MAX_DELAY_MS = 8_000;
 const CAPABILITY_RETRY_MS = 3_000;
+export const REMOTE_MODEL_CONTROL_IDLE_MS = 5_000;
 const remotePoses = new Map<string, RemoteModelPose>();
+const displayAdminCommandListeners = new Set<DisplayAdminCommandListener>();
 
 let capabilityAvailable = false;
 let capabilityExpiresAt = 0;
@@ -111,6 +126,20 @@ async function connectReceiver() {
     try {
       const payload = JSON.parse(String(event.data)) as Record<string, unknown>;
       if (payload.type === 'heartbeat') return;
+      if (payload.type === 'display-command' && typeof payload.command === 'string') {
+        const command = payload.command;
+        if (command === 'stress-start' && isFiniteNumber(payload.target)) {
+          const message: DisplayAdminCommand = {
+            command,
+            target: Math.max(1, Math.min(4_000, Math.round(payload.target)))
+          };
+          displayAdminCommandListeners.forEach((listener) => listener(message));
+        } else if (command === 'clear-artworks' || command === 'stress-clear' || command === 'toggle-fullscreen') {
+          const message = { command } as DisplayAdminCommand;
+          displayAdminCommandListeners.forEach((listener) => listener(message));
+        }
+        return;
+      }
       if (
         payload.type !== 'pose'
         || typeof payload.artworkId !== 'string'
@@ -166,7 +195,57 @@ export function startRemoteModelControlReceiver() {
 }
 
 export function getRemoteModelPose(artworkId: string) {
-  return remotePoses.get(artworkId) ?? null;
+  const pose = remotePoses.get(artworkId);
+  if (!pose || !isRemoteModelPoseActive(pose, performance.now())) {
+    remotePoses.delete(artworkId);
+    return null;
+  }
+  return pose;
+}
+
+export function isRemoteModelPoseActive(pose: RemoteModelPose, now: number) {
+  return pose.active && now - pose.receivedAt < REMOTE_MODEL_CONTROL_IDLE_MS;
+}
+
+export function subscribeToDisplayAdminCommands(listener: DisplayAdminCommandListener) {
+  displayAdminCommandListeners.add(listener);
+  return () => {
+    displayAdminCommandListeners.delete(listener);
+  };
+}
+
+export function createDisplayAdminControlSender(): DisplayAdminControlSender {
+  const url = modelControlUrl('controller')?.replace('role=controller', 'role=admin');
+  let socket: WebSocket | null = null;
+  let disposed = false;
+  let pending: DisplayAdminCommand[] = [];
+
+  const flush = () => {
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    for (const command of pending) {
+      socket.send(JSON.stringify({ type: 'display-command', ...command }));
+    }
+    pending = [];
+  };
+
+  if (url) {
+    socket = new WebSocket(url);
+    socket.addEventListener('open', flush);
+  }
+
+  return {
+    send(command) {
+      if (disposed) return;
+      pending.push(command);
+      flush();
+    },
+    close() {
+      disposed = true;
+      pending = [];
+      socket?.close();
+      socket = null;
+    }
+  };
 }
 
 export function createModelControlSender(artworkId: string): ModelControlSender {

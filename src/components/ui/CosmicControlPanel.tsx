@@ -3,6 +3,7 @@ import { Eye, EyeOff, Gauge } from 'lucide-react';
 import { submitArtworkFile } from '../../lib/artwork/submitArtworkFile';
 import { useArtworkStore, type StoredArtwork } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
+import { MAX_VARIABLE_DISPLAY_MODELS } from '../webgl/displayModelPolicy';
 
 const LOCAL_STRESS_ARTWORK_PREFIX = 'local-stress:';
 const MAX_LOCAL_STRESS_TOTAL = 4_000;
@@ -88,7 +89,7 @@ type WindowWithFilePicker = Window & {
 export function CosmicControlPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isHidden, setIsHidden] = useState(true);
-  const [stressTarget, setStressTarget] = useState('27');
+  const [stressTarget, setStressTarget] = useState(String(MAX_VARIABLE_DISPLAY_MODELS));
   const artworks = useArtworkStore((state) => state.artworks);
   const latestArtwork = useArtworkStore((state) => state.latestArtwork);
   const clearArtworks = useArtworkStore((state) => state.clearArtworks);

@@ -24,7 +24,14 @@ const CROWD_AVOIDANCE_RADIUS = 1.7;
 const CROWD_AVOIDANCE_RADIUS_SQ = CROWD_AVOIDANCE_RADIUS * CROWD_AVOIDANCE_RADIUS;
 const MAX_CROWD_NEIGHBORS = 6;
 const creatureSpatialBuckets = new Map<string, Set<string>>();
-const creatureCellById = new Map<string, string>();
+type CreatureSpatialCell = {
+  x: number;
+  y: number;
+  z: number;
+  key: string;
+  neighborKeys: string[];
+};
+const creatureCellById = new Map<string, CreatureSpatialCell>();
 const crowdDelta = new THREE.Vector3();
 
 function spatialCoordinate(value: number) {
@@ -35,20 +42,24 @@ function spatialKey(x: number, y: number, z: number) {
   return `${x}:${y}:${z}`;
 }
 
-function positionSpatialKey(position: [number, number, number]) {
-  return spatialKey(
-    spatialCoordinate(position[0]),
-    spatialCoordinate(position[1]),
-    spatialCoordinate(position[2])
-  );
+function spatialNeighborKeys(x: number, y: number, z: number) {
+  const keys: string[] = [];
+  for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+    for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+      for (let offsetZ = -1; offsetZ <= 1; offsetZ += 1) {
+        keys.push(spatialKey(x + offsetX, y + offsetY, z + offsetZ));
+      }
+    }
+  }
+  return keys;
 }
 
 function removeFromSpatialBucket(id: string) {
-  const previousKey = creatureCellById.get(id);
-  if (!previousKey) return;
-  const bucket = creatureSpatialBuckets.get(previousKey);
+  const previousCell = creatureCellById.get(id);
+  if (!previousCell) return;
+  const bucket = creatureSpatialBuckets.get(previousCell.key);
   bucket?.delete(id);
-  if (bucket?.size === 0) creatureSpatialBuckets.delete(previousKey);
+  if (bucket?.size === 0) creatureSpatialBuckets.delete(previousCell.key);
   creatureCellById.delete(id);
 }
 
@@ -75,14 +86,23 @@ export const useCreatureBehaviorStore = create<CreatureBehaviorState>((set, get)
   // avoids Zustand publishes and object copies on every rendered frame;
   // consumers intentionally read it through getState() inside useFrame.
   setCreaturePosition: (id, position) => {
-    const nextKey = positionSpatialKey(position);
-    const previousKey = creatureCellById.get(id);
-    if (previousKey !== nextKey) {
+    const x = spatialCoordinate(position[0]);
+    const y = spatialCoordinate(position[1]);
+    const z = spatialCoordinate(position[2]);
+    const previousCell = creatureCellById.get(id);
+    if (!previousCell || previousCell.x !== x || previousCell.y !== y || previousCell.z !== z) {
       removeFromSpatialBucket(id);
+      const nextKey = spatialKey(x, y, z);
       const bucket = creatureSpatialBuckets.get(nextKey) ?? new Set<string>();
       bucket.add(id);
       creatureSpatialBuckets.set(nextKey, bucket);
-      creatureCellById.set(id, nextKey);
+      creatureCellById.set(id, {
+        x,
+        y,
+        z,
+        key: nextKey,
+        neighborKeys: spatialNeighborKeys(x, y, z)
+      });
     }
     get().creaturePositions[id] = position;
   },
@@ -138,39 +158,42 @@ export function pointerAvoidance(from: THREE.Vector3) {
   return from.clone().sub(pointerPosition).normalize().multiplyScalar(strength);
 }
 
-export function crowdAvoidance(id: string, from: THREE.Vector3) {
+export function crowdAvoidance(
+  id: string,
+  from: THREE.Vector3,
+  target = new THREE.Vector3()
+) {
   const positions = useCreatureBehaviorStore.getState().creaturePositions;
-  const avoidance = new THREE.Vector3();
+  const avoidance = target.set(0, 0, 0);
   let neighbors = 0;
 
   const cellX = spatialCoordinate(from.x);
   const cellY = spatialCoordinate(from.y);
   const cellZ = spatialCoordinate(from.z);
-  for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
-    for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
-      for (let offsetZ = -1; offsetZ <= 1; offsetZ += 1) {
-        const bucket = creatureSpatialBuckets.get(spatialKey(
-          cellX + offsetX,
-          cellY + offsetY,
-          cellZ + offsetZ
-        ));
-        if (!bucket) continue;
+  const cachedCell = creatureCellById.get(id);
+  const neighborKeys = cachedCell
+    && cachedCell.x === cellX
+    && cachedCell.y === cellY
+    && cachedCell.z === cellZ
+    ? cachedCell.neighborKeys
+    : spatialNeighborKeys(cellX, cellY, cellZ);
+  for (const neighborKey of neighborKeys) {
+    const bucket = creatureSpatialBuckets.get(neighborKey);
+    if (!bucket) continue;
 
-        for (const otherId of bucket) {
-          if (otherId === id) continue;
-          const position = positions[otherId];
-          if (!position) continue;
-          crowdDelta.set(from.x - position[0], from.y - position[1], from.z - position[2]);
-          const distanceSq = crowdDelta.lengthSq();
-          if (distanceSq <= 0.000001 || distanceSq > CROWD_AVOIDANCE_RADIUS_SQ) continue;
+    for (const otherId of bucket) {
+      if (otherId === id) continue;
+      const position = positions[otherId];
+      if (!position) continue;
+      crowdDelta.set(from.x - position[0], from.y - position[1], from.z - position[2]);
+      const distanceSq = crowdDelta.lengthSq();
+      if (distanceSq <= 0.000001 || distanceSq > CROWD_AVOIDANCE_RADIUS_SQ) continue;
 
-          const distance = Math.sqrt(distanceSq);
-          const strength = (1 - distance / CROWD_AVOIDANCE_RADIUS) * 0.28;
-          avoidance.addScaledVector(crowdDelta, strength / distance);
-          neighbors += 1;
-          if (neighbors >= MAX_CROWD_NEIGHBORS) return avoidance;
-        }
-      }
+      const distance = Math.sqrt(distanceSq);
+      const strength = (1 - distance / CROWD_AVOIDANCE_RADIUS) * 0.28;
+      avoidance.addScaledVector(crowdDelta, strength / distance);
+      neighbors += 1;
+      if (neighbors >= MAX_CROWD_NEIGHBORS) return avoidance;
     }
   }
 

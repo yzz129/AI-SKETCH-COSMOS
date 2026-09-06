@@ -1,5 +1,5 @@
 import { useFrame } from '@react-three/fiber';
-import { useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { useArtworkStore } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
@@ -16,6 +16,13 @@ import {
   isInitialCreatureAdmissionSettled
 } from './creatureActivity';
 import { getPlanetWorldPosition, PLANETS } from './OrbitalPlanets';
+import {
+  battleEngagementDistance,
+  battleParticipantHasEvolution,
+  exhibitionEntryFocusId,
+  exhibitionModelIdFromInteractionId,
+  isExhibitionInteractionId
+} from './exhibitionInteraction';
 
 const COLLAPSE_MIN_DELAY = 7;
 const COLLAPSE_MAX_DELAY = 11;
@@ -70,6 +77,15 @@ function randomWorldPoint(): [number, number, number] {
 }
 
 export function AutoCosmicInteractions() {
+  const artworks = useArtworkStore((state) => state.artworks);
+  const artworkIdSet = useMemo(
+    () => new Set(artworks.map((artwork) => artwork.id)),
+    [artworks]
+  );
+  const artworkIndexById = useMemo(
+    () => new Map(artworks.map((artwork, index) => [artwork.id, index])),
+    [artworks]
+  );
   const collapseRef = useRef({
     active: false,
     startedAt: 0,
@@ -110,7 +126,6 @@ export function AutoCosmicInteractions() {
     const now = clock.elapsedTime;
     const wallTime = performance.now() * 0.001;
     const sketch = useSketchStore.getState();
-    const artwork = useArtworkStore.getState();
     const behavior = useCreatureBehaviorStore.getState();
     const auto = useAutoCosmicInteractionStore.getState();
     const interactions = useCreatureInteractionStore.getState();
@@ -120,9 +135,19 @@ export function AutoCosmicInteractions() {
     const hasSpotlightLifecycle = Boolean(
       spotlight.creatureId || spotlight.requestedCreatureId || spotlight.pendingCreatureId
     );
-    const isSpotlightProtected = (creatureId: string) => creatureId === spotlight.creatureId
-      || creatureId === spotlight.requestedCreatureId
-      || creatureId === spotlight.pendingCreatureId;
+    const isSpotlightProtected = (creatureId: string) => {
+      if (
+        creatureId === spotlight.creatureId
+        || creatureId === spotlight.requestedCreatureId
+        || creatureId === spotlight.pendingCreatureId
+      ) return true;
+      const exhibitionModelId = exhibitionModelIdFromInteractionId(creatureId);
+      if (exhibitionModelId === null) return false;
+      const focusId = exhibitionEntryFocusId(exhibitionModelId);
+      return focusId === spotlight.creatureId
+        || focusId === spotlight.requestedCreatureId
+        || focusId === spotlight.pendingCreatureId;
+    };
 
     if (!legacyInteractionsClearedRef.current) {
       evolution.replaceIntents({});
@@ -193,7 +218,14 @@ export function AutoCosmicInteractions() {
     const isMountedArtwork = (creatureId: string) => isInitialCreatureAdmissionSettled()
       && isCreatureActivityActive(creatureId)
       && Boolean(mountedPositions[creatureId])
-      && artwork.artworks.some((entry) => entry.id === creatureId);
+      && artworkIdSet.has(creatureId);
+    const isMountedBattleParticipant = (creatureId: string) => (
+      isMountedArtwork(creatureId)
+      || (
+        isExhibitionInteractionId(creatureId)
+        && Boolean(mountedPositions[creatureId])
+      )
+    );
 
     if (now >= eventRef.current.nextCleanupAt) {
       eventRef.current.nextCleanupAt = now + 0.15;
@@ -301,7 +333,7 @@ export function AutoCosmicInteractions() {
         ));
       if (!hasActiveDramaticInteraction && now >= encounter.nextFightAllowedAt) {
         const eligibleIds = Object.keys(mountedPositions).filter((creatureId) => (
-          isMountedArtwork(creatureId)
+          isMountedBattleParticipant(creatureId)
           && !isSpotlightProtected(creatureId)
           && !currentEvents[creatureId]
           && (behavior.featuredUntil[creatureId] ?? 0) <= wallTime
@@ -317,7 +349,12 @@ export function AutoCosmicInteractions() {
           for (let secondOffset = firstOffset + 1; secondOffset < eligibleIds.length; secondOffset += 1) {
             const secondId = eligibleIds[(startIndex + secondOffset) % eligibleIds.length];
             const secondPosition = secondScratchRef.current.set(...mountedPositions[secondId]);
-            if (firstPosition.distanceToSquared(secondPosition) > FIGHT_DISTANCE * FIGHT_DISTANCE) continue;
+            const engagementDistance = battleEngagementDistance(
+              firstId,
+              secondId,
+              FIGHT_DISTANCE
+            );
+            if (firstPosition.distanceToSquared(secondPosition) > engagementDistance * engagementDistance) continue;
             const anchor = firstPosition.clone().lerp(secondPosition, 0.5).toArray();
             const firstFightEvent = interactions.triggerEvent(firstId, {
               kind: 'fight',
@@ -337,25 +374,36 @@ export function AutoCosmicInteractions() {
               anchor,
               origin: secondPosition.toArray()
             });
+            const fightIncludesExhibitionModel = isExhibitionInteractionId(firstId)
+              || isExhibitionInteractionId(secondId);
             const firstRecord = evolution.records[firstId];
             const secondRecord = evolution.records[secondId];
-            const rankDifference = compareEvolutionRank(firstRecord, secondRecord);
+            // GLB exhibition models intentionally have no level. When either
+            // fighter is a GLB, choose the result without consulting evolution
+            // rank so the model can battle without silently gaining a record.
+            const rankDifference = fightIncludesExhibitionModel
+              ? 0
+              : compareEvolutionRank(firstRecord, secondRecord);
             const loserId = rankDifference > 0
               ? secondId
               : rankDifference < 0
                 ? firstId
                 : (Math.random() < 0.5 ? firstId : secondId);
             const winnerId = loserId === firstId ? secondId : firstId;
-            encounter.pendingEvolutionChanges.set(winnerId, {
-              sequence: winnerId === firstId ? firstFightEvent.sequence : secondFightEvent.sequence,
-              applyAt: now + FIGHT_DURATION,
-              kind: 'victory'
-            });
-            encounter.pendingEvolutionChanges.set(loserId, {
-              sequence: loserId === firstId ? firstFightEvent.sequence : secondFightEvent.sequence,
-              applyAt: now + FIGHT_DURATION,
-              kind: 'defeat'
-            });
+            if (battleParticipantHasEvolution(winnerId)) {
+              encounter.pendingEvolutionChanges.set(winnerId, {
+                sequence: winnerId === firstId ? firstFightEvent.sequence : secondFightEvent.sequence,
+                applyAt: now + FIGHT_DURATION,
+                kind: 'victory'
+              });
+            }
+            if (battleParticipantHasEvolution(loserId)) {
+              encounter.pendingEvolutionChanges.set(loserId, {
+                sequence: loserId === firstId ? firstFightEvent.sequence : secondFightEvent.sequence,
+                applyAt: now + FIGHT_DURATION,
+                kind: 'defeat'
+              });
+            }
             encounter.fightCooldowns.set(firstId, now + FIGHT_CREATURE_COOLDOWN);
             encounter.fightCooldowns.set(secondId, now + FIGHT_CREATURE_COOLDOWN);
             encounter.nextFightAllowedAt = now + FIGHT_DURATION + FIGHT_SCENE_GAP;
@@ -372,7 +420,7 @@ export function AutoCosmicInteractions() {
       const portals = getSortedGalaxyPortals();
       if (portals.length >= 2) {
         for (const creatureId of Object.keys(mountedPositions)) {
-          if (!isMountedArtwork(creatureId) || isSpotlightProtected(creatureId)) continue;
+          if (!isMountedBattleParticipant(creatureId) || isSpotlightProtected(creatureId)) continue;
           if (currentEvents[creatureId] || (behavior.featuredUntil[creatureId] ?? 0) > wallTime) continue;
           if ((encounter.portalCooldowns.get(creatureId) ?? 0) > now) continue;
           const creaturePosition = firstScratchRef.current.set(...mountedPositions[creatureId]);
@@ -409,11 +457,13 @@ export function AutoCosmicInteractions() {
               transitionAt: PORTAL_ENTRY_DURATION
             }
           });
-          encounter.pendingEvolutionChanges.set(creatureId, {
-            sequence: portalEvent.sequence,
-            applyAt: now + PORTAL_ENTRY_DURATION + PORTAL_EMERGE_DURATION,
-            kind: 'portal'
-          });
+          if (battleParticipantHasEvolution(creatureId)) {
+            encounter.pendingEvolutionChanges.set(creatureId, {
+              sequence: portalEvent.sequence,
+              applyAt: now + PORTAL_ENTRY_DURATION + PORTAL_EMERGE_DURATION,
+              kind: 'portal'
+            });
+          }
           encounter.portalCooldowns.set(creatureId, now + PORTAL_EVENT_DURATION + 14);
           currentEvents = useCreatureInteractionStore.getState().events;
           break;
@@ -423,7 +473,6 @@ export function AutoCosmicInteractions() {
 
     if (now >= encounter.nextDustFeedAt) {
       encounter.nextDustFeedAt = now + DUST_FEED_INTERVAL;
-      const artworkIndexById = new Map(artwork.artworks.map((entry, index) => [entry.id, index]));
       const mountedIds = Object.keys(mountedPositions);
       const indexedCreatures: Array<{ id: string; index: number }> = [];
       const dustUpdates: Array<{ id: string; amount: number }> = [];
@@ -459,7 +508,7 @@ export function AutoCosmicInteractions() {
       return;
     }
 
-    auto.triggerNebulaPulse(Math.floor(Math.random() * 3));
+    auto.triggerNebulaPulse(Math.floor(Math.random() * 8));
   });
 
   return null;

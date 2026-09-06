@@ -24,6 +24,9 @@ type TripoSplatJobPayload = {
   status?: ArtworkGaussianModelStatus;
   progress?: number;
   message?: string;
+  queuePosition?: number;
+  estimatedWaitSeconds?: number;
+  queueCapacity?: number;
   error?: string;
   detail?: string | {
     code?: string;
@@ -44,23 +47,63 @@ type GenerateGaussianArtworkModelInput = {
   format?: 'splat' | 'ply' | 'both';
   onProgress?: (result: ArtworkGaussianModelResult) => void;
   features?: ArtworkFeatureResult;
+  userContext?: Record<string, unknown>;
+  anonymous?: boolean;
+};
+
+export type SubmissionEligibilityResult = {
+  eligible: boolean;
+  testMode?: boolean;
+  unidentified?: boolean;
+  jobId?: string | null;
+  artworkId?: string | null;
+  status?: string | null;
 };
 
 const DEFAULT_GAUSSIAN_COUNT = 65_536;
 const LONG_POLL_WAIT_MS = 15_000;
 const LEGACY_POLL_INTERVAL_MS = 1_000;
-const MAX_WAIT_MS = 10 * 60_000;
+const MAX_POLL_RETRY_DELAY_MS = 10_000;
+
+function maxWaitMs() {
+  const configuredHours = Number.parseFloat(
+    String(import.meta.env.VITE_TRIPOSPLAT_MAX_WAIT_HOURS ?? '24')
+  );
+  const hours = Number.isFinite(configuredHours)
+    ? Math.max(0.25, Math.min(72, configuredHours))
+    : 24;
+  return hours * 60 * 60_000;
+}
 
 function envBoolean(value: unknown) {
   return typeof value === 'string' && value.toLowerCase() === 'true';
 }
 
 function triposplatApiBase() {
-  return (import.meta.env.VITE_TRIPOSPLAT_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '';
+  return (import.meta.env.VITE_TRIPOSPLAT_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '/triposplat';
 }
 
 export function isTripoSplatGenerationEnabled() {
   return envBoolean(import.meta.env.VITE_TRIPOSPLAT_ENABLED) && triposplatApiBase().length > 0;
+}
+
+export async function fetchSubmissionEligibility(
+  userContext: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<SubmissionEligibilityResult> {
+  const baseUrl = triposplatApiBase();
+  if (!baseUrl) return { eligible: true, unidentified: true };
+  const response = await fetch(`${baseUrl}/api/submission-eligibility`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userContext }),
+    signal
+  });
+  const payload = await response.json().catch(() => null) as SubmissionEligibilityResult | null;
+  if (!response.ok || !payload || typeof payload.eligible !== 'boolean') {
+    throw new Error(`创作资格确认失败（${response.status}）。`);
+  }
+  return payload;
 }
 
 function sleep(ms: number, signal?: AbortSignal) {
@@ -149,6 +192,9 @@ function toResult({
     gaussianCount: model.gaussianCount ?? gaussianCount,
     progress: payload.progress,
     message: payload.message,
+    queuePosition: payload.queuePosition,
+    estimatedWaitSeconds: payload.estimatedWaitSeconds,
+    queueCapacity: payload.queueCapacity,
     createdAt: Date.now()
   };
 }
@@ -161,11 +207,13 @@ export async function generateGaussianArtworkModel({
   gaussianCount = DEFAULT_GAUSSIAN_COUNT,
   format = 'splat',
   onProgress,
-  features
+  features,
+  userContext,
+  anonymous = false
 }: GenerateGaussianArtworkModelInput): Promise<ArtworkGaussianModelResult> {
   const baseUrl = triposplatApiBase();
   if (!baseUrl) {
-    throw new Error('VITE_TRIPOSPLAT_API_BASE is not configured.');
+    throw new Error('3D 模型服务尚未配置。');
   }
 
   const formData = new FormData();
@@ -175,6 +223,8 @@ export async function generateGaussianArtworkModel({
   if (name) formData.set('name', name);
   if (submissionId) formData.set('submissionId', submissionId);
   if (features) formData.set('features', JSON.stringify(features));
+  if (userContext) formData.set('userContext', JSON.stringify(userContext));
+  if (anonymous) formData.set('anonymous', 'true');
 
   const createResponse = await fetch(`${baseUrl}/api/artworks`, {
     method: 'POST',
@@ -187,7 +237,7 @@ export async function generateGaussianArtworkModel({
     if (createResponse.status === 429) {
       throw new Error('当前上传人数较多，生成队列已满，请稍后再试。');
     }
-    throw apiError(created, `TripoSplat task creation failed with ${createResponse.status}.`);
+    throw apiError(created, `3D 模型任务创建失败（${createResponse.status}）。`);
   }
   const validatesSubmissionIdentity = Boolean(
     submissionId && typeof created.submissionId === 'string'
@@ -211,9 +261,11 @@ export async function generateGaussianArtworkModel({
   }
 
   const startedAt = Date.now();
+  const maximumWaitMs = maxWaitMs();
   let lastResult = queued;
+  let pollFailureCount = 0;
 
-  while (Date.now() - startedAt < MAX_WAIT_MS) {
+  while (Date.now() - startedAt < maximumWaitMs) {
     const params = new URLSearchParams({
       waitMs: String(LONG_POLL_WAIT_MS),
       lastStatus: lastResult.status
@@ -224,12 +276,32 @@ export async function generateGaussianArtworkModel({
 
     const previousResult = lastResult;
     const pollStartedAt = Date.now();
-    const pollResponse = await fetch(`${baseUrl}/api/jobs/${encodeURIComponent(created.jobId)}?${params}`, { signal });
+    let pollResponse: Response;
+    try {
+      pollResponse = await fetch(`${baseUrl}/api/jobs/${encodeURIComponent(created.jobId)}?${params}`, { signal });
+    } catch (error) {
+      if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+        throw error;
+      }
+      pollFailureCount += 1;
+      await sleep(Math.min(MAX_POLL_RETRY_DELAY_MS, 500 * (2 ** pollFailureCount)), signal);
+      continue;
+    }
     const polled = await readJson(pollResponse);
 
     if (!pollResponse.ok) {
-      throw new Error(polled.error ?? `TripoSplat task polling failed with ${pollResponse.status}.`);
+      if ([429, 502, 503, 504].includes(pollResponse.status)) {
+        pollFailureCount += 1;
+        const retryAfterSeconds = Number.parseInt(pollResponse.headers.get('Retry-After') ?? '', 10);
+        const retryDelay = Number.isFinite(retryAfterSeconds)
+          ? retryAfterSeconds * 1_000
+          : Math.min(MAX_POLL_RETRY_DELAY_MS, 500 * (2 ** pollFailureCount));
+        await sleep(retryDelay, signal);
+        continue;
+      }
+      throw new Error(polled.error ?? `3D 模型任务查询失败（${pollResponse.status}）。`);
     }
+    pollFailureCount = 0;
     if (validatesSubmissionIdentity && polled.submissionId !== submissionId) {
       throw new Error('Submission identity mismatch.');
     }
@@ -249,7 +321,7 @@ export async function generateGaussianArtworkModel({
     }
 
     if (result.status === 'failed') {
-      throw new Error(polled.error ?? result.message ?? 'TripoSplat generation failed.');
+      throw new Error(polled.error ?? result.message ?? '3D 模型生成失败。');
     }
 
     const didNotLongPoll = Date.now() - pollStartedAt < 500
@@ -262,5 +334,5 @@ export async function generateGaussianArtworkModel({
     }
   }
 
-  throw new Error('TripoSplat generation timed out.');
+  throw new Error('3D 模型排队时间过长，请稍后在作品库查看生成结果。');
 }

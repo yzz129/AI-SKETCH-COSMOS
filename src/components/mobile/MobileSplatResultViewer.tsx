@@ -11,7 +11,10 @@ import {
   type PointerEvent as ReactPointerEvent
 } from 'react';
 import * as THREE from 'three';
-import { createModelControlSender } from '../../lib/artwork/modelControlSync';
+import {
+  createModelControlSender,
+  REMOTE_MODEL_CONTROL_IDLE_MS
+} from '../../lib/artwork/modelControlSync';
 import type { StoredArtwork } from '../../stores/artworkStore';
 import { SplatCreatureModel } from '../webgl/SplatCreatureModel';
 
@@ -44,6 +47,8 @@ export const MobileSplatResultViewer = forwardRef<
   const controlsRef = useRef<ComponentRef<typeof OrbitControls>>(null);
   const modelGroupRef = useRef<THREE.Group>(null);
   const senderRef = useRef<ReturnType<typeof createModelControlSender> | null>(null);
+  const controlIdleTimerRef = useRef<number | null>(null);
+  const lastControlActivityAtRef = useRef(0);
   const isDraggingRef = useRef(false);
   const projectedOriginRef = useRef(new THREE.Vector3());
   const mobileModelCenterRef = useRef(new THREE.Vector3());
@@ -75,6 +80,15 @@ export const MobileSplatResultViewer = forwardRef<
       senderRef.current = null;
     };
   }, [sourceArtworkId]);
+
+  useEffect(() => {
+    setState('loading');
+    setAutoRotateEnabled(true);
+    initialDistanceRef.current = null;
+    gamePositionRef.current.set(0, 0, 0);
+    jumpHeightRef.current = 0;
+    jumpVelocityRef.current = 0;
+  }, [model?.splatUrl, model?.plyUrl]);
 
   const sendCurrentPose = useCallback((active: boolean) => {
     const controls = controlsRef.current;
@@ -131,6 +145,36 @@ export const MobileSplatResultViewer = forwardRef<
       active
     });
   }, [gameControlsEnabled]);
+
+  const sendControlledPose = useCallback(() => {
+    lastControlActivityAtRef.current = performance.now();
+    sendCurrentPose(true);
+    if (controlIdleTimerRef.current !== null) return;
+
+    const releaseWhenIdle = () => {
+      const remaining = REMOTE_MODEL_CONTROL_IDLE_MS
+        - (performance.now() - lastControlActivityAtRef.current);
+      if (remaining > 1) {
+        controlIdleTimerRef.current = window.setTimeout(releaseWhenIdle, remaining);
+        return;
+      }
+      controlIdleTimerRef.current = null;
+      sendCurrentPose(false);
+      setAutoRotateEnabled(true);
+    };
+    controlIdleTimerRef.current = window.setTimeout(
+      releaseWhenIdle,
+      REMOTE_MODEL_CONTROL_IDLE_MS
+    );
+  }, [sendCurrentPose]);
+
+  useEffect(() => () => {
+    if (controlIdleTimerRef.current !== null) {
+      window.clearTimeout(controlIdleTimerRef.current);
+      controlIdleTimerRef.current = null;
+    }
+    sendCurrentPose(false);
+  }, [sendCurrentPose]);
 
   const updateMobileModelTransform = useCallback(() => {
     const controls = controlsRef.current;
@@ -240,7 +284,7 @@ export const MobileSplatResultViewer = forwardRef<
       }
 
       updateMobileModelTransform();
-      if (changed) sendCurrentPose(true);
+      if (changed) sendControlledPose();
       frame = window.requestAnimationFrame(tick);
     };
 
@@ -253,7 +297,7 @@ export const MobileSplatResultViewer = forwardRef<
       depthJoystickActiveRef.current = false;
       sendCurrentPose(false);
     };
-  }, [gameControlsEnabled, sendCurrentPose, state, updateMobileModelTransform]);
+  }, [gameControlsEnabled, sendControlledPose, sendCurrentPose, state, updateMobileModelTransform]);
 
   const updateJoystick = (
     kind: 'planar' | 'depth',
@@ -322,11 +366,6 @@ export const MobileSplatResultViewer = forwardRef<
       setIsDepthJoystickActive(false);
       if (depthThumbRef.current) depthThumbRef.current.style.transform = 'translate(-50%, -50%)';
     }
-    if (
-      !planarJoystickActiveRef.current
-      && !depthJoystickActiveRef.current
-      && jumpVelocityRef.current === 0
-    ) sendCurrentPose(false);
   };
 
   const triggerJump = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -348,7 +387,7 @@ export const MobileSplatResultViewer = forwardRef<
   if (!model?.splatUrl) {
     return (
       <div className="mobile-splat-viewer__fallback">
-        <p>当前任务没有返回可浏览的 .splat 模型。</p>
+            <p>当前任务没有返回可浏览的 3D 模型。</p>
       </div>
     );
   }
@@ -368,7 +407,6 @@ export const MobileSplatResultViewer = forwardRef<
         <group ref={modelGroupRef}>
           <SplatCreatureModel
             url={model.splatUrl}
-            rigUrl={model.rigUrl}
             colors={artwork.features.visualTraits.dominantColors}
             features={artwork.features}
             scale={2.45}
@@ -396,14 +434,13 @@ export const MobileSplatResultViewer = forwardRef<
           onStart={() => {
             isDraggingRef.current = true;
             setAutoRotateEnabled(false);
-            sendCurrentPose(true);
+            sendControlledPose();
           }}
           onChange={() => {
-            if (isDraggingRef.current) sendCurrentPose(true);
+            if (isDraggingRef.current) sendControlledPose();
           }}
           onEnd={() => {
             isDraggingRef.current = false;
-            sendCurrentPose(false);
           }}
         />
       </Canvas>
@@ -416,7 +453,7 @@ export const MobileSplatResultViewer = forwardRef<
       ) : null}
       {state === 'error' ? (
         <div className="mobile-splat-viewer__overlay mobile-splat-viewer__overlay--error" role="alert">
-          <p>模型载入失败，可以下载模型后在支持 Gaussian Splat 的设备中查看。</p>
+          <p>模型载入失败，可以下载模型后在兼容设备中查看。</p>
         </div>
       ) : null}
       {state === 'ready' ? (

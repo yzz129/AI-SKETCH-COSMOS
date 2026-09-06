@@ -144,6 +144,9 @@ export type ArtworkGaussianModelResult = {
   gaussianCount: number;
   progress?: number;
   message?: string;
+  queuePosition?: number;
+  estimatedWaitSeconds?: number;
+  queueCapacity?: number;
   createdAt: number;
 };
 

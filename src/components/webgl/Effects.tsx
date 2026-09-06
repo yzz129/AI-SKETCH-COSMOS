@@ -1,69 +1,11 @@
 import { useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
-import { useArtworkStore } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
-
-const CinematicPass = {
-  uniforms: {
-    tDiffuse: { value: null },
-    uTime: { value: 0 },
-    // Keep the cosmic frame, but do not crush edge-placed GLB exhibits to 15%
-    // brightness. At 0.46 the edge retains enough light for authored PBR color.
-    uVignette: { value: 0.46 },
-    uNoise: { value: 0.004 },
-    uResolution: { value: new THREE.Vector2(1280, 720) },
-    uSharpness: { value: 0.14 }
-  },
-  vertexShader: `
-    varying vec2 vUv;
-
-    void main() {
-      vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: `
-    uniform sampler2D tDiffuse;
-    uniform float uTime;
-    uniform float uVignette;
-    uniform float uNoise;
-    uniform vec2 uResolution;
-    uniform float uSharpness;
-    varying vec2 vUv;
-
-    float hash(vec2 p) {
-      p = fract(p * vec2(443.8975, 397.2973));
-      p += dot(p, p + 19.19);
-      return fract(p.x * p.y);
-    }
-
-    void main() {
-      vec4 color = texture2D(tDiffuse, vUv);
-      vec2 texel = 1.0 / max(uResolution, vec2(1.0));
-      vec3 neighbourAverage = (
-        texture2D(tDiffuse, vUv + vec2(texel.x, 0.0)).rgb
-        + texture2D(tDiffuse, vUv - vec2(texel.x, 0.0)).rgb
-        + texture2D(tDiffuse, vUv + vec2(0.0, texel.y)).rgb
-        + texture2D(tDiffuse, vUv - vec2(0.0, texel.y)).rgb
-      ) * 0.25;
-      vec2 p = vUv - vec2(0.5);
-      float vignette = smoothstep(0.86, 0.2, length(p * vec2(1.08, 0.92)));
-      float grain = hash(vUv * vec2(1280.0, 720.0) + uTime) - 0.5;
-      float luminance = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
-      float detailMask = smoothstep(0.025, 0.34, luminance);
-      color.rgb += (color.rgb - neighbourAverage) * uSharpness * detailMask;
-      color.rgb *= mix(1.0 - uVignette, 1.0, vignette);
-      color.rgb += grain * uNoise;
-      gl_FragColor = color;
-    }
-  `
-};
 
 const CollapsePass = {
   uniforms: {
@@ -76,7 +18,6 @@ const CollapsePass = {
   },
   vertexShader: `
     varying vec2 vUv;
-
     void main() {
       vUv = uv;
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
@@ -97,27 +38,25 @@ const CollapsePass = {
       float dist = length(metric);
       vec2 pullDir = normalize(-fromCenter + vec2(0.0001));
       vec2 tangent = vec2(-pullDir.y, pullDir.x);
-
       float well = smoothstep(0.62, 0.02, dist);
       float eventHorizon = smoothstep(0.14, 0.0, dist);
       float pulse = 0.82 + 0.18 * sin(uTime * 8.0 + dist * 24.0);
       float pull = uCollapse * pulse * (0.014 + well * 0.07) / (dist + 0.22);
       float swirl = uCollapse * well * sin(uTime * 3.4 + dist * 11.0) * 0.018;
       float shock = exp(-abs(dist - uShock * 0.72) * 24.0) * uCollapse;
-
-      vec2 uv = vUv + pullDir * pull + tangent * swirl + pullDir * shock * 0.006;
-      uv = clamp(uv, vec2(0.001), vec2(0.999));
-
+      vec2 uv = clamp(
+        vUv + pullDir * pull + tangent * swirl + pullDir * shock * 0.006,
+        vec2(0.001),
+        vec2(0.999)
+      );
       float chroma = uCollapse * (0.0018 + well * 0.0032);
       vec4 color = texture2D(tDiffuse, uv);
       color.r = texture2D(tDiffuse, clamp(uv + pullDir * chroma, vec2(0.001), vec2(0.999))).r;
       color.b = texture2D(tDiffuse, clamp(uv - pullDir * chroma, vec2(0.001), vec2(0.999))).b;
-
       color.rgb *= 1.0 - well * uCollapse * 0.18;
       color.rgb *= 1.0 - eventHorizon * uCollapse * 0.38;
       color.rgb += vec3(0.28, 0.5, 1.0) * shock * 0.14;
       color.rgb += vec3(0.75, 0.42, 1.0) * well * uCollapse * 0.025;
-
       gl_FragColor = color;
     }
   `
@@ -125,59 +64,27 @@ const CollapsePass = {
 
 export function Effects() {
   const { gl, scene, camera, size } = useThree();
-  const artworkCount = useArtworkStore((state) => state.artworks.length);
-  const crowdedScene = artworkCount > 8;
-  const [bloomReady, setBloomReady] = useState(false);
   const composer = useMemo(() => {
     const effectComposer = new EffectComposer(gl);
     const renderPass = new RenderPass(scene, camera);
-    const bloomPass = new UnrealBloomPass(new THREE.Vector2(size.width, size.height), 0, 0.22, 0.72);
     const collapsePass = new ShaderPass(CollapsePass);
-    const cinematicPass = new ShaderPass(CinematicPass);
     const outputPass = new OutputPass();
 
     effectComposer.setPixelRatio(Math.min(gl.getPixelRatio(), 2));
 
     effectComposer.addPass(renderPass);
-    effectComposer.addPass(bloomPass);
     effectComposer.addPass(collapsePass);
-    effectComposer.addPass(cinematicPass);
     effectComposer.addPass(outputPass);
 
-    return { effectComposer, bloomPass, collapsePass, cinematicPass };
-  }, [camera, gl, scene, size.height, size.width]);
+    return { effectComposer, collapsePass };
+  }, [camera, gl, scene]);
   const collapseStrength = useRef(0);
 
   useEffect(() => {
     composer.effectComposer.setPixelRatio(Math.min(gl.getPixelRatio(), 2));
     composer.effectComposer.setSize(size.width, size.height);
-    const bloomScale = crowdedScene ? 0.65 : 1;
-    composer.bloomPass.setSize(
-      Math.max(1, Math.round(size.width * bloomScale)),
-      Math.max(1, Math.round(size.height * bloomScale))
-    );
-    const pixelRatio = Math.min(gl.getPixelRatio(), 2);
-    composer.cinematicPass.uniforms.uResolution.value.set(
-      size.width * pixelRatio,
-      size.height * pixelRatio
-    );
     composer.collapsePass.uniforms.uAspect.value = size.width / Math.max(size.height, 1);
-  }, [composer, crowdedScene, gl, size.height, size.width]);
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      const reveal = () => setBloomReady(true);
-
-      if ('requestIdleCallback' in window) {
-        window.requestIdleCallback(reveal, { timeout: 900 });
-        return;
-      }
-
-      globalThis.setTimeout(reveal, 1);
-    }, 700);
-
-    return () => window.clearTimeout(timeoutId);
-  }, []);
+  }, [composer, gl, size.height, size.width]);
 
   useEffect(() => {
     return () => composer.effectComposer.dispose();
@@ -186,15 +93,22 @@ export function Effects() {
   useFrame(({ clock }, delta) => {
     const state = useSketchStore.getState();
     const collapse = state.collapse;
-    const spotlightActive = state.spotlight.phase !== 'idle';
     const now = Date.now();
     const hasReleased = collapse.releasedAt > 0;
-    const heldSeconds = collapse.active ? Math.max(0, (now - collapse.startedAt) / 1000) : collapse.holdDuration / 1000;
+    const heldSeconds = collapse.active
+      ? Math.max(0, (now - collapse.startedAt) / 1000)
+      : collapse.holdDuration / 1000;
     const releaseDuration = THREE.MathUtils.clamp(0.36 + heldSeconds * 0.56, 0.38, 1.95);
-    const releasedSeconds = hasReleased ? Math.max(0, (now - collapse.releasedAt) / 1000) : 0;
-    const releaseFalloff = collapse.active ? 1 : Math.max(0, 1 - releasedSeconds / releaseDuration) ** 2;
+    const releasedSeconds = hasReleased
+      ? Math.max(0, (now - collapse.releasedAt) / 1000)
+      : 0;
+    const releaseFalloff = collapse.active
+      ? 1
+      : Math.max(0, 1 - releasedSeconds / releaseDuration) ** 2;
     const holdTarget = THREE.MathUtils.clamp(0.1 + heldSeconds * 0.22, 0, 0.52);
-    const targetCollapse = collapse.active ? holdTarget : (hasReleased ? holdTarget * releaseFalloff : 0);
+    const targetCollapse = collapse.active
+      ? holdTarget
+      : (hasReleased ? holdTarget * releaseFalloff : 0);
 
     collapseStrength.current = THREE.MathUtils.damp(
       collapseStrength.current,
@@ -203,26 +117,16 @@ export function Effects() {
       delta
     );
 
-    const bloomTarget = spotlightActive
-      ? 0.025
-      : (crowdedScene ? 0.085 : 0.145) + collapseStrength.current * 0.035;
-    composer.bloomPass.strength = THREE.MathUtils.damp(
-      composer.bloomPass.strength,
-      bloomReady ? bloomTarget : 0,
-      3,
-      delta
-    );
-    composer.bloomPass.threshold = spotlightActive ? 0.88 : 0.77;
-    composer.bloomPass.radius = spotlightActive ? 0.045 : 0.12 + collapseStrength.current * 0.02;
     composer.collapsePass.uniforms.uTime.value = clock.elapsedTime;
     composer.collapsePass.uniforms.uCollapse.value = collapseStrength.current;
     composer.collapsePass.uniforms.uCenter.value.set(collapse.center[0], collapse.center[1]);
     composer.collapsePass.uniforms.uShock.value = collapse.active
       ? (clock.elapsedTime * 0.36) % 1
       : THREE.MathUtils.clamp(releasedSeconds / Math.max(releaseDuration, 0.001), 0, 1);
-    composer.cinematicPass.uniforms.uTime.value = clock.elapsedTime;
-    composer.cinematicPass.uniforms.uNoise.value = spotlightActive || crowdedScene ? 0.001 : 0.0025;
-    composer.cinematicPass.uniforms.uSharpness.value = spotlightActive ? 0.1 : 0.14;
+    // Always use the same full-resolution render pipeline. Switching between
+    // direct WebGL rendering and EffectComposer leaves different viewport,
+    // colour and render-target state behind and causes visible scale/brightness
+    // jumps while the collapse strength crosses zero.
     composer.effectComposer.render(delta);
   }, 1);
 

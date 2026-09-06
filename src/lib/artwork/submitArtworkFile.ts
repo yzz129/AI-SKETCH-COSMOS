@@ -20,7 +20,7 @@ function localReadyMessage(artwork: ProcessedArtworkImage, features: ArtworkFeat
 }
 
 function splatReadyMessage(artwork: ProcessedArtworkImage, features: ArtworkFeatureResult) {
-  return `${artwork.name} 已进入星河：TripoSplat .splat / ${features.motionPreset}`;
+  return `${artwork.name} 已进入星河：3D 模型 / ${features.motionPreset}`;
 }
 
 function quickFallbackFeatures(artwork: ProcessedArtworkImage): ArtworkFeatureResult {
@@ -79,21 +79,27 @@ function dominantColorsFromArtwork(artwork: ProcessedArtworkImage) {
 
 function progressMessage(result: ArtworkGaussianModelResult) {
   if (result.status === 'queued') {
-    return result.message ?? 'TripoSplat 后端已排队，正在等待 GPU 生成 .splat...';
+    const position = typeof result.queuePosition === 'number' && result.queuePosition > 0
+      ? `当前第 ${result.queuePosition} 位`
+      : '已进入队列';
+    const waitMinutes = typeof result.estimatedWaitSeconds === 'number' && result.estimatedWaitSeconds > 0
+      ? `，预计等待约 ${Math.max(1, Math.ceil(result.estimatedWaitSeconds / 60))} 分钟`
+      : '';
+    return `生成任务${position}${waitMinutes}；你可以先去参观其他展会项目。`;
   }
 
   if (result.status === 'processing') {
     const percent = typeof result.progress === 'number'
       ? ` ${Math.round(result.progress * 100)}%`
       : '';
-    return result.message ?? `TripoSplat 正在生成 Gaussian Splat${percent}...`;
+    return `正在生成 3D 模型${percent}...`;
   }
 
   if (result.status === 'ready') {
-    return 'TripoSplat 模型已生成，正在加入星河...';
+    return '3D 模型已生成，正在加入星河...';
   }
 
-  return result.message ?? 'TripoSplat 生成失败，正在回退到本地粒子生命...';
+  return '3D 模型生成失败，正在准备备用效果...';
 }
 
 async function addLocalParticleArtwork(file: File, requestedName?: string) {
@@ -116,7 +122,16 @@ export type SubmitArtworkFileOptions = {
   onGaussianProgress?: (result: ArtworkGaussianModelResult) => void;
   submissionId?: string;
   signal?: AbortSignal;
+  userContext?: Record<string, unknown>;
+  anonymous?: boolean;
 };
+
+function createSubmissionId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `web_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
 
 export async function submitArtworkFile(
   file: File,
@@ -125,11 +140,16 @@ export async function submitArtworkFile(
     name,
     onGaussianProgress,
     submissionId,
-    signal
+    signal,
+    userContext,
+    anonymous = false
   }: SubmitArtworkFileOptions = {}
 ) {
   const sketchStore = useSketchStore.getState();
   const safeName = name ? maskSensitiveText(name).trim() || undefined : undefined;
+  // Give every browser upload a stable per-submission key so the backend can
+  // attribute timing and traffic even when the caller does not provide one.
+  const effectiveSubmissionId = submissionId ?? createSubmissionId();
   const flowStartedAt = performance.now();
   const logStage = (stage: string) => {
     console.info(`[artwork-submit] ${stage} +${((performance.now() - flowStartedAt) / 1000).toFixed(2)}s`);
@@ -153,7 +173,7 @@ export async function submitArtworkFile(
 
   if (!backendGenerationEnabled) {
     if (!allowLocalFallback) {
-      const error = new Error('TripoSplat 服务尚未配置，当前作品无法发送到大屏。');
+      const error = new Error('3D 模型服务尚未配置，当前作品无法发送到大屏。');
       sketchStore.setError(error.message);
       throw error;
     }
@@ -162,7 +182,7 @@ export async function submitArtworkFile(
   }
 
   try {
-    sketchStore.setProcessing('正在提交 TripoSplat 后端任务，等待 .splat 模型生成...');
+    sketchStore.setProcessing('正在提交生成任务，等待 3D 模型生成...');
     logStage('start');
     const artworkPromise = processArtworkImage(file).then((artwork) => {
       logStage('local artwork processed');
@@ -187,10 +207,12 @@ export async function submitArtworkFile(
     const gaussianModel = await generateGaussianArtworkModel({
       file,
       name: safeName,
-      submissionId,
+      submissionId: effectiveSubmissionId,
       signal,
       format: 'splat',
       features: fallbackFeatures,
+      userContext,
+      anonymous,
       onProgress: (result) => {
         onGaussianProgress?.(result);
         useSketchStore.setState({
@@ -210,7 +232,7 @@ export async function submitArtworkFile(
     logStage('artwork added to scene');
     useSketchStore.setState({
       status: 'ready',
-      message: `${namedArtwork.name} 已进入星河：基础 .splat 已显示，GPU 骨骼将在后台热加载...`
+      message: `${namedArtwork.name} 已进入星河：基础 3D 模型已显示，动态效果将在后台加载...`
     });
 
     useArtworkStore.getState().updateArtworkFeatures(displayedArtwork.id, displayedFeatures);
@@ -241,12 +263,12 @@ export async function submitArtworkFile(
     if (!allowLocalFallback) {
       const message = error instanceof Error
         ? error.message
-        : 'TripoSplat 后端不可用或生成失败，请稍后重试。';
+        : '3D 模型服务暂时不可用或生成失败，请稍后重试。';
       useSketchStore.getState().setError(message);
       throw error;
     }
     console.warn('[triposplat] backend-first generation failed; falling back to local particles:', error);
-    useSketchStore.getState().setProcessing('TripoSplat 后端不可用或生成失败，正在回退到本地粒子生命...');
+    useSketchStore.getState().setProcessing('3D 模型生成失败，正在准备备用效果...');
     return addLocalParticleArtwork(file, safeName);
   }
 }

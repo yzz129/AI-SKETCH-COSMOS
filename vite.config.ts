@@ -21,6 +21,30 @@ function createTripoSplatProxy(target: string) {
   };
 }
 
+function exhibitionAssetCachingPlugin(): Plugin {
+  const middleware = (
+    request: import('node:http').IncomingMessage,
+    response: import('node:http').ServerResponse,
+    next: () => void
+  ) => {
+    const pathname = request.url?.split('?')[0] ?? '';
+    if (pathname.startsWith('/exhibition-models/') && pathname.endsWith('.glb')) {
+      response.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+      response.setHeader('Content-Type', 'model/gltf-binary');
+    }
+    next();
+  };
+  return {
+    name: 'exhibition-model-cache-headers',
+    configureServer(server) {
+      server.middlewares.use(middleware);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(middleware);
+    }
+  };
+}
+
 function createDevProxy(
   triposplatTarget: string,
   dadakidoTarget: string,
@@ -682,17 +706,18 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [
       react(),
+      exhibitionAssetCachingPlugin(),
       arkRecognitionPlugin(env.ARK_API_KEY, env.CONTENT_MODERATION_THRESHOLD)
     ],
     resolve: {
       dedupe: ['react', 'react-dom']
     },
     server: {
-      allowedHosts: ['.trycloudflare.com', '.yzzwnw.asia'],
+      allowedHosts: ['.trycloudflare.com', '.yzzwnw.asia', '.yzznw.asia'],
       proxy: createDevProxy(triposplatApiTarget, dadakidoApiTarget, dadakidoCheckInApiTarget)
     },
     preview: {
-      allowedHosts: ['.trycloudflare.com', '.yzzwnw.asia'],
+      allowedHosts: ['.trycloudflare.com', '.yzzwnw.asia', '.yzznw.asia'],
       proxy: createDevProxy(triposplatApiTarget, dadakidoApiTarget, dadakidoCheckInApiTarget)
     }
   };

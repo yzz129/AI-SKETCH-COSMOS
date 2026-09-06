@@ -13,6 +13,7 @@ type CreatureLevelBadgeProps = {
   height: number;
   renderOrderRef?: MutableRefObject<number>;
   reappearRef?: MutableRefObject<number>;
+  loadVisibilityRef?: MutableRefObject<number>;
 };
 
 function roundedRect(
@@ -109,7 +110,8 @@ export function CreatureLevelBadge({
   index,
   height,
   renderOrderRef,
-  reappearRef
+  reappearRef,
+  loadVisibilityRef
 }: CreatureLevelBadgeProps) {
   const spriteRef = useRef<THREE.Sprite>(null);
   const lastNameRef = useRef('');
@@ -153,7 +155,11 @@ export function CreatureLevelBadge({
       lastProgressBucketRef.current = progressBucket;
     }
     sprite.renderOrder = (renderOrderRef?.current ?? 10) + 12;
-    badge.material.opacity = THREE.MathUtils.clamp(reappearRef?.current ?? 1, 0, 1) * 0.92;
+    const loadVisibility = THREE.MathUtils.clamp(loadVisibilityRef?.current ?? 1, 0, 1);
+    sprite.visible = loadVisibility > 0.001;
+    badge.material.opacity = THREE.MathUtils.clamp(reappearRef?.current ?? 1, 0, 1)
+      * loadVisibility
+      * 0.92;
   });
 
   return (

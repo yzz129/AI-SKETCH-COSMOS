@@ -4,7 +4,8 @@ import { useRef } from 'react';
 import * as THREE from 'three';
 import { useSketchStore } from '../../stores/useSketchStore';
 import { useCreatureBehaviorStore } from '../../utils/creatureBehavior';
-import { CAMERA_ORBIT_TARGET } from './cosmicAnchors';
+import { CAMERA_ORBIT_TARGET, DISPLAY_COMPOSITION_OFFSET_X } from './cosmicAnchors';
+import { SPOTLIGHT_USES_CAMERA_CLOSE_UP } from './spotlightConfig';
 import {
   cappedDampStep,
   spotlightApproachEased,
@@ -13,16 +14,9 @@ import {
 } from './spotlightMotion';
 
 const BASE_TARGET = CAMERA_ORBIT_TARGET.clone();
+const BASE_CAMERA = new THREE.Vector3(DISPLAY_COMPOSITION_OFFSET_X, 0, 6);
 const CLOSE_UP_DISTANCE = 3.0;
 const RELEASE_WIDE_DISTANCE = 9.6;
-const SPOTLIGHT_USES_CAMERA_CLOSE_UP = false;
-const AUTO_ORBIT_YAW_AMPLITUDE = THREE.MathUtils.degToRad(24);
-const AUTO_ORBIT_YAW_CYCLE_SECONDS = 120;
-const AUTO_ORBIT_PITCH_AMPLITUDE = THREE.MathUtils.degToRad(9);
-const AUTO_ORBIT_PITCH_CYCLE_SECONDS = 145;
-const AUTO_ORBIT_DOLLY_AMPLITUDE = 0.07;
-const AUTO_ORBIT_DOLLY_CYCLE_SECONDS = 170;
-const AUTO_ORBIT_RESUME_DELAY_MS = 1_200;
 
 function smoothFactor(speed: number, delta: number) {
   return 1 - Math.exp(-delta * speed);
@@ -65,16 +59,8 @@ export function CameraRig() {
   const previousPhase = useRef(useSketchStore.getState().spotlight.phase);
   const hasSavedView = useRef(false);
   const hasRestoreStart = useRef(false);
-  const isUserRotating = useRef(false);
-  const autoOrbitResumeAt = useRef(0);
-  const autoOrbitBlend = useRef(1);
-  const previousAutoYaw = useRef(0);
-  const previousAutoPitch = useRef(0);
-  const previousAutoDistanceScale = useRef(1);
-  const orbitOffset = useRef(new THREE.Vector3());
-  const orbitSpherical = useRef(new THREE.Spherical());
 
-  useFrame(({ camera, clock }, delta) => {
+  useFrame(({ camera }, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
@@ -118,8 +104,12 @@ export function CameraRig() {
 
     previousCreatureId.current = creatureId;
     previousPhase.current = phase;
-    controls.enabled = true;
-    controls.noRotate = false;
+    // The public display is a front-facing composition. Keep TrackballControls
+    // only as a target holder for the optional spotlight camera flow; disabling
+    // its input also prevents an accidental drag from permanently skewing the
+    // whole galaxy on the large touch screen.
+    controls.enabled = false;
+    controls.noRotate = true;
 
     // Spotlight presentation now moves the creature into the outer display
     // layer. Keep the universe camera on its normal path for the entire shot.
@@ -224,76 +214,22 @@ export function CameraRig() {
     const s = smoothFactor(1.6, delta);
     defaultTarget.current.lerp(BASE_TARGET, s);
     controls.target.copy(defaultTarget.current);
-    controls.update();
-
-    const time = clock.elapsedTime;
-    const desiredYaw = Math.sin(
-      time * Math.PI * 2 / AUTO_ORBIT_YAW_CYCLE_SECONDS
-    ) * AUTO_ORBIT_YAW_AMPLITUDE;
-    const desiredPitch = Math.sin(
-      time * Math.PI * 2 / AUTO_ORBIT_PITCH_CYCLE_SECONDS
-    ) * AUTO_ORBIT_PITCH_AMPLITUDE;
-    const desiredDistanceScale = 1 + Math.sin(
-      time * Math.PI * 2 / AUTO_ORBIT_DOLLY_CYCLE_SECONDS
-    ) * AUTO_ORBIT_DOLLY_AMPLITUDE;
-    const autoOrbitAllowed = phase === 'idle'
-      && !isUserRotating.current
-      && performance.now() >= autoOrbitResumeAt.current;
-    autoOrbitBlend.current = THREE.MathUtils.damp(
-      autoOrbitBlend.current,
-      autoOrbitAllowed ? 1 : 0,
-      autoOrbitAllowed ? 0.85 : 8,
-      delta
-    );
-
-    if (autoOrbitBlend.current > 0.0001) {
-      orbitOffset.current.copy(camera.position).sub(controls.target);
-      orbitSpherical.current.setFromVector3(orbitOffset.current);
-      orbitSpherical.current.theta += (
-        desiredYaw - previousAutoYaw.current
-      ) * autoOrbitBlend.current;
-      orbitSpherical.current.phi = THREE.MathUtils.clamp(
-        orbitSpherical.current.phi
-          + (desiredPitch - previousAutoPitch.current) * autoOrbitBlend.current,
-        THREE.MathUtils.degToRad(24),
-        THREE.MathUtils.degToRad(156)
-      );
-      const distanceRatio = desiredDistanceScale
-        / Math.max(previousAutoDistanceScale.current, 0.001);
-      orbitSpherical.current.radius *= THREE.MathUtils.lerp(
-        1,
-        distanceRatio,
-        autoOrbitBlend.current
-      );
-      orbitOffset.current.setFromSpherical(orbitSpherical.current);
-      camera.position.copy(controls.target).add(orbitOffset.current);
-      camera.lookAt(controls.target);
-      camera.updateMatrixWorld();
-    }
-    previousAutoYaw.current = desiredYaw;
-    previousAutoPitch.current = desiredPitch;
-    previousAutoDistanceScale.current = desiredDistanceScale;
+    moveVectorToward(camera.position, BASE_CAMERA, 2.4, 4.5, delta);
+    camera.lookAt(controls.target);
+    camera.updateMatrixWorld();
   });
 
   return (
     <TrackballControls
       ref={controlsRef}
       makeDefault
+      enabled={false}
       noPan
       noZoom
-      noRotate={false}
-      rotateSpeed={0.85}
+      noRotate
       staticMoving={false}
       dynamicDampingFactor={0.22}
       target={BASE_TARGET}
-      onStart={() => {
-        isUserRotating.current = true;
-        autoOrbitBlend.current = 0;
-      }}
-      onEnd={() => {
-        isUserRotating.current = false;
-        autoOrbitResumeAt.current = performance.now() + AUTO_ORBIT_RESUME_DELAY_MS;
-      }}
     />
   );
 }

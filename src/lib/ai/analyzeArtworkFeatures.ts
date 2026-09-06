@@ -44,6 +44,7 @@ const MOTION_PARTS: ArtworkMotionPart[] = [
   'body'
 ];
 const REMOTE_FEATURE_RECOGNITION_ENABLED = import.meta.env.VITE_ARTWORK_FEATURE_RECOGNITION !== 'false';
+const AI_API_BASE = (import.meta.env.VITE_TRIPOSPLAT_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '/triposplat';
 
 const CHINESE_LOCOMOTION_MAP: Record<string, LocomotionType> = {
   飞行: 'flying',
@@ -236,7 +237,7 @@ function normalizeFeatureResult(raw: unknown, colors: string[]): FeatureBase {
 
 async function callVisionFeatureApi(file: File) {
   const imageDataUrl = await fileToDataUrl(file);
-  const response = await fetch('/api/artwork-features', {
+  const response = await fetch(`${AI_API_BASE}/api/ai/artwork-features`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ imageDataUrl })

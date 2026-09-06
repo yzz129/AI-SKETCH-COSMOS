@@ -178,6 +178,12 @@ TRIPOSPLAT_DEVICE=cuda
 TRIPOSPLAT_STEPS=15
 TRIPOSPLAT_GUIDANCE_SCALE=1.0
 TRIPOSPLAT_COMPILE=true
+TRIPOSPLAT_MAX_WORKERS=32
+ARK_IMAGE_MODELS=doubao-seedream-4-5-251128,doubao-seedream-5-0-260128,doubao-seedream-5-0-lite-260128,doubao-seedream-4-0-250828
+TRIPOSPLAT_MAX_ACTIVE_JOBS=3000
+TRIPOSPLAT_ESTIMATED_JOB_SECONDS=50
+TRIPOSPLAT_EFFECTIVE_PARALLEL_JOBS=1
+TRIPOSPLAT_JOB_RETENTION_SECONDS=86400
 EOF
 
 # 启动服务 (PM2 守护)
@@ -219,6 +225,12 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `TRIPOSPLAT_CPU_DTYPE` | 否 | `float32` | CPU 模式精度 |
 | `TRIPOSPLAT_CPU_NUM_GAUSSIANS_CAP` | 否 | `32768` | CPU 模式 Gaussian 上限 |
 | `TRIPOSPLAT_CPU_TIMEOUT_SECONDS` | 否 | `900` | CPU 子进程超时 |
+| `TRIPOSPLAT_MAX_WORKERS` | 否 | `32` | 可并行进行 Seedream 生图等前处理的任务数；不改变单卡推理串行限制 |
+| `ARK_IMAGE_MODELS` | 否 | 4 个 Seedream 模型 | 逗号分隔的生图模型池；并发任务会轮询分流，单模型失败时自动尝试池内其他模型 |
+| `TRIPOSPLAT_MAX_ACTIVE_JOBS` | 否 | `2000` | 已预留、排队和生成中的任务总容量 |
+| `TRIPOSPLAT_ESTIMATED_JOB_SECONDS` | 否 | `50` | 前端排队时间估算使用的单任务秒数 |
+| `TRIPOSPLAT_EFFECTIVE_PARALLEL_JOBS` | 否 | `1` | 排队时间估算使用的实际并行生成数 |
+| `TRIPOSPLAT_JOB_RETENTION_SECONDS` | 否 | `3600` | 完成后的任务查询状态在内存中的保留时间；活动现场建议 `86400` |
 
 ---
 
@@ -237,7 +249,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 1. **前端**：`dist/` 部署到 CDN + Nginx 反向代理 API 请求
 2. **AI API**：Vite preview 仅适合低流量，高并发改用独立 Express/FastAPI 服务代理 Ark API
-3. **GPU 后端**：加请求队列（当前已单线程串行），避免并发 OOM
+3. **GPU 后端**：当前已使用受保护队列并保持单卡推理串行；两千人活动建议容量设为 `2000`，同时使用 Redis/Celery 持久化队列，避免服务重启丢失等待任务
 4. **缓存**：Nginx 缓存 `/assets/` 下的 .splat/.ply 文件（静态、不变）
 5. **HTTPS**：生产环境必须，用 Let's Encrypt 或云厂商 SSL 证书
 6. **监控**：`/health` 端点供健康检查，GPU 服务加 `/health/triposplat` 检查模型加载状态

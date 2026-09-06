@@ -3,10 +3,11 @@ import io
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 from PIL import Image, ImageOps
+
+from .ai_model_registry import ai_model_status, ark_image_models, generate_reference_image
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,7 @@ class SeedreamPreparation:
     enabled: bool
     used: bool
     model: str
+    provider: str | None = None
     reference_filename: str | None = None
     fallback_reason: str | None = None
     fidelity_score: float | None = None
@@ -45,6 +47,7 @@ class SeedreamPreparation:
             "enabled": self.enabled,
             "used": self.used,
             "model": self.model,
+            "provider": self.provider,
             "referenceFilename": self.reference_filename,
             "fallbackReason": self.fallback_reason,
             "fidelityScore": self.fidelity_score,
@@ -62,21 +65,22 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def seedream_config_status() -> dict:
     enabled = _env_bool("SEEDREAM_ENABLED", True)
-    api_key_configured = bool(os.getenv("SEEDREAM_API_KEY", "").strip())
-    try:
-        import volcenginesdkarkruntime  # noqa: F401
-
-        sdk_available = True
-    except ImportError:
-        sdk_available = False
+    registry = ai_model_status()
+    image_providers = registry["imageGeneration"]
+    ark = next(provider for provider in image_providers if provider["provider"] == "volcano-ark")
 
     return {
         "enabled": enabled,
-        "ready": not enabled or (api_key_configured and sdk_available),
-        "apiKeyConfigured": api_key_configured,
-        "apiKeyEnv": "SEEDREAM_API_KEY",
-        "sdkAvailable": sdk_available,
-        "model": os.getenv("SEEDREAM_MODEL", DEFAULT_MODEL),
+        "ready": not enabled or any(
+            provider["configured"] and provider["sdkAvailable"]
+            for provider in image_providers
+        ),
+        "apiKeyConfigured": ark["configured"],
+        "apiKeyEnv": "SEEDREAM_API_KEY or ARK_API_KEY",
+        "sdkAvailable": ark["sdkAvailable"],
+        "model": ark_image_models()[0],
+        "models": ark["models"],
+        "providers": image_providers,
         "size": os.getenv("SEEDREAM_SIZE", "2K"),
         "required": _env_bool("SEEDREAM_REQUIRED", True),
         "responseFormat": os.getenv("SEEDREAM_RESPONSE_FORMAT", "b64_json"),
@@ -100,29 +104,6 @@ def _image_data_url(image_path: Path) -> str:
     return f"data:image/jpeg;base64,{encoded}"
 
 
-def _download_generated_image(url: str) -> bytes:
-    request = Request(url, headers={"User-Agent": "AI-Sketch-Cosmos/1.0"})
-    with urlopen(request, timeout=120) as response:
-        payload = response.read(32 * 1024 * 1024 + 1)
-    if len(payload) > 32 * 1024 * 1024:
-        raise RuntimeError("Seedream output exceeded the 32 MiB download limit.")
-    return payload
-
-
-def _response_image_bytes(response) -> bytes:
-    data = getattr(response, "data", None)
-    if not data:
-        raise RuntimeError("Seedream returned no image data.")
-    first = data[0]
-    b64_json = getattr(first, "b64_json", None)
-    if b64_json:
-        return base64.b64decode(b64_json)
-    url = getattr(first, "url", None)
-    if not url:
-        raise RuntimeError("Seedream response did not contain an image URL.")
-    return _download_generated_image(url)
-
-
 def _save_reference(payload: bytes, output_path: Path) -> None:
     with Image.open(io.BytesIO(payload)) as opened:
         image = ImageOps.exif_transpose(opened)
@@ -134,55 +115,31 @@ def _save_reference(payload: bytes, output_path: Path) -> None:
 def prepare_seedream_reference(source_path: Path, artwork_dir: Path) -> SeedreamPreparation:
     enabled = _env_bool("SEEDREAM_ENABLED", True)
     required = _env_bool("SEEDREAM_REQUIRED", True)
-    model = os.getenv("SEEDREAM_MODEL", DEFAULT_MODEL)
+    model = ark_image_models()[0]
     if not enabled:
         return SeedreamPreparation(source_path, False, False, model)
 
     try:
-        from volcenginesdkarkruntime import Ark
-
-        api_key = os.getenv("SEEDREAM_API_KEY", "").strip()
-        if not api_key:
-            raise RuntimeError("SEEDREAM_API_KEY is not configured for the backend process.")
-
-        client = Ark(
-            base_url=os.getenv("SEEDREAM_BASE_URL", DEFAULT_BASE_URL),
-            api_key=api_key,
-        )
         generation_size = os.getenv("SEEDREAM_SIZE", "2K")
-        request_params = {
-            "model": model,
-            "prompt": os.getenv("SEEDREAM_3D_PROMPT", FIDELITY_PROMPT),
-            "image": [_image_data_url(source_path)],
-            "response_format": os.getenv("SEEDREAM_RESPONSE_FORMAT", "b64_json"),
-        }
-        try:
-            response = client.images.generate(size=generation_size, **request_params)
-        except Exception as exc:
-            fallback_size = os.getenv("SEEDREAM_FALLBACK_SIZE", "2K")
-            size_error = "InvalidParameter" in str(exc) and "size" in str(exc)
-            format_error = "response_format" in str(exc) or "b64_json" in str(exc)
-            if format_error and request_params["response_format"] != "url":
-                request_params["response_format"] = "url"
-                response = client.images.generate(size=generation_size, **request_params)
-            elif size_error and fallback_size != generation_size:
-                generation_size = fallback_size
-                response = client.images.generate(size=generation_size, **request_params)
-            else:
-                raise
+        generated = generate_reference_image(
+            _image_data_url(source_path),
+            os.getenv("SEEDREAM_3D_PROMPT", FIDELITY_PROMPT),
+            generation_size,
+        )
         output_path = artwork_dir / "seedream_reference.png"
-        _save_reference(_response_image_bytes(response), output_path)
+        _save_reference(generated.payload, output_path)
         return SeedreamPreparation(
             output_path,
             True,
             True,
-            model,
+            generated.model,
+            provider=generated.provider,
             reference_filename=output_path.name,
-            generation_size=generation_size,
+            generation_size=generated.size,
         )
     except Exception as exc:
         if required:
-            raise RuntimeError(f"Seedream preprocessing failed: {exc}") from exc
+            raise RuntimeError(f"Reference image preprocessing failed: {exc}") from exc
         return SeedreamPreparation(
             source_path,
             True,

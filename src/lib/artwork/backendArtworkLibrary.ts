@@ -4,7 +4,7 @@ import type { ProcessedArtworkImage } from '../../utils/artworkImage';
 import { normalizeGaussianAssetUrlsForBackend, toClientAssetUrl } from './triposplatAssetUrl';
 
 function apiBase() {
-  return (import.meta.env.VITE_TRIPOSPLAT_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '';
+  return (import.meta.env.VITE_TRIPOSPLAT_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '/triposplat';
 }
 
 function normalizeRecord(baseUrl: string, record: BackendArtworkRecord): BackendArtworkRecord {
@@ -95,7 +95,7 @@ export async function fetchBackendArtworks(limit = 50): Promise<BackendArtworkRe
 
 export async function fetchBackendArtworkById(artworkId: string): Promise<BackendArtworkRecord> {
   const baseUrl = apiBase();
-  if (!baseUrl) throw new Error('VITE_TRIPOSPLAT_API_BASE is not configured.');
+  if (!baseUrl) throw new Error('作品服务尚未配置。');
 
   const response = await fetch(`${baseUrl}/api/artworks/${encodeURIComponent(artworkId)}`, {
     cache: 'no-store'
@@ -159,11 +159,12 @@ export async function patchBackendArtworkRecord(
   }
 ) {
   const baseUrl = apiBase();
-  if (!baseUrl) throw new Error('VITE_TRIPOSPLAT_API_BASE is not configured.');
+  if (!baseUrl) throw new Error('作品服务尚未配置。');
 
   const response = await fetch(`${baseUrl}/api/artworks/${encodeURIComponent(artworkId)}/metadata`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({
       ...payload,
       gaussianModel: normalizeGaussianAssetUrlsForBackend(baseUrl, payload.gaussianModel)
@@ -190,7 +191,7 @@ export async function patchBackendArtworkEvolution(
 ) {
   if (records.length === 0) return;
   const baseUrl = apiBase();
-  if (!baseUrl) throw new Error('VITE_TRIPOSPLAT_API_BASE is not configured.');
+  if (!baseUrl) throw new Error('作品服务尚未配置。');
 
   const response = await fetch(`${baseUrl}/api/artworks/evolution`, {
     method: 'PATCH',
@@ -205,10 +206,11 @@ export async function patchBackendArtworkEvolution(
 
 export async function deleteBackendArtwork(artworkId: string) {
   const baseUrl = apiBase();
-  if (!baseUrl) throw new Error('VITE_TRIPOSPLAT_API_BASE is not configured.');
+  if (!baseUrl) throw new Error('作品服务尚未配置。');
 
   const response = await fetch(`${baseUrl}/api/artworks/${encodeURIComponent(artworkId)}`, {
-    method: 'DELETE'
+    method: 'DELETE',
+    credentials: 'include'
   });
   if (!response.ok) {
     throw new Error(`Failed to delete artwork: ${response.status}`);
@@ -217,10 +219,11 @@ export async function deleteBackendArtwork(artworkId: string) {
 
 export async function restoreBackendArtwork(artworkId: string) {
   const baseUrl = apiBase();
-  if (!baseUrl) throw new Error('VITE_TRIPOSPLAT_API_BASE is not configured.');
+  if (!baseUrl) throw new Error('作品服务尚未配置。');
 
   const response = await fetch(`${baseUrl}/api/artworks/${encodeURIComponent(artworkId)}/restore`, {
-    method: 'POST'
+    method: 'POST',
+    credentials: 'include'
   });
   if (!response.ok) {
     throw new Error(`Failed to restore artwork: ${response.status}`);
@@ -229,10 +232,11 @@ export async function restoreBackendArtwork(artworkId: string) {
 
 export async function deleteBackendArtworkRecord(artworkId: string) {
   const baseUrl = apiBase();
-  if (!baseUrl) throw new Error('VITE_TRIPOSPLAT_API_BASE is not configured.');
+  if (!baseUrl) throw new Error('作品服务尚未配置。');
 
   const response = await fetch(`${baseUrl}/api/artworks/${encodeURIComponent(artworkId)}/permanent`, {
-    method: 'DELETE'
+    method: 'DELETE',
+    credentials: 'include'
   });
   if (!response.ok) {
     throw new Error(`Failed to delete artwork record: ${response.status}`);

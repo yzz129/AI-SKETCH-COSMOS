@@ -8,6 +8,8 @@ export type DisplayExhibitionModel = {
   sourceFolder?: string;
   sourceImage?: string;
   referenceMode?: string;
+  entryType: 'award' | 'contest';
+  createdAt?: string;
 };
 
 type StaticCatalogItem = {
@@ -31,21 +33,74 @@ const TITLE_COLORS = [
 ] as const;
 
 export async function fetchDisplayExhibitionModels(): Promise<DisplayExhibitionModel[]> {
-  const response = await fetch('/exhibition-models/catalog.json', { cache: 'no-store' });
-  const payload = response.ok
-    ? await response.json() as { items?: StaticCatalogItem[] }
+  const staticRequest = fetch('/exhibition-models/catalog.json', { cache: 'no-store' });
+  const apiBase = (import.meta.env.VITE_TRIPOSPLAT_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '/triposplat';
+  const dynamicRequest = apiBase
+    ? fetch(`${apiBase}/api/exhibition-models`, { cache: 'no-store' }).catch(() => null)
+    : Promise.resolve(null);
+  const [staticResponse, dynamicResponse] = await Promise.all([staticRequest, dynamicRequest]);
+  const payload = staticResponse.ok
+    ? await staticResponse.json() as { items?: StaticCatalogItem[] }
     : { items: [] };
   const items = [...FEATURED_MODELS, ...(payload.items ?? [])];
-
-  return items.map((item, index) => ({
+  const staticModels: DisplayExhibitionModel[] = items.map((item, index) => ({
     id: item.id,
     name: item.name,
     modelUrl: `/exhibition-models/${item.modelFile}`,
     color: TITLE_COLORS[index % TITLE_COLORS.length],
-    position: [0, 0, 0],
+    position: [0, 0, 0] as [number, number, number],
     scale: index < FEATURED_MODELS.length ? 0.46 : 0.4,
     sourceFolder: item.sourceFolder,
     sourceImage: item.sourceImage,
-    referenceMode: item.referenceMode ?? 'single'
+    referenceMode: item.referenceMode ?? 'single',
+    entryType: 'award' as const
   }));
+  if (!dynamicResponse?.ok) return staticModels;
+  const dynamic = await dynamicResponse.json() as Array<{
+    id: string;
+    name: string;
+    modelUrl: string;
+    color: string;
+    position: [number, number, number];
+    scale: number;
+    sourceFolder?: string;
+    sourceImage?: string;
+    referenceMode?: string;
+    entryType?: 'award' | 'contest';
+    createdAt?: string;
+  }>;
+  const byId = new Map(staticModels.map((model) => [model.id, model]));
+  for (const record of dynamic) {
+    const existingStaticModel = byId.get(record.id);
+    if (existingStaticModel) {
+      byId.set(record.id, {
+        ...existingStaticModel,
+        name: record.name || existingStaticModel.name,
+        color: record.color || existingStaticModel.color,
+        scale: record.scale || existingStaticModel.scale,
+        sourceFolder: record.sourceFolder || existingStaticModel.sourceFolder,
+        sourceImage: record.sourceImage || existingStaticModel.sourceImage,
+        referenceMode: record.referenceMode ?? existingStaticModel.referenceMode,
+        entryType: 'award'
+      });
+      continue;
+    }
+    const localModelMatch = record.modelUrl.match(/^\/(?:triposplat\/)?exhibition-models\/(.+\.glb(?:[?#].*)?)$/i);
+    byId.set(record.id, {
+      id: record.id,
+      name: record.name,
+      modelUrl: localModelMatch
+        ? `${apiBase}/exhibition-models/${localModelMatch[1]}`
+        : record.modelUrl,
+      color: record.color,
+      position: record.position,
+      scale: record.scale,
+      sourceFolder: record.sourceFolder,
+      sourceImage: record.sourceImage,
+      referenceMode: record.referenceMode ?? 'single',
+      entryType: record.entryType === 'contest' ? 'contest' : 'award',
+      createdAt: record.createdAt
+    });
+  }
+  return [...byId.values()];
 }

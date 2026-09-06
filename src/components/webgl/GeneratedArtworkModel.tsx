@@ -13,10 +13,89 @@ type GeneratedArtworkModelProps = {
   colors: string[];
   motionPreset: MotionPreset;
   scale?: number;
-  onReady?: () => void;
+  onReady?: (profile: GeneratedArtworkModelProfile) => void;
   /** Render a stable opaque GLB without animation or vertex displacement. */
   staticModel?: boolean;
+  /** Turn plate-like exhibits so their broad decorated face points forward. */
+  orientFlatModelToViewer?: boolean;
+  /** Release a rotating one-off GLB from the Drei/Three cache when it leaves the scene. */
+  releaseResourcesOnUnmount?: boolean;
 };
+
+export type GeneratedArtworkModelProfile = {
+  isFlat: boolean;
+};
+
+const MODEL_FORWARD = new THREE.Vector3(0, 0, 1);
+const IDENTITY_QUATERNION = new THREE.Quaternion();
+
+function GeneratedArtworkModelAnimation({
+  groupRef,
+  shaderRefs,
+  scale,
+  motionPreset
+}: {
+  groupRef: MutableRefObject<THREE.Group | null>;
+  shaderRefs: MutableRefObject<CompiledMaterialShader[]>;
+  scale: number;
+  motionPreset: MotionPreset;
+}) {
+  useFrame(({ clock }) => {
+    const group = groupRef.current;
+    if (!group) return;
+
+    const t = clock.elapsedTime;
+    shaderRefs.current.forEach((shader, index) => {
+      shader.uniforms.uTime.value = t + index * 0.37;
+    });
+
+    const breath = 1 + Math.sin(t * 1.05) * 0.045;
+
+    group.scale.set(
+      scale * (breath + Math.sin(t * 1.72) * 0.018),
+      scale * (1 + Math.cos(t * 0.92) * 0.032),
+      scale * (1 + Math.sin(t * 1.33) * 0.034)
+    );
+
+    if (isSwimmingPreset(motionPreset)) {
+      group.rotation.y = Math.sin(t * 1.18) * 0.18;
+    } else if (isPlantPreset(motionPreset)) {
+      group.rotation.z = Math.sin(t * 0.72) * 0.12;
+    } else if (motionPreset === 'snakeSlither' || motionPreset === 'eelWiggle') {
+      group.rotation.y = Math.sin(t * 1.45) * 0.22;
+      group.rotation.z = Math.sin(t * 1.05) * 0.08;
+    } else {
+      group.rotation.x = Math.sin(t * 0.58) * 0.035;
+      group.rotation.y = Math.sin(t * 0.34) * 0.12;
+    }
+  });
+
+  return null;
+}
+
+function resolveFlatModelProfile(scene: THREE.Object3D) {
+  scene.updateMatrixWorld(true);
+  const size = new THREE.Box3().setFromObject(scene).getSize(new THREE.Vector3());
+  const dimensions = [size.x, size.y, size.z] as const;
+  const ordered = dimensions
+    .map((value, axis) => ({ axis, value }))
+    .sort((left, right) => left.value - right.value);
+  const largest = Math.max(ordered[2].value, 0.0001);
+  // A plate has one clearly shallow axis, while its other two dimensions
+  // still form a readable face. This excludes rods and tall narrow objects.
+  const isFlat = ordered[0].value / largest <= 0.2
+    && ordered[1].value / largest >= 0.28;
+  const normal = ordered[0].axis === 0
+    ? new THREE.Vector3(1, 0, 0)
+    : ordered[0].axis === 1
+      ? new THREE.Vector3(0, 1, 0)
+      : new THREE.Vector3(0, 0, 1);
+
+  return {
+    isFlat,
+    correction: new THREE.Quaternion().setFromUnitVectors(normal, MODEL_FORWARD)
+  };
+}
 
 function resolveAnimationName(
   motionPreset: MotionPreset,
@@ -59,17 +138,36 @@ export function GeneratedArtworkModel({
   motionPreset,
   scale = 1,
   onReady,
-  staticModel = false
+  staticModel = false,
+  orientFlatModelToViewer = false,
+  releaseResourcesOnUnmount = false
 }: GeneratedArtworkModelProps) {
   const groupRef = useRef<THREE.Group>(null);
   const shaderRefs = useRef<CompiledMaterialShader[]>([]);
+  const onReadyRef = useRef(onReady);
   const gltf = useGLTF(modelUrl) as any;
-  const scene = useMemo(
-    () => normalizeGeneratedScene(cloneSkeleton(gltf.scene), staticModel ? 1.75 : 1.55),
-    [gltf.scene, staticModel]
+  const primaryColor = colors[0] ?? '#ffffff';
+  const secondaryColor = colors[1] ?? primaryColor;
+  const preparedModel = useMemo(() => {
+    const clonedScene = cloneSkeleton(gltf.scene);
+    const flatProfile = resolveFlatModelProfile(clonedScene);
+    return {
+      scene: normalizeGeneratedScene(clonedScene, staticModel ? 1.75 : 1.55),
+      ...flatProfile
+    };
+  }, [gltf.scene, staticModel]);
+  const { scene } = preparedModel;
+  const flatFacingEnabled = orientFlatModelToViewer && preparedModel.isFlat;
+  const flatCorrection = useMemo(
+    () => preparedModel.correction.clone(),
+    [preparedModel.correction]
   );
-  const glowColor = useMemo(() => new THREE.Color(colors[1] ?? colors[0] ?? '#64d9ff'), [colors]);
+  const glowColor = useMemo(() => new THREE.Color(secondaryColor), [secondaryColor]);
   const { actions } = useAnimations(staticModel ? [] : (gltf.animations ?? []), scene);
+
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
 
   useEffect(() => {
     shaderRefs.current = [];
@@ -80,19 +178,19 @@ export function GeneratedArtworkModel({
 
       if (Array.isArray(mesh.material)) {
         mesh.material = mesh.material.map((sourceMaterial) => staticModel
-          ? prepareStableMaterial(sourceMaterial, colors[0] ?? '#ffffff')
+          ? prepareStableMaterial(sourceMaterial, primaryColor, flatFacingEnabled)
           : enhanceMaterialForSpace({
             sourceMaterial,
-            fallbackColor: colors[0] ?? '#ffffff',
+            fallbackColor: primaryColor,
             glowColor,
             shaderRefs
           }));
       } else {
         mesh.material = staticModel
-          ? prepareStableMaterial(mesh.material, colors[0] ?? '#ffffff')
+          ? prepareStableMaterial(mesh.material, primaryColor, flatFacingEnabled)
           : enhanceMaterialForSpace({
             sourceMaterial: mesh.material,
-            fallbackColor: colors[0] ?? '#ffffff',
+            fallbackColor: primaryColor,
             glowColor,
             shaderRefs
           });
@@ -108,8 +206,8 @@ export function GeneratedArtworkModel({
       mesh.receiveShadow = false;
     });
 
-    onReady?.();
-  }, [colors, glowColor, scene, staticModel]);
+    onReadyRef.current?.({ isFlat: flatFacingEnabled });
+  }, [flatFacingEnabled, glowColor, primaryColor, scene, staticModel]);
 
   useEffect(() => {
     if (staticModel) return;
@@ -126,50 +224,55 @@ export function GeneratedArtworkModel({
     };
   }, [actions, motionPreset, staticModel]);
 
-  useFrame(({ clock }) => {
+  useEffect(() => () => {
+    if (!releaseResourcesOnUnmount) return;
+    const disposedTextures = new Set<THREE.Texture>();
+    scene.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.geometry?.dispose();
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const material of materials) {
+        if (!material) continue;
+        for (const value of Object.values(material)) {
+          if (!(value instanceof THREE.Texture) || disposedTextures.has(value)) continue;
+          value.dispose();
+          disposedTextures.add(value);
+        }
+        material.dispose();
+      }
+    });
+    useGLTF.clear(modelUrl);
+  }, [modelUrl, releaseResourcesOnUnmount, scene]);
+
+  useEffect(() => {
+    if (!staticModel) return;
     const group = groupRef.current;
     if (!group) return;
-
-    const t = clock.elapsedTime;
-    shaderRefs.current.forEach((shader, index) => {
-      shader.uniforms.uTime.value = t + index * 0.37;
-    });
-
-    if (staticModel) {
-      group.scale.setScalar(scale);
-      group.rotation.set(0, 0, 0);
-      return;
-    }
-
-    const breath = 1 + Math.sin(t * 1.05) * 0.045;
-
-    group.scale.set(
-      scale * (breath + Math.sin(t * 1.72) * 0.018),
-      scale * (1 + Math.cos(t * 0.92) * 0.032),
-      scale * (1 + Math.sin(t * 1.33) * 0.034)
-    );
-
-    if (isSwimmingPreset(motionPreset)) {
-      group.rotation.y = Math.sin(t * 1.18) * 0.18;
-    } else if (isPlantPreset(motionPreset)) {
-      group.rotation.z = Math.sin(t * 0.72) * 0.12;
-    } else if (motionPreset === 'snakeSlither' || motionPreset === 'eelWiggle') {
-      group.rotation.y = Math.sin(t * 1.45) * 0.22;
-      group.rotation.z = Math.sin(t * 1.05) * 0.08;
-    } else {
-      group.rotation.x = Math.sin(t * 0.58) * 0.035;
-      group.rotation.y = Math.sin(t * 0.34) * 0.12;
-    }
-  });
+    group.scale.setScalar(scale);
+    group.quaternion.copy(flatFacingEnabled ? flatCorrection : IDENTITY_QUATERNION);
+  }, [flatCorrection, flatFacingEnabled, scale, staticModel]);
 
   return (
     <group ref={groupRef}>
       <primitive object={scene} />
+      {!staticModel ? (
+        <GeneratedArtworkModelAnimation
+          groupRef={groupRef}
+          shaderRefs={shaderRefs}
+          scale={scale}
+          motionPreset={motionPreset}
+        />
+      ) : null}
     </group>
   );
 }
 
-function prepareStableMaterial(sourceMaterial: THREE.Material | undefined, fallbackColor: string) {
+function prepareStableMaterial(
+  sourceMaterial: THREE.Material | undefined,
+  fallbackColor: string,
+  doubleSided: boolean
+) {
   const material = sourceMaterial?.clone?.() ?? new THREE.MeshStandardMaterial({ color: fallbackColor });
   // Preserve every authored GLB texture, tint, emissive value, roughness and
   // metalness exactly. The title color belongs to the label only and must
@@ -180,6 +283,7 @@ function prepareStableMaterial(sourceMaterial: THREE.Material | undefined, fallb
   material.depthWrite = true;
   material.depthTest = true;
   material.blending = THREE.NormalBlending;
+  if (doubleSided) material.side = THREE.DoubleSide;
   if (material instanceof THREE.MeshStandardMaterial) {
     // The exhibition sits in a dark space scene. Reuse the authored base-color
     // texture as a subtle emissive source so its exact colors remain readable

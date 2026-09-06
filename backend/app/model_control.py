@@ -85,6 +85,28 @@ class ModelControlHub:
                     self._displays.discard(display)
                     self._display_send_locks.pop(display, None)
 
+    async def broadcast_command(self, payload: dict[str, Any]) -> None:
+        async with self._lock:
+            displays = tuple(
+                (display, self._display_send_locks[display])
+                for display in self._displays
+                if display in self._display_send_locks
+            )
+
+        disconnected: list[WebSocket] = []
+        for display, send_lock in displays:
+            try:
+                async with send_lock:
+                    await display.send_json(payload)
+            except Exception:
+                disconnected.append(display)
+
+        if disconnected:
+            async with self._lock:
+                for display in disconnected:
+                    self._displays.discard(display)
+                    self._display_send_locks.pop(display, None)
+
     async def send_heartbeat(self, websocket: WebSocket) -> None:
         async with self._lock:
             send_lock = self._display_send_locks.get(websocket)

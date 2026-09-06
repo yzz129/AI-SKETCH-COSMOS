@@ -1,4 +1,4 @@
-import { useThree } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useMemo } from 'react';
 import * as THREE from 'three';
 
@@ -247,6 +247,10 @@ function NebulaCloud({ spec, xScale, yScale }: { spec: NebulaSpec; xScale: numbe
   const sx = spec.center[0] * xScale;
   const sy = spec.center[1] * yScale;
 
+  useFrame(({ clock }) => {
+    cloud.material.uniforms.uTime.value = clock.elapsedTime;
+  });
+
   return (
     <group position={[sx, sy, spec.center[2]]}>
       <points
@@ -267,6 +271,10 @@ function DarkCloud({ spec, xScale, yScale }: { spec: DarkCloudSpec; xScale: numb
   const sx = spec.x * xScale;
   const sy = spec.y * yScale;
   const midZ = (spec.zRange[0] + spec.zRange[1]) * 0.5;
+
+  useFrame(({ clock }) => {
+    cloud.material.uniforms.uTime.value = clock.elapsedTime;
+  });
 
   return (
     <group position={[sx, sy, midZ]}>

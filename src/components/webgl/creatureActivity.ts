@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import { MAX_VARIABLE_DISPLAY_MODELS } from './displayModelPolicy';
 
-export const MAX_ACTIVE_CREATURES = 27;
+export const MAX_ACTIVE_CREATURES = MAX_VARIABLE_DISPLAY_MODELS;
 export const CREATURE_BUBBLE_ROTATION_MS = 5_000;
 
 const activeCreatureIds = new Set<string>();

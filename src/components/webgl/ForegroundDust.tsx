@@ -1,3 +1,4 @@
+import { useFrame } from '@react-three/fiber';
 import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
 
@@ -100,6 +101,10 @@ export function ForegroundDust() {
       }
     `
   }), []);
+
+  useFrame(({ clock }) => {
+    material.uniforms.uTime.value = clock.elapsedTime;
+  });
 
   return (
     <points

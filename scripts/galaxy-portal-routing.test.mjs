@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { choosePortalExit, isConfirmedChasedPrey } from '../src/components/webgl/galaxyPortalRouting.mjs';
+import {
+  choosePortalExit,
+  isConfirmedChasedPrey,
+  portalAttractionRadius,
+  portalSuctionProgress
+} from '../src/components/webgl/galaxyPortalRouting.mjs';
 
 const portals = ['portal-0', 'portal-1', 'portal-2', 'portal-3', 'portal-4', 'portal-5'];
 
@@ -21,6 +26,17 @@ test('different sequences distribute across exits', () => {
   )));
   assert.ok(exits.size > 1);
   assert.ok(!exits.has('portal-0'));
+});
+
+test('portal attraction reaches well beyond the visible aperture', () => {
+  assert.equal(portalAttractionRadius(0.8), 3.2);
+  assert.ok(Math.abs(portalAttractionRadius(3) - 4.8) < 1e-9);
+});
+
+test('portal suction accelerates strongly while staying clamped', () => {
+  assert.equal(portalSuctionProgress(-1), 0);
+  assert.equal(portalSuctionProgress(1.5), 1);
+  assert.ok(portalSuctionProgress(0.5) > 0.8);
 });
 
 test('chased prey requires reciprocal live flee and chase intents', () => {

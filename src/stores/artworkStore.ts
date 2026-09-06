@@ -45,6 +45,14 @@ export type StoredArtwork = ProcessedArtworkImage & {
   behaviorSignature: CreatureBehaviorSignature;
 };
 
+type DeepPartial<T> = {
+  [Key in keyof T]?: T[Key] extends readonly unknown[]
+    ? T[Key]
+    : T[Key] extends object
+      ? DeepPartial<T[Key]>
+      : T[Key];
+};
+
 export type BackendArtworkRecord = {
   id: string;
   name?: string | null;
@@ -103,6 +111,37 @@ function defaultFeaturesFromArtwork(artwork: ProcessedArtworkImage): ArtworkFeat
       textureStyle: 'handdrawn'
     },
     motionPreset: 'spiritFloat'
+  };
+}
+
+function normalizeBackendArtworkFeatures(
+  artwork: ProcessedArtworkImage,
+  candidate?: DeepPartial<ArtworkFeatureResult> | null
+): ArtworkFeatureResult {
+  const fallback = defaultFeaturesFromArtwork(artwork);
+  const dominantColors = candidate?.visualTraits?.dominantColors;
+
+  return {
+    subjectCategory: candidate?.subjectCategory ?? fallback.subjectCategory,
+    morphology: {
+      ...fallback.morphology,
+      ...(candidate?.morphology ?? {})
+    },
+    behaviorTraits: {
+      ...fallback.behaviorTraits,
+      ...(candidate?.behaviorTraits ?? {})
+    },
+    visualTraits: {
+      ...fallback.visualTraits,
+      ...(candidate?.visualTraits ?? {}),
+      dominantColors: Array.isArray(dominantColors) && dominantColors.length > 0
+        ? dominantColors
+        : fallback.visualTraits.dominantColors
+    },
+    motionPreset: candidate?.motionPreset ?? fallback.motionPreset,
+    motionParts: Array.isArray(candidate?.motionParts)
+      ? candidate.motionParts
+      : fallback.motionParts
   };
 }
 
@@ -349,7 +388,7 @@ function artworkFromBackendRecord(record: BackendArtworkRecord): StoredArtwork {
     aspect: record.aspect && record.aspect > 0 ? record.aspect : width / height,
     particles: []
   };
-  const features = record.features ?? defaultFeaturesFromArtwork(artwork);
+  const features = normalizeBackendArtworkFeatures(artwork, record.features);
   const gaussianModel: ArtworkGaussianModelResult = {
     jobId: record.gaussianModel?.jobId ?? `persisted-${record.id}`,
     sourceArtworkId: record.gaussianModel?.sourceArtworkId ?? record.id,
@@ -385,7 +424,6 @@ export const useArtworkStore = create<ArtworkStore>((set) => ({
     const storedArtwork = artworkFromFeatures(artwork, features, model3d, gaussianModel);
     set((state) => {
       const artworks = [storedArtwork, ...state.artworks];
-      useSketchStore.getState().beginSpotlight(storedArtwork.id);
 
       return {
         artworks,

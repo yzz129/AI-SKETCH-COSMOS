@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { GalaxySpiral } from './GalaxySpiral';
 import { ReferenceNebula } from './ReferenceNebula';
 import { removeGalaxyPortal, updateGalaxyPortal } from './galaxyPortalRegistry';
+import { portalAttractionRadius } from './galaxyPortalRouting';
 
 type SpiralEntry = {
   id: string;
@@ -81,7 +82,7 @@ function SpiralWrapper({ entry, xScale, yScale }: { entry: SpiralEntry; xScale: 
       portalPositionRef.current,
       portalNormalRef.current,
       portalVelocityRef.current,
-      Math.max(0.12, apertureRadius - 0.1),
+      portalAttractionRadius(visualRadius),
       apertureRadius,
       visualRadius
     );

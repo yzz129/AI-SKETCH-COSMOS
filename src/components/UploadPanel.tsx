@@ -58,7 +58,7 @@ export function UploadPanel() {
           </div>
           <div>
             <dt>Mode</dt>
-            <dd>{latestArtwork.gaussianModel?.status === 'ready' ? 'TripoSplat .splat' : 'Image particles'}</dd>
+            <dd>{latestArtwork.gaussianModel?.status === 'ready' ? '3D 模型' : 'Image particles'}</dd>
           </div>
           <div>
             <dt>Motion</dt>

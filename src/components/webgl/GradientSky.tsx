@@ -1,3 +1,4 @@
+import { useFrame } from '@react-three/fiber';
 import { useMemo } from 'react';
 import * as THREE from 'three';
 
@@ -7,6 +8,7 @@ export function GradientSky() {
     depthWrite: false,
     depthTest: false,
     uniforms: {
+      uTime: { value: 0 },
       uEdge: { value: new THREE.Color('#020611') },
       uDeep: { value: new THREE.Color('#050816') },
       uViolet: { value: new THREE.Color('#1d1a5c') },
@@ -23,6 +25,7 @@ export function GradientSky() {
       }
     `,
     fragmentShader: `
+      uniform float uTime;
       uniform vec3 uEdge;
       uniform vec3 uDeep;
       uniform vec3 uViolet;
@@ -41,19 +44,36 @@ export function GradientSky() {
 
         float leftUpperGlow = smoothstep(0.58, 0.02, length((p - vec2(-0.48, 0.34)) * vec2(1.1, 0.9)));
         float rightLowerGlow = smoothstep(0.54, 0.02, length((p - vec2(0.42, -0.32)) * vec2(1.2, 0.86)));
-        float blueChannel = smoothstep(0.42, 0.0, abs(p.y - p.x * 0.44 - 0.03));
+        float tideLine = p.x * 0.34
+          + sin(p.x * 2.7 + uTime * 0.052) * 0.105
+          + cos(p.x * 5.2 - uTime * 0.031) * 0.04;
+        float blueChannel = smoothstep(0.36, 0.0, abs(p.y - tideLine - 0.02));
+        float violetCurrent = smoothstep(
+          0.25,
+          0.0,
+          abs(p.y + p.x * 0.22 + sin(p.x * 3.8 - uTime * 0.038) * 0.075 + 0.24)
+        );
+        float undertow = 0.5 + 0.5 * sin(
+          p.x * 7.2 + sin(p.y * 4.4 - uTime * 0.046) * 1.35 + uTime * 0.065
+        );
+        float tidePulse = 0.62 + 0.38 * sin(uTime * 0.12 + p.x * 1.8 - p.y * 1.3);
         float coreShade = smoothstep(0.84, 0.18, length(p));
         float edgeVignette = smoothstep(1.15, 0.28, length(p * vec2(1.08, 0.92)));
 
         color += uCore * leftUpperGlow * 0.2;
         color += uBlue * rightLowerGlow * 0.22;
-        color += uCyan * blueChannel * 0.08;
+        color += uCyan * blueChannel * (0.035 + undertow * 0.035) * tidePulse;
+        color += uViolet * violetCurrent * (0.045 + (1.0 - undertow) * 0.04);
         color *= 0.36 + coreShade * 0.58;
         color *= 0.32 + edgeVignette * 0.76;
         gl_FragColor = vec4(color, 1.0);
       }
     `
   }), []);
+
+  useFrame(({ clock }) => {
+    material.uniforms.uTime.value = clock.elapsedTime;
+  });
 
   return (
     <mesh scale={60} renderOrder={0}>

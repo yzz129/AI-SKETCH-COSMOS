@@ -29,6 +29,9 @@ class JobResponse(BaseModel):
     message: str | None = None
     artwork: ArtworkAssets | None = None
     error: str | None = None
+    queuePosition: int | None = None
+    estimatedWaitSeconds: int | None = None
+    queueCapacity: int | None = None
 
 
 class ArtworkMetadataUpdate(BaseModel):
@@ -83,3 +86,49 @@ class PersistedArtwork(BaseModel):
     deletedAt: str | None = None
     createdAt: str
     updatedAt: str
+
+
+class ExhibitionModel(BaseModel):
+    id: str
+    name: str
+    modelUrl: str
+    previewUrl: str | None = None
+    color: str
+    position: list[float]
+    scale: float
+    sourceFolder: str | None = None
+    sourceImage: str | None = None
+    referenceMode: str = "single"
+    entryType: str = "award"
+    alwaysFloating: bool = True
+    participatesInLevel: bool = False
+    isDeleted: bool = False
+    createdAt: str
+    updatedAt: str
+
+
+class ExhibitionModelCreate(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=64)
+    modelUrl: str = Field(min_length=1, max_length=1024)
+    previewUrl: str | None = Field(default=None, max_length=1024)
+    color: str = Field(default="#7ee7ff", pattern=r"^#[0-9a-fA-F]{6}$")
+    position: list[float] = Field(default_factory=lambda: [0, 0, 0], min_length=3, max_length=3)
+    scale: float = Field(default=0.55, ge=0.1, le=3.0)
+    sourceFolder: str | None = Field(default=None, max_length=512)
+    sourceImage: str | None = Field(default=None, max_length=256)
+    referenceMode: str = Field(default="single", max_length=32)
+    entryType: str = Field(default="award", pattern=r"^(award|contest)$")
+
+
+class ExhibitionModelUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    modelUrl: str | None = Field(default=None, min_length=1, max_length=1024)
+    previewUrl: str | None = Field(default=None, max_length=1024)
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    position: list[float] | None = Field(default=None, min_length=3, max_length=3)
+    scale: float | None = Field(default=None, ge=0.1, le=3.0)
+    sourceFolder: str | None = Field(default=None, max_length=512)
+    sourceImage: str | None = Field(default=None, max_length=256)
+    referenceMode: str | None = Field(default=None, max_length=32)
+    entryType: str | None = Field(default=None, pattern=r"^(award|contest)$")

@@ -1,18 +1,25 @@
 import { Canvas } from '@react-three/fiber';
 import type { PointerEvent } from 'react';
-import { useEffect } from 'react';
-import { startRemoteModelControlReceiver } from '../../lib/artwork/modelControlSync';
+import { useEffect, useRef } from 'react';
+import { startRemoteModelControlReceiver, subscribeToDisplayAdminCommands } from '../../lib/artwork/modelControlSync';
+import { clearLocalArtworkStressTest, runLocalArtworkStressTest } from '../../lib/artwork/localStressTest';
+import { useArtworkStore } from '../../stores/artworkStore';
 import { useSketchStore } from '../../stores/useSketchStore';
-import { CosmicControlPanel } from '../ui/CosmicControlPanel';
-import { TouchTrailCanvas } from '../ui/TouchTrailCanvas';
 import { Effects } from './Effects';
 import { Scene } from './Scene';
+import { DISPLAY_COMPOSITION_OFFSET_X } from './cosmicAnchors';
+import {
+  ADAPTIVE_VARIABLE_MODEL_LIMIT_STORAGE_KEY,
+  MAX_VARIABLE_DISPLAY_MODELS,
+  normalizeVariableModelLimit,
+  reduceVariableModelLimit
+} from './displayModelPolicy';
 
 export function WebGLCanvas() {
+  const contextRecoveryTimerRef = useRef<number | null>(null);
   const beginCollapse = useSketchStore((state) => state.beginCollapse);
   const updateCollapseCenter = useSketchStore((state) => state.updateCollapseCenter);
   const endCollapse = useSketchStore((state) => state.endCollapse);
-
   useEffect(() => {
     window.addEventListener('pointerup', endCollapse);
     window.addEventListener('pointercancel', endCollapse);
@@ -26,6 +33,37 @@ export function WebGLCanvas() {
   }, [endCollapse]);
 
   useEffect(() => startRemoteModelControlReceiver(), []);
+
+  useEffect(() => () => {
+    if (contextRecoveryTimerRef.current !== null) {
+      window.clearTimeout(contextRecoveryTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => subscribeToDisplayAdminCommands((message) => {
+    if (message.command === 'clear-artworks') {
+      useArtworkStore.getState().clearArtworks();
+      useSketchStore.setState({ status: 'idle', message: '星河已清空。' });
+      return;
+    }
+    if (message.command === 'stress-start') {
+      runLocalArtworkStressTest(message.target);
+      return;
+    }
+    if (message.command === 'stress-clear') {
+      clearLocalArtworkStressTest();
+      return;
+    }
+    if (message.command === 'toggle-fullscreen') {
+      if (!document.fullscreenElement) {
+        void document.documentElement.requestFullscreen().catch(() => {
+          document.documentElement.classList.toggle('display-focus-mode');
+        });
+      } else {
+        void document.exitFullscreen();
+      }
+    }
+  }), []);
 
   const pointToCollapseCenter = (event: PointerEvent<HTMLDivElement>): [number, number] => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -43,19 +81,13 @@ export function WebGLCanvas() {
   };
 
   const handleStagePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (isPanelEvent(event)) {
-      return;
-    }
-
+    if (isPanelEvent(event)) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     beginCollapse(pointToCollapseCenter(event));
   };
 
   const handleStagePointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    if (isPanelEvent(event) || !event.currentTarget.hasPointerCapture(event.pointerId)) {
-      return;
-    }
-
+    if (isPanelEvent(event) || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
     updateCollapseCenter(pointToCollapseCenter(event));
   };
 
@@ -63,7 +95,6 @@ export function WebGLCanvas() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-
     endCollapse();
   };
 
@@ -78,13 +109,15 @@ export function WebGLCanvas() {
     >
       <Canvas
         className="webgl-canvas"
-        camera={{ position: [0, 0, 6], fov: 50, near: 0.1, far: 100 }}
+        camera={{ position: [DISPLAY_COMPOSITION_OFFSET_X, 0, 6], fov: 50, near: 0.1, far: 100 }}
         dpr={[1, 1.5]}
         gl={{
           antialias: true,
           alpha: false,
           powerPreference: 'high-performance',
           failIfMajorPerformanceCaveat: false,
+          // Avoid copying the full 4K back buffer after every frame. Keeping it
+          // preserved increases compositor pressure and can worsen flashes.
           preserveDrawingBuffer: false,
         }}
         onCreated={({ gl }) => {
@@ -92,8 +125,36 @@ export function WebGLCanvas() {
           canvas.addEventListener('webglcontextlost', (event) => {
             event.preventDefault();
             console.warn('[cosmos] WebGL context lost — pausing render');
+            if (contextRecoveryTimerRef.current !== null) {
+              window.clearTimeout(contextRecoveryTimerRef.current);
+            }
+            contextRecoveryTimerRef.current = window.setTimeout(() => {
+              // Keep native rendering quality. If the display GPU cannot
+              // restore its context, reduce only the dynamic model budget and
+              // rebuild the scene; the 23 award models remain prioritized.
+              try {
+                const stored = window.sessionStorage.getItem(
+                  ADAPTIVE_VARIABLE_MODEL_LIMIT_STORAGE_KEY
+                );
+                const currentLimit = stored === null
+                  ? MAX_VARIABLE_DISPLAY_MODELS
+                  : normalizeVariableModelLimit(Number(stored));
+                window.sessionStorage.setItem(
+                  ADAPTIVE_VARIABLE_MODEL_LIMIT_STORAGE_KEY,
+                  String(reduceVariableModelLimit(currentLimit))
+                );
+              } catch {
+                // Storage can be unavailable in hardened display browsers;
+                // reloading still gives WebGL a fresh context in that case.
+              }
+              window.location.reload();
+            }, 8_000);
           });
           canvas.addEventListener('webglcontextrestored', () => {
+            if (contextRecoveryTimerRef.current !== null) {
+              window.clearTimeout(contextRecoveryTimerRef.current);
+              contextRecoveryTimerRef.current = null;
+            }
             console.log('[cosmos] WebGL context restored — resuming');
           });
         }}
@@ -103,8 +164,6 @@ export function WebGLCanvas() {
         <Scene />
         <Effects />
       </Canvas>
-      <TouchTrailCanvas />
-      <CosmicControlPanel />
     </div>
   );
 }

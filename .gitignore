@@ -10,6 +10,9 @@ backend/outputs/
 backend/data/*.db
 backend/data/*.db-*
 backend/data/*.backup-*
+backend/data/ai-model-probe.json
+backend/data/designer-generations/
+backend/data/repair-backup-*/
 outputs/
 artifacts/
 .runtime/

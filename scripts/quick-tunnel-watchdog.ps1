@@ -274,7 +274,9 @@ function Start-Backend {
   Write-WatchdogLog "Backend unavailable; starting Uvicorn on 127.0.0.1:$BackendPort."
   try {
     $previousPythonPath = $env:PYTHONPATH
+    $previousMaxActiveJobs = $env:TRIPOSPLAT_MAX_ACTIVE_JOBS
     $env:PYTHONPATH = (Join-Path $ProjectRoot 'backend')
+    $env:TRIPOSPLAT_MAX_ACTIVE_JOBS = '3000'
     try {
       $process = Start-Process -FilePath $PythonPath `
         -ArgumentList @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', "$BackendPort") `
@@ -285,10 +287,130 @@ function Start-Backend {
         -PassThru
     } finally {
       $env:PYTHONPATH = $previousPythonPath
+      $env:TRIPOSPLAT_MAX_ACTIVE_JOBS = $previousMaxActiveJobs
     }
     Write-WatchdogLog "Backend process started (PID $($process.Id))."
   } catch {
     Write-WatchdogLog "Backend start failed: $($_.Exception.Message)"
+  }
+}
+
+function Stop-ManagedFrontendForReload {
+  try {
+    $response = Invoke-WebRequest `
+      -UseBasicParsing `
+      -Uri "http://127.0.0.1:$FrontendPort/" `
+      -TimeoutSec 8
+    if ($response.Content -notmatch '<title>AI-SKETCH-COSMOS</title>') {
+      Write-WatchdogLog "Port $FrontendPort is owned by another healthy service; refusing to stop it."
+      return $false
+    }
+
+    $ownerIds = @(
+      Get-NetTCPConnection `
+        -LocalAddress '127.0.0.1' `
+        -LocalPort $FrontendPort `
+        -State Listen `
+        -ErrorAction Stop |
+      Select-Object -ExpandProperty OwningProcess -Unique
+    )
+    if ($ownerIds.Count -eq 0) { return $false }
+
+    Write-WatchdogLog 'Replacing existing managed frontend so the latest bundle and cache headers are loaded.'
+    foreach ($ownerId in $ownerIds) {
+      $processInfo = Get-CimInstance Win32_Process `
+        -Filter "ProcessId=$ownerId" `
+        -ErrorAction SilentlyContinue
+      if ($null -eq $processInfo -or $processInfo.Name -notmatch '^node(?:\.exe)?$') {
+        Write-WatchdogLog "Frontend reload refused: listener PID $ownerId is not a Node process."
+        return $false
+      }
+      Stop-Process -Id $ownerId -Force -ErrorAction Stop
+    }
+
+    $deadline = (Get-Date).AddSeconds(15)
+    do {
+      $remaining = Get-NetTCPConnection `
+        -LocalAddress '127.0.0.1' `
+        -LocalPort $FrontendPort `
+        -State Listen `
+        -ErrorAction SilentlyContinue
+      if ($null -eq $remaining) {
+        Write-WatchdogLog 'Previous frontend stopped; the watchdog will start the updated preview.'
+        return $true
+      }
+      Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    Write-WatchdogLog "Frontend reload timed out while waiting for port $FrontendPort to close."
+    return $false
+  } catch {
+    Write-WatchdogLog "Frontend reload failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Stop-ManagedBackendForReload {
+  if (-not (Test-Endpoint "http://127.0.0.1:$BackendPort/health")) {
+    return $false
+  }
+
+  try {
+    $openApi = Invoke-RestMethod `
+      -Uri "http://127.0.0.1:$BackendPort/openapi.json" `
+      -TimeoutSec 8
+    if ($openApi.info.title -ne 'AI Sketch Cosmos 3D Model Service') {
+      Write-WatchdogLog "Port $BackendPort is owned by another healthy service; refusing to stop it."
+      return $false
+    }
+
+    $ownerIds = @(
+      Get-NetTCPConnection `
+        -LocalPort $BackendPort `
+        -State Listen `
+        -ErrorAction Stop |
+      Select-Object -ExpandProperty OwningProcess -Unique
+    )
+    if ($ownerIds.Count -eq 0) { return $false }
+
+    Write-WatchdogLog "Replacing existing managed backend so the latest code and environment are loaded."
+    foreach ($ownerId in $ownerIds) {
+      $processInfo = Get-CimInstance Win32_Process `
+        -Filter "ProcessId=$ownerId" `
+        -ErrorAction SilentlyContinue
+      if ($null -eq $processInfo -or $processInfo.Name -notmatch '^python(?:\.exe)?$') {
+        Write-WatchdogLog "Backend reload refused: listener PID $ownerId is not a Python process."
+        return $false
+      }
+
+      $parentId = [int]$processInfo.ParentProcessId
+      Stop-Process -Id $ownerId -Force -ErrorAction Stop
+      if ($parentId -gt 0) {
+        $parent = Get-Process -Id $parentId -ErrorAction SilentlyContinue
+        if ($null -ne $parent -and $parent.ProcessName -match '^python$') {
+          Stop-Process -Id $parentId -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
+    $deadline = (Get-Date).AddSeconds(15)
+    do {
+      $remaining = Get-NetTCPConnection `
+        -LocalPort $BackendPort `
+        -State Listen `
+        -ErrorAction SilentlyContinue
+      if ($null -eq $remaining) {
+        Write-WatchdogLog 'Previous backend stopped; the watchdog will start the updated service.'
+        return $true
+      }
+      Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    Write-WatchdogLog "Backend reload timed out while waiting for port $BackendPort to close."
+    return $false
+  } catch {
+    Write-WatchdogLog "Backend reload failed: $($_.Exception.Message)"
+    return $false
   }
 }
 
@@ -328,6 +450,8 @@ $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 if (-not $DisableTunnelRecovery -and -not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   Write-WatchdogLog 'Warning: watchdog is not elevated. Tunnel health is monitored, but restarting the Cloudflared service may be denied. Install the scheduled task as Administrator for unattended recovery.'
 }
+[void](Stop-ManagedFrontendForReload)
+[void](Stop-ManagedBackendForReload)
 [AwakeState]::SetThreadExecutionState([uint32]($ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED -bor $ES_AWAYMODE_REQUIRED)) | Out-Null
 
 try {
